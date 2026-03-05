@@ -1,0 +1,32 @@
+{
+  "description": "Phase 1 8B baseline: same 20 topics from Phase 0, 5 modes, 2 repetitions = 200 samples",
+  "user_prompt_template": "Write about: {topic}",
+  "num_repetitions": 2,
+
+  "topics": {
+    "set_a": [
+      "The nature of consciousness",
+      "How to debug a segfault",
+      "The history of bread",
+      "Climate change mitigation strategies",
+      "What makes a good friendship",
+      "How neural networks learn",
+      "The appeal of horror fiction",
+      "Urban planning challenges",
+      "Teaching a child to ride a bike",
+      "The future of space exploration"
+    ],
+    "set_b": [
+      "How memory works in the brain",
+      "The ethics of genetic engineering",
+      "Why music moves us",
+      "Building a house from scratch",
+      "The mathematics of infinity",
+      "The evolution of language",
+      "Why we dream",
+      "How markets determine prices",
+      "The art of persuasion",
+      "Cooking as chemistry"
+    ]
+  }
+}

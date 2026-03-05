@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# uv
+.venv/
+uv.lock
+
+# Outputs (large tensor data, analysis results)
+outputs/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Model artifacts
+*.pt
+*.pkl
+*.npz
+*.npy
