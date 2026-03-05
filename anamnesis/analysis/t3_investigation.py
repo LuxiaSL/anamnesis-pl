@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pickle
 import re
 import time
@@ -54,17 +55,14 @@ _RUN_CONFIGS: dict[str, dict[str, Path]] = {
         / "pca_model.pkl",
     },
     "3b_run4": {
-        "sig_dir": Path(__file__).resolve().parents[2]
-        / "phase_0"
-        / "outputs"
-        / "runs"
-        / "run4_format_controlled"
-        / "signatures",
-        "pca_path": Path(__file__).resolve().parents[2]
-        / "phase_0"
-        / "outputs"
-        / "calibration"
-        / "pca_model.pkl",
+        "sig_dir": Path(os.environ.get(
+            "ANAMNESIS_LEGACY_DATA",
+            str(Path(__file__).resolve().parents[2] / "phase_0"),
+        )) / "outputs" / "runs" / "run4_format_controlled" / "signatures",
+        "pca_path": Path(os.environ.get(
+            "ANAMNESIS_LEGACY_DATA",
+            str(Path(__file__).resolve().parents[2] / "phase_0"),
+        )) / "outputs" / "calibration" / "pca_model.pkl",
     },
 }
 

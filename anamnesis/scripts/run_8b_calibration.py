@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Positional decomposition calibration for Llama 3.1 8B Instruct.
 
-Adapted from Phase 0. Must run before the main experiment.
+Must run before the main experiment.
 Produces model-specific positional means and PCA basis.
 
 Outputs:
@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Diverse calibration prompts — same as Phase 0 (content-washing)
+# Diverse calibration prompts for content-washing
 CALIBRATION_PROMPTS = [
     "Explain how photosynthesis works in plants.",
     "What are the main causes of the French Revolution?",

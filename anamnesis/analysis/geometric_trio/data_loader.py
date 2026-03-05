@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 # All known tiers — loader gracefully skips any that are absent from the data.
 
 TIER_KEYS: dict[str, str] = {
-    # Baseline tiers (Phase 0/1)
+    # Baseline tiers
     "T1": "features_tier1",
     "T2": "features_tier2",
     "T2.5": "features_tier2_5",
@@ -67,7 +68,10 @@ TIER_GROUPS: dict[str, list[str]] = {
     ],
 }
 
-SIGNATURE_DIR = Path(__file__).resolve().parents[3] / "phase_0" / "outputs" / "runs" / "run4_format_controlled" / "signatures"
+SIGNATURE_DIR = Path(os.environ.get(
+    "ANAMNESIS_LEGACY_DATA",
+    str(Path(__file__).resolve().parents[3] / "phase_0"),
+)) / "outputs" / "runs" / "run4_format_controlled" / "signatures"
 
 
 @dataclass

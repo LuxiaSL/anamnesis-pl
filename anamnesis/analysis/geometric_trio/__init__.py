@@ -1,1 +1,1 @@
-# Geometric trio analysis for Phase 1
+# Geometric trio analysis

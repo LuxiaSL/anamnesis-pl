@@ -171,8 +171,8 @@ def _contrastive_topic_heldout(
 ) -> dict:
     """Compare contrastive projection (MLP + kNN) across feature types, topic-heldout.
 
-    This is the decisive test from Phase 0: TF-IDF collapses under topic-heldout
-    contrastive projection while compute features generalize.
+    This is the decisive test: TF-IDF collapses under topic-heldout contrastive
+    projection while compute features generalize.
     """
     try:
         from .contrastive import _train_contrastive_mlp, _embed, _build_topic_folds

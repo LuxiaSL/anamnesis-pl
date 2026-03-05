@@ -136,7 +136,7 @@ def analyze_consistency(results: dict[str, dict]) -> dict:
     # 8B: baseline (5-way) vs v2_5way (5-way on v2 data)
     pairs = [
         ("8b_baseline", "8b_v2_5way", "8B: baseline vs v2 (5-mode)"),
-        ("3b_run4", "3b_v2_5way", "3B: Phase0 vs v2 (5-mode)"),
+        ("3b_run4", "3b_v2_5way", "3B: run4 vs v2 (5-mode)"),
     ]
 
     for run_a, run_b, label in pairs:

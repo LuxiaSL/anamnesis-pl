@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Blind judge scoring of 8B generated texts using Claude Opus.
 
-Adapted from Phase 0. The judge sees the text and topic but NOT the system
+The judge sees the text and topic but NOT the system
 prompt or intended mode. For each text, the judge rates it on 5 mode
 dimensions (1-5) and classifies the primary mode.
 

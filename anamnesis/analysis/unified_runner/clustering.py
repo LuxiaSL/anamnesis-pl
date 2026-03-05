@@ -17,7 +17,7 @@ def run_clustering(data: AnalysisData) -> dict:
     results: dict = {"silhouette_by_tier": {}, "per_mode_silhouette": {}}
 
     available_tiers, _ = get_available_tiers(data)
-    # Silhouette per tier (mode labels) — compute both cosine (Phase 0 standard) and euclidean
+    # Silhouette per tier (mode labels) — compute both cosine (standard) and euclidean
     for tier in available_tiers:
         X = data.get_tier(tier)
         scaler = StandardScaler()
@@ -31,7 +31,7 @@ def run_clustering(data: AnalysisData) -> dict:
                 score = f"ERROR: {e}"
             tier_sil[f"mode_silhouette_{metric}"] = score
 
-        # Backward compat: top-level key points to cosine (Phase 0 standard)
+        # Backward compat: top-level key points to cosine (standard metric)
         tier_sil["mode_silhouette"] = tier_sil["mode_silhouette_cosine"]
 
         # Also topic silhouette (should be low — mode signal should not correlate with topic)

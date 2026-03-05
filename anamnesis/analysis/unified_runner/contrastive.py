@@ -58,7 +58,7 @@ def _train_contrastive_mlp(
     model = nn.Sequential(
         nn.Linear(input_dim, hidden_dim),
         nn.ReLU(),
-        nn.Dropout(0.5),  # Phase 0 standard: aggressive regularization for n≈80
+        nn.Dropout(0.5),  # Aggressive regularization for n≈80
         nn.Linear(hidden_dim, bottleneck_dim),
     )
     model.train()
@@ -321,7 +321,7 @@ def _eval_contrastive_tier(
 def _run_contrastive_tier_ablation(data: AnalysisData) -> dict:
     """Contrastive MLP tier ablation: individual tiers, all pairs, and key combos.
 
-    This mirrors Phase 0's run_tier_ablation.py which measured super-additivity
+    This mirrors the original tier ablation which measured super-additivity
     in contrastive kNN space, not RF accuracy.
     """
     results: dict = {}

@@ -1,7 +1,7 @@
 """Mode definitions for extraction experiments.
 
 Provides configurable mode sets for different experimental conditions:
-  - run4: Original 5 modes from Phase 0/1 (linear, analogical, socratic, contrastive, dialectical)
+  - run4: Original 5 modes (linear, analogical, socratic, contrastive, dialectical)
   - extended: Run 4 + adapted Run 3 modes (structured, compressed, associative) with format control
   - prompt_swap: Prompt-swap pairs for confound testing
 """

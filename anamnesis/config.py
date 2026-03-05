@@ -1,10 +1,10 @@
-"""Phase 1 configuration for Llama 3.1 8B Instruct extraction.
+"""Configuration for Llama 3.1 8B Instruct extraction.
 
-Adapted from Phase 0 config. Key differences:
+Key parameters:
   - Model: Llama 3.1 8B Instruct (32 layers, 4096 hidden, 32 query heads)
-  - Temperature: 0.6 (model's native, avoids imposing 3B parameter)
+  - Temperature: 0.6 (model's native)
   - EOS tokens: [128001, 128008, 128009] (includes <|eom_id|>)
-  - Sampled layers: [0, 8, 16, 20, 24, 28, 31] (proportional to 3B's sampling)
+  - Sampled layers: [0, 8, 16, 20, 24, 28, 31] (proportional depth sampling)
   - dtype: bfloat16 (model's native)
   - 200 samples: 20 topics × 5 modes × 2 reps
 """
@@ -21,7 +21,13 @@ from pydantic import BaseModel, Field
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-PHASE0_ROOT = PROJECT_ROOT.parent / "phase_0"
+
+# Legacy data root — for accessing 3B experiment data from earlier runs.
+# Set ANAMNESIS_LEGACY_DATA to override (e.g., path to old phase_0 outputs).
+LEGACY_DATA_ROOT = Path(os.environ.get(
+    "ANAMNESIS_LEGACY_DATA",
+    str(PROJECT_ROOT.parent / "phase_0"),
+))
 
 # Run versioning
 RUN_NAME: str = os.environ.get("ANAMNESIS_RUN_NAME", "run_8b_baseline")
@@ -130,7 +136,7 @@ class ExtractionConfig(BaseModel):
     enable_knnlm_baseline: bool = True
 
     # Cross-layer agreement thresholds (proportional to model depth)
-    # These replace the hardcoded l<=7 / l>=21 from Phase 0
+    # These replace the hardcoded l<=7 / l>=21 from the 3B model
     early_layer_cutoff: int = Field(
         default=8,
         description="Layers <= this are 'early' for cross-layer agreement (first quarter)",
@@ -261,13 +267,13 @@ ProcessingMode = Literal[
     "dialectical",
 ]
 
-# Same format constraint as Phase 0
+# Standard format constraint
 _FORMAT_CONSTRAINT = (
     " Write in flowing paragraphs. Do not use bullet points, numbered lists, "
     "headers, or any visual formatting structure."
 )
 
-# Identical mode prompts to Phase 0 — same instrument, different model
+# Canonical mode prompts — identical across 3B and 8B for comparability
 PROCESSING_MODES: dict[ProcessingMode, str] = {
     "linear": (
         "Present your ideas in a clear sequence, each building on the last. "

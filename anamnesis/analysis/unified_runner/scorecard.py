@@ -194,7 +194,7 @@ def run_scorecard(all_results: dict) -> dict:
     easy_accs = [pairwise.get(p, {}).get("accuracy", 0) for p in easy_pairs if p in pairwise]
 
     if hard_accs and easy_accs:
-        # Compare against 3B baselines (hardcoded from Phase 0)
+        # Compare against 3B baselines (hardcoded from the 3B experiment)
         # 3B hard pairs were ~72.5-80%, easy pairs ~87.5-100%
         mean_hard = float(sum(hard_accs) / len(hard_accs))
         mean_easy = float(sum(easy_accs) / len(easy_accs))

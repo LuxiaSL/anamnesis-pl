@@ -1,0 +1,198 @@
+{
+  "results": {
+    "T1": {
+      "feature_space": "T1",
+      "n_samples": 100,
+      "ambient_dim": 221,
+      "delta": 5.888638208600966,
+      "delta_relative": 0.16058564736002445,
+      "diameter": 36.66976660372987,
+      "delta_mean": 1.057226329826077,
+      "delta_median": 0.8785345338561399,
+      "delta_std": 0.8183603109648416,
+      "delta_95th": 2.6486764782511747,
+      "n_quadruples": 500000,
+      "centroid_distances": {
+        "analogical__contrastive": 9.039599418640137,
+        "analogical__dialectical": 7.249289035797119,
+        "analogical__linear": 9.472474098205566,
+        "analogical__socratic": 8.744002342224121,
+        "contrastive__dialectical": 6.154317855834961,
+        "contrastive__linear": 5.720459461212158,
+        "contrastive__socratic": 5.952530384063721,
+        "dialectical__linear": 7.269375801086426,
+        "dialectical__socratic": 6.473121643066406,
+        "linear__socratic": 5.1590142250061035
+      },
+      "topology_notes": "Nearest pair: ('linear', 'socratic') (d=5.16)\n    Farthest pair: ('analogical', 'linear') (d=9.47)\n    Linear-socratic distance: 5.16\n    Contrastive-dialectical distance: 6.15\n    Mean analogical distance: 8.63\n    Mean non-analogical distance: 6.12\n    Analogical outgroup ratio: 1.41"
+    },
+    "T2": {
+      "feature_space": "T2",
+      "n_samples": 100,
+      "ambient_dim": 221,
+      "delta": 7.062416972174695,
+      "delta_relative": 0.18314793915923414,
+      "diameter": 38.56126912809226,
+      "delta_mean": 0.9168442010111696,
+      "delta_median": 0.7536045406808203,
+      "delta_std": 0.7242960558558704,
+      "delta_95th": 2.327056501525603,
+      "n_quadruples": 500000,
+      "centroid_distances": {
+        "analogical__contrastive": 9.523056030273438,
+        "analogical__dialectical": 9.498462677001953,
+        "analogical__linear": 11.040956497192383,
+        "analogical__socratic": 9.15260124206543,
+        "contrastive__dialectical": 4.714822292327881,
+        "contrastive__linear": 8.04015064239502,
+        "contrastive__socratic": 6.037850379943848,
+        "dialectical__linear": 9.00359058380127,
+        "dialectical__socratic": 6.282938003540039,
+        "linear__socratic": 5.97407865524292
+      },
+      "topology_notes": "Nearest pair: ('contrastive', 'dialectical') (d=4.71)\n    Farthest pair: ('analogical', 'linear') (d=11.04)\n    Linear-socratic distance: 5.97\n    Contrastive-dialectical distance: 4.71\n    Mean analogical distance: 9.80\n    Mean non-analogical distance: 6.68\n    Analogical outgroup ratio: 1.47"
+    },
+    "T2.5": {
+      "feature_space": "T2.5",
+      "n_samples": 100,
+      "ambient_dim": 145,
+      "delta": 4.342058633202079,
+      "delta_relative": 0.1641301221326584,
+      "diameter": 26.45497716557235,
+      "delta_mean": 0.7731871620988922,
+      "delta_median": 0.6435662780169871,
+      "delta_std": 0.5979875188270449,
+      "delta_95th": 1.9368007382578767,
+      "n_quadruples": 500000,
+      "centroid_distances": {
+        "analogical__contrastive": 10.387224197387695,
+        "analogical__dialectical": 9.748345375061035,
+        "analogical__linear": 8.534900665283203,
+        "analogical__socratic": 7.274545669555664,
+        "contrastive__dialectical": 5.180854320526123,
+        "contrastive__linear": 6.5227532386779785,
+        "contrastive__socratic": 6.227780342102051,
+        "dialectical__linear": 5.130803108215332,
+        "dialectical__socratic": 5.667429447174072,
+        "linear__socratic": 4.633885860443115
+      },
+      "topology_notes": "Nearest pair: ('linear', 'socratic') (d=4.63)\n    Farthest pair: ('analogical', 'contrastive') (d=10.39)\n    Linear-socratic distance: 4.63\n    Contrastive-dialectical distance: 5.18\n    Mean analogical distance: 8.99\n    Mean non-analogical distance: 5.56\n    Analogical outgroup ratio: 1.62"
+    },
+    "T3": {
+      "feature_space": "T3",
+      "n_samples": 100,
+      "ambient_dim": 1250,
+      "delta": 7.540604366582187,
+      "delta_relative": 0.12449448429322217,
+      "diameter": 60.569786761169134,
+      "delta_mean": 1.1488513629239154,
+      "delta_median": 0.9520703314541166,
+      "delta_std": 0.8962782665151762,
+      "delta_95th": 2.8898455779318106,
+      "n_quadruples": 500000,
+      "centroid_distances": {
+        "analogical__contrastive": 13.571168899536133,
+        "analogical__dialectical": 12.761981010437012,
+        "analogical__linear": 12.540806770324707,
+        "analogical__socratic": 14.933813095092773,
+        "contrastive__dialectical": 11.966086387634277,
+        "contrastive__linear": 10.46147346496582,
+        "contrastive__socratic": 14.403806686401367,
+        "dialectical__linear": 11.970831871032715,
+        "dialectical__socratic": 13.773148536682129,
+        "linear__socratic": 13.568402290344238
+      },
+      "topology_notes": "Nearest pair: ('contrastive', 'linear') (d=10.46)\n    Farthest pair: ('analogical', 'socratic') (d=14.93)\n    Linear-socratic distance: 13.57\n    Contrastive-dialectical distance: 11.97\n    Mean analogical distance: 13.45\n    Mean non-analogical distance: 12.69\n    Analogical outgroup ratio: 1.06"
+    },
+    "T2+T2.5": {
+      "feature_space": "T2+T2.5",
+      "n_samples": 100,
+      "ambient_dim": 366,
+      "delta": 7.020332828174482,
+      "delta_relative": 0.1535572621817128,
+      "diameter": 45.7180124758081,
+      "delta_mean": 1.0593032916145182,
+      "delta_median": 0.8711970391144792,
+      "delta_std": 0.8372313805674336,
+      "delta_95th": 2.687609885498663,
+      "n_quadruples": 500000,
+      "centroid_distances": {
+        "analogical__contrastive": 14.091950416564941,
+        "analogical__dialectical": 13.61069393157959,
+        "analogical__linear": 13.955188751220703,
+        "analogical__socratic": 11.691411018371582,
+        "contrastive__dialectical": 7.005053520202637,
+        "contrastive__linear": 10.353277206420898,
+        "contrastive__socratic": 8.674149513244629,
+        "dialectical__linear": 10.362908363342285,
+        "dialectical__socratic": 8.461385726928711,
+        "linear__socratic": 7.56058931350708
+      },
+      "topology_notes": "Nearest pair: ('contrastive', 'dialectical') (d=7.01)\n    Farthest pair: ('analogical', 'contrastive') (d=14.09)\n    Linear-socratic distance: 7.56\n    Contrastive-dialectical distance: 7.01\n    Mean analogical distance: 13.34\n    Mean non-analogical distance: 8.74\n    Analogical outgroup ratio: 1.53"
+    },
+    "combined": {
+      "feature_space": "combined",
+      "n_samples": 100,
+      "ambient_dim": 1837,
+      "delta": 8.946012733266805,
+      "delta_relative": 0.11441365284534903,
+      "diameter": 78.19008056109332,
+      "delta_mean": 1.43762985654565,
+      "delta_median": 1.1969178452340472,
+      "delta_std": 1.1145799046213485,
+      "delta_95th": 3.60841837024231,
+      "n_quadruples": 500000,
+      "centroid_distances": {
+        "analogical__contrastive": 21.551664352416992,
+        "analogical__dialectical": 20.01677131652832,
+        "analogical__linear": 21.01776695251465,
+        "analogical__socratic": 20.884572982788086,
+        "contrastive__dialectical": 15.170159339904785,
+        "contrastive__linear": 15.79102897644043,
+        "contrastive__socratic": 17.836559295654297,
+        "dialectical__linear": 17.42223358154297,
+        "dialectical__socratic": 17.41252899169922,
+        "linear__socratic": 16.367023468017578
+      },
+      "topology_notes": "Nearest pair: ('contrastive', 'dialectical') (d=15.17)\n    Farthest pair: ('analogical', 'contrastive') (d=21.55)\n    Linear-socratic distance: 16.37\n    Contrastive-dialectical distance: 15.17\n    Mean analogical distance: 20.87\n    Mean non-analogical distance: 16.67\n    Analogical outgroup ratio: 1.25"
+    }
+  },
+  "predictions": {
+    "P1_moderate_delta": {
+      "prediction": "Relative delta in [0.1, 0.4] for T2+T2.5",
+      "actual_relative": 0.1535572621817128,
+      "actual_absolute": 7.020332828174482,
+      "in_range": true,
+      "assessment": "moderate"
+    },
+    "P2_T2T25_more_treelike": {
+      "prediction": "T2+T2.5 relative delta < combined relative delta",
+      "T2+T2.5_delta_rel": 0.1535572621817128,
+      "combined_delta_rel": 0.11441365284534903,
+      "confirmed": false
+    },
+    "P3_analogical_outgroup": {
+      "prediction": "Mean analogical centroid distance > mean non-analogical",
+      "mean_analogical": 13.337311029434204,
+      "mean_non_analogical": 8.73622727394104,
+      "ratio": 1.526667131155981,
+      "confirmed": true
+    },
+    "P4_linear_socratic_nearby": {
+      "prediction": "Linear-socratic distance < median pairwise distance",
+      "linear_socratic_dist": 7.56058931350708,
+      "median_dist": 10.358092784881592,
+      "confirmed": true,
+      "rank": 2,
+      "of": 10
+    },
+    "P5_two_branches": {
+      "prediction": "Cross-branch distances > within-branch distances",
+      "contrastive_dialectical": 7.005053520202637,
+      "linear_socratic": 7.56058931350708,
+      "mean_cross": 9.46293020248413,
+      "mean_within": 7.282821416854858,
+      "confirmed": true
+    }
+  }
+}

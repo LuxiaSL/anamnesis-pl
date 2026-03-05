@@ -10,7 +10,7 @@ Key time series per layer:
     - key_novelty: cosine distance to running mean key
     - lookback_ratio: fraction of attention on prompt vs generation
 
-These are the features Phase 0 showed matter most (attn_entropy_std,
+These are the features shown to matter most (attn_entropy_std,
 epoch_regularity_std were top discriminators). Temporal windowing should
 capture WHEN mode information appears and how it evolves.
 """

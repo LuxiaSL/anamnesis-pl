@@ -42,7 +42,10 @@ logger = logging.getLogger(__name__)
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PHASE0_ROOT = PROJECT_ROOT.parent / "phase_0"
+LEGACY_DATA_ROOT = Path(os.environ.get(
+    "ANAMNESIS_LEGACY_DATA",
+    str(PROJECT_ROOT.parent / "phase_0"),
+))
 OUTPUTS_BASE = PROJECT_ROOT / "outputs"
 
 
@@ -79,7 +82,7 @@ MODEL_CONFIGS = {
         "late_layer_cutoff": 21,
         "temperature": 0.7,
         "eos_token_ids": [128001, 128009],
-        "calibration_dir": PHASE0_ROOT / "outputs" / "calibration",
+        "calibration_dir": LEGACY_DATA_ROOT / "outputs" / "calibration",
     },
 }
 
@@ -90,8 +93,8 @@ def _load_topics() -> list[str]:
     """Load the standard 20 topics."""
     prompts_path = PROJECT_ROOT / "prompts" / "prompt_sets.json"
     if not prompts_path.exists():
-        # Fallback to Phase 0
-        prompts_path = PHASE0_ROOT / "prompts" / "prompt_sets.json"
+        # Fallback to legacy data root
+        prompts_path = LEGACY_DATA_ROOT / "prompts" / "prompt_sets.json"
 
     with open(prompts_path) as f:
         prompts = json.load(f)

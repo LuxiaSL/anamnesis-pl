@@ -1,7 +1,7 @@
 """Run 4 mode definitions — the original 5 format-controlled modes.
 
-These are identical to Phase 0's mode prompts. Kept as the canonical
-reference; config.py imports from here or duplicates them.
+Kept as the canonical reference; config.py imports from here or
+duplicates them.
 """
 
 from __future__ import annotations

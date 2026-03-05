@@ -1,7 +1,6 @@
 """Orchestrates: prompt formatting → seed → generate → extract → save → cleanup.
 
-Adapted from Phase 0 for Phase 1 (8B baseline). Key changes:
-  - Imports from anamnesis.config
+Key design:
   - Simplified spec builder: 20 topics × 5 modes × 2 reps = 200 samples
   - Robust resume: checks existing files on disk, not just ID threshold
   - Incremental metadata saves: writes after every generation, not just at end
@@ -47,8 +46,8 @@ F32 = NDArray[np.float32]
 def make_seed(topic_idx: int, mode_idx: int, rep_idx: int = 0, prompt_set: str = "8B") -> int:
     """Deterministic seed from generation coordinates.
 
-    Uses "8B" as the prompt_set prefix to ensure seeds differ from Phase 0
-    even when topic/mode/rep match.
+    Uses "8B" as the prompt_set prefix to ensure seeds differ from the
+    3B experiment even when topic/mode/rep match.
     """
     raw = f"{prompt_set}_{topic_idx}_{mode_idx}_{rep_idx}"
     return int(hashlib.sha256(raw.encode()).hexdigest()[:8], 16)
@@ -361,8 +360,8 @@ def save_generation(
 def build_generation_specs(config: ExperimentConfig) -> list[GenerationSpec]:
     """Build 200 generation specs: 20 topics × 5 modes × 2 reps.
 
-    Uses the same 20 topics from Phase 0 (set_a + set_b). Same mode
-    prompts. Different seeds per rep to get independent samples.
+    Uses the standard 20 topics (set_a + set_b). Same mode prompts.
+    Different seeds per rep to get independent samples.
     """
     with open(config.prompts_path) as f:
         prompts = json.load(f)

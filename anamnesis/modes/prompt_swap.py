@@ -52,8 +52,8 @@ class PromptSwapPair:
 # ── Standard prompt-swap pairs ──
 
 PROMPT_SWAP_PAIRS: list[PromptSwapPair] = [
-    # Phase 0 standard: socratic system prompt + linear execution
-    # This is the canonical confound test — established in Phase 0 supplementary.
+    # Standard confound test: socratic system prompt + linear execution
+    # This is the canonical confound test — established in the original supplementary.
     PromptSwapPair(
         system_mode="socratic",
         execution_mode="linear",

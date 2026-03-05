@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -22,7 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 # Known run configurations
 KNOWN_RUNS: dict[str, Path] = {
     "8b_baseline": Path("outputs/runs/run_8b_baseline/signatures"),
-    "3b_run4": Path("phase_0/outputs/runs/run4_format_controlled/signatures"),
+    "3b_run4": Path(os.environ.get(
+        "ANAMNESIS_LEGACY_DATA", "phase_0"
+    )) / "outputs" / "runs" / "run4_format_controlled" / "signatures",
     "8b_v2": Path("outputs/runs/8b_fat_01/signatures_v2"),
     "3b_v2": Path("outputs/runs/3b_fat_01/signatures_v2"),
 }

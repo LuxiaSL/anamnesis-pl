@@ -1,0 +1,2383 @@
+{
+  "timestamp": "2026-02-28 00:54:25",
+  "sanity_checks": {
+    "n_samples": 100,
+    "n_samples_expected": 100,
+    "samples_match": true,
+    "n_modes": 5,
+    "modes": [
+      "analogical",
+      "contrastive",
+      "dialectical",
+      "linear",
+      "socratic"
+    ],
+    "n_topics": 20,
+    "samples_per_mode": {
+      "analogical": 20,
+      "contrastive": 20,
+      "dialectical": 20,
+      "linear": 20,
+      "socratic": 20
+    },
+    "balanced": true,
+    "tier_dims": {
+      "T1": 221,
+      "T2": 221,
+      "T2.5": 145,
+      "T3": 1250
+    },
+    "expected_dims": {
+      "T1": 221,
+      "T2": 221,
+      "T2.5": 145,
+      "T3": 1250
+    },
+    "dims_match": true,
+    "nan_inf": {
+      "T1": {
+        "nan": 0,
+        "inf": 0
+      },
+      "T2": {
+        "nan": 0,
+        "inf": 0
+      },
+      "T2.5": {
+        "nan": 0,
+        "inf": 0
+      },
+      "T3": {
+        "nan": 0,
+        "inf": 0
+      },
+      "T2+T2.5": {
+        "nan": 0,
+        "inf": 0
+      },
+      "combined": {
+        "nan": 0,
+        "inf": 0
+      }
+    },
+    "no_nan_inf": true,
+    "combined_dim": 1837,
+    "combined_dim_expected": 1837,
+    "combined_dim_match": true
+  },
+  "intrinsic_dimension": {
+    "global_twonn_multi_seed": {
+      "T1": {
+        "dadapy": 18.180949019080373,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 17.343587191789275,
+            "std": 1.4280352453935654,
+            "ci_lo": 14.867486060175144,
+            "ci_hi": 19.934742238917842
+          },
+          "123": {
+            "mean": 17.418596563908462,
+            "std": 1.4338916509078021,
+            "ci_lo": 14.842424652108622,
+            "ci_hi": 20.91903331556297
+          },
+          "777": {
+            "mean": 17.51014835940318,
+            "std": 1.403670695429955,
+            "ci_lo": 15.105937062640743,
+            "ci_hi": 20.55751857888571
+          }
+        }
+      },
+      "T2": {
+        "dadapy": 16.204897540797536,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 16.187133245210035,
+            "std": 1.3014225940573623,
+            "ci_lo": 14.025548509482155,
+            "ci_hi": 18.76870804505637
+          },
+          "123": {
+            "mean": 16.184578955909178,
+            "std": 1.2685123931125322,
+            "ci_lo": 13.869481331584568,
+            "ci_hi": 18.693997681493595
+          },
+          "777": {
+            "mean": 16.35404616020472,
+            "std": 1.4131982548608018,
+            "ci_lo": 13.720833745863505,
+            "ci_hi": 18.875384649009053
+          }
+        }
+      },
+      "T2.5": {
+        "dadapy": 17.167314668951708,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 17.296406002047334,
+            "std": 1.5539843189444982,
+            "ci_lo": 14.685803771036834,
+            "ci_hi": 20.72717820971837
+          },
+          "123": {
+            "mean": 17.206396557002403,
+            "std": 1.2913349518696635,
+            "ci_lo": 15.07251284101331,
+            "ci_hi": 20.127138828333134
+          },
+          "777": {
+            "mean": 17.068598462461317,
+            "std": 1.2969311040850224,
+            "ci_lo": 14.767867464785935,
+            "ci_hi": 19.727611751554182
+          }
+        }
+      },
+      "T3": {
+        "dadapy": 26.178841127658146,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 25.46549696097899,
+            "std": 2.3624805843201298,
+            "ci_lo": 21.364100706362386,
+            "ci_hi": 30.69334707760065
+          },
+          "123": {
+            "mean": 25.377672413787003,
+            "std": 2.5886646872209025,
+            "ci_lo": 21.86165354213132,
+            "ci_hi": 31.28958111053521
+          },
+          "777": {
+            "mean": 25.50469654004782,
+            "std": 2.236015934777726,
+            "ci_lo": 21.565310118459674,
+            "ci_hi": 29.809107826012657
+          }
+        }
+      },
+      "T2+T2.5": {
+        "dadapy": 21.714001825546916,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 19.991698019034274,
+            "std": 2.0537574987453886,
+            "ci_lo": 16.445451240760363,
+            "ci_hi": 24.41376420852144
+          },
+          "123": {
+            "mean": 19.90424096401586,
+            "std": 1.8702629108661493,
+            "ci_lo": 16.983010827698195,
+            "ci_hi": 23.587277852102897
+          },
+          "777": {
+            "mean": 19.939611469464968,
+            "std": 2.1165478737140706,
+            "ci_lo": 16.185159504030004,
+            "ci_hi": 24.85962297389134
+          }
+        }
+      },
+      "combined": {
+        "dadapy": 24.0809027876663,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 24.632712433784327,
+            "std": 2.850308319500659,
+            "ci_lo": 20.008689618161572,
+            "ci_hi": 30.655990703278736
+          },
+          "123": {
+            "mean": 24.554477563915153,
+            "std": 2.8986660047213335,
+            "ci_lo": 20.22209519147616,
+            "ci_hi": 31.66846531275982
+          },
+          "777": {
+            "mean": 24.47056675851325,
+            "std": 2.761405710294357,
+            "ci_lo": 19.94862917230787,
+            "ci_hi": 30.590435769880184
+          }
+        }
+      }
+    },
+    "global_skdim_twonn": {
+      "T1": 17.59449568494761,
+      "T2": 15.682990354153462,
+      "T2.5": 16.617894317615566,
+      "T3": 25.33162727968222,
+      "T2+T2.5": 21.006084926615625,
+      "combined": 23.30135498008638
+    },
+    "per_mode_twonn_multi_seed": {
+      "analogical": {
+        "dadapy_id": 28.182804543523737,
+        "skdim_id": 23.966975808261076,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 26.381157541410577,
+            "std": 3.9587935966602936
+          },
+          "123": {
+            "mean": 26.031193161107222,
+            "std": 3.8048940540836957
+          },
+          "777": {
+            "mean": 26.74139126476527,
+            "std": 3.68015820027994
+          }
+        }
+      },
+      "contrastive": {
+        "dadapy_id": 21.777579233255853,
+        "skdim_id": 18.569738053813357,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 21.202567152899483,
+            "std": 2.92670041837001
+          },
+          "123": {
+            "mean": 21.6142283451266,
+            "std": 3.093247255356583
+          },
+          "777": {
+            "mean": 21.47691699344201,
+            "std": 3.655426145546298
+          }
+        }
+      },
+      "dialectical": {
+        "dadapy_id": 24.558142325801363,
+        "skdim_id": 20.877505970240986,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 26.48798473943948,
+            "std": 6.478307481228535
+          },
+          "123": {
+            "mean": 26.475199650453924,
+            "std": 5.850118186436243
+          },
+          "777": {
+            "mean": 26.029188786164017,
+            "std": 5.945337842567755
+          }
+        }
+      },
+      "linear": {
+        "dadapy_id": 17.29604433953846,
+        "skdim_id": 14.706963541110115,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 18.082343847805564,
+            "std": 3.311331347115705
+          },
+          "123": {
+            "mean": 18.292571161298003,
+            "std": 3.544191193984829
+          },
+          "777": {
+            "mean": 17.716379795139115,
+            "std": 3.2851613838127434
+          }
+        }
+      },
+      "socratic": {
+        "dadapy_id": 27.87590356985089,
+        "skdim_id": 23.696668538642175,
+        "bootstrap_by_seed": {
+          "42": {
+            "mean": 27.68040796596194,
+            "std": 4.089414610961687
+          },
+          "123": {
+            "mean": 26.864665964029562,
+            "std": 3.6878760591797124
+          },
+          "777": {
+            "mean": 26.613514625259036,
+            "std": 3.7180914618409298
+          }
+        }
+      }
+    },
+    "subsample_sensitivity": {
+      "0.7": {
+        "subsample_size": 70,
+        "mean": 19.08722510423938,
+        "std": 2.239759816801322,
+        "n_successful": 200
+      },
+      "0.8": {
+        "subsample_size": 80,
+        "mean": 19.991698019034274,
+        "std": 2.0537574987453886,
+        "n_successful": 200
+      },
+      "0.9": {
+        "subsample_size": 90,
+        "mean": 20.749374255557644,
+        "std": 1.5726620562812148,
+        "n_successful": 200
+      }
+    }
+  },
+  "ccgp": {
+    "tier": "T2+T2.5",
+    "variants": {
+      "knn3_seed42_5fold": {
+        "multiclass_mean": 0.53,
+        "multiclass_std": 0.08124038404635961,
+        "multiclass_fold_accs": [
+          0.45,
+          0.65,
+          0.6,
+          0.45,
+          0.5
+        ],
+        "per_mode_recall": {
+          "analogical": 0.95,
+          "contrastive": 0.7,
+          "dialectical": 0.5,
+          "linear": 0.25,
+          "socratic": 0.25
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9800000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.78,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.82,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.7699999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.78,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8200000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.76,
+            "decodable": true
+          }
+        ]
+      },
+      "knn3_seed123_5fold": {
+        "multiclass_mean": 0.5900000000000001,
+        "multiclass_std": 0.06633249580710797,
+        "multiclass_fold_accs": [
+          0.5,
+          0.6,
+          0.6,
+          0.55,
+          0.7
+        ],
+        "per_mode_recall": {
+          "analogical": 0.95,
+          "contrastive": 0.75,
+          "dialectical": 0.65,
+          "linear": 0.15,
+          "socratic": 0.45
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9800000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.86,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8299999999999998,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.79,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          }
+        ]
+      },
+      "knn3_seed777_5fold": {
+        "multiclass_mean": 0.55,
+        "multiclass_std": 0.10488088481701516,
+        "multiclass_fold_accs": [
+          0.65,
+          0.4,
+          0.6,
+          0.45,
+          0.65
+        ],
+        "per_mode_recall": {
+          "analogical": 0.95,
+          "contrastive": 0.7,
+          "dialectical": 0.55,
+          "linear": 0.25,
+          "socratic": 0.3
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9800000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8200000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.79,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8299999999999998,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8100000000000002,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8100000000000002,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.78,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.7899999999999999,
+            "decodable": true
+          }
+        ]
+      },
+      "knn5_seed42_5fold": {
+        "multiclass_mean": 0.64,
+        "multiclass_std": 0.12,
+        "multiclass_fold_accs": [
+          0.5,
+          0.65,
+          0.85,
+          0.65,
+          0.55
+        ],
+        "per_mode_recall": {
+          "analogical": 1.0,
+          "contrastive": 0.75,
+          "dialectical": 0.6,
+          "linear": 0.5,
+          "socratic": 0.35
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.99,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.7699999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.82,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.82,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8399999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.7700000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8200000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8299999999999998,
+            "decodable": true
+          }
+        ]
+      },
+      "linearsvc_seed42_5fold": {
+        "multiclass_mean": 0.7899999999999999,
+        "multiclass_std": 0.12409673645990857,
+        "multiclass_fold_accs": [
+          0.85,
+          0.95,
+          0.85,
+          0.7,
+          0.6
+        ],
+        "per_mode_recall": {
+          "analogical": 1.0,
+          "contrastive": 0.8,
+          "dialectical": 0.8,
+          "linear": 0.7,
+          "socratic": 0.65
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9200000000000002,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.86,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8400000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8400000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.82,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8600000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.85,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.86,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          }
+        ]
+      },
+      "rf_seed42_5fold": {
+        "multiclass_mean": 0.6599999999999999,
+        "multiclass_std": 0.07348469228349533,
+        "multiclass_fold_accs": [
+          0.7,
+          0.6,
+          0.7,
+          0.55,
+          0.75
+        ],
+        "per_mode_recall": {
+          "analogical": 0.9,
+          "contrastive": 0.7,
+          "dialectical": 0.65,
+          "linear": 0.6,
+          "socratic": 0.45
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9400000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.82,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8400000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.79,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          }
+        ]
+      },
+      "knn3_seed42_4fold": {
+        "multiclass_mean": 0.56,
+        "multiclass_std": 0.03999999999999998,
+        "multiclass_fold_accs": [
+          0.52,
+          0.6,
+          0.6,
+          0.52
+        ],
+        "per_mode_recall": {
+          "analogical": 0.95,
+          "contrastive": 0.75,
+          "dialectical": 0.6,
+          "linear": 0.2,
+          "socratic": 0.3
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.98,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.81,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.81,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.76,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.79,
+            "decodable": true
+          }
+        ]
+      },
+      "knn3_seed42_10fold": {
+        "multiclass_mean": 0.5700000000000001,
+        "multiclass_std": 0.1268857754044952,
+        "multiclass_fold_accs": [
+          0.5,
+          0.6,
+          0.7,
+          0.5,
+          0.7,
+          0.8,
+          0.6,
+          0.4,
+          0.4,
+          0.5
+        ],
+        "per_mode_recall": {
+          "analogical": 0.9,
+          "contrastive": 0.75,
+          "dialectical": 0.6,
+          "linear": 0.3,
+          "socratic": 0.3
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9700000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8400000000000002,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8200000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.79,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8200000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.7899999999999999,
+            "decodable": true
+          }
+        ]
+      },
+      "knn3_seed42_20fold": {
+        "multiclass_mean": 0.5800000000000001,
+        "multiclass_std": 0.18867962264113208,
+        "multiclass_fold_accs": [
+          0.6,
+          0.4,
+          0.6,
+          0.4,
+          0.8,
+          0.6,
+          0.4,
+          0.6,
+          0.6,
+          0.8,
+          0.6,
+          1.0,
+          0.8,
+          0.8,
+          0.2,
+          0.6,
+          0.4,
+          0.4,
+          0.6,
+          0.4
+        ],
+        "per_mode_recall": {
+          "analogical": 0.9,
+          "contrastive": 0.7,
+          "dialectical": 0.65,
+          "linear": 0.3,
+          "socratic": 0.35
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9700000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8000000000000002,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8500000000000002,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8200000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.7899999999999999,
+            "decodable": true
+          }
+        ]
+      },
+      "knn3_seed42_5fold_T2": {
+        "multiclass_mean": 0.53,
+        "multiclass_std": 0.06782329983125268,
+        "multiclass_fold_accs": [
+          0.55,
+          0.6,
+          0.55,
+          0.55,
+          0.4
+        ],
+        "per_mode_recall": {
+          "analogical": 1.0,
+          "contrastive": 0.6,
+          "dialectical": 0.55,
+          "linear": 0.25,
+          "socratic": 0.25
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9800000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.76,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8400000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.75,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.7699999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8200000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          }
+        ]
+      },
+      "knn3_seed42_5fold_T2.5": {
+        "multiclass_mean": 0.45,
+        "multiclass_std": 0.04472135954999579,
+        "multiclass_fold_accs": [
+          0.5,
+          0.45,
+          0.4,
+          0.4,
+          0.5
+        ],
+        "per_mode_recall": {
+          "analogical": 0.9,
+          "contrastive": 0.65,
+          "dialectical": 0.4,
+          "linear": 0.1,
+          "socratic": 0.2
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.9399999999999998,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.7899999999999998,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.7699999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.78,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.73,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.74,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.73,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.76,
+            "decodable": true
+          }
+        ]
+      },
+      "knn3_seed42_5fold_combined": {
+        "multiclass_mean": 0.4600000000000001,
+        "multiclass_std": 0.04898979485566357,
+        "multiclass_fold_accs": [
+          0.4,
+          0.45,
+          0.55,
+          0.45,
+          0.45
+        ],
+        "per_mode_recall": {
+          "analogical": 0.85,
+          "contrastive": 0.55,
+          "dialectical": 0.3,
+          "linear": 0.2,
+          "socratic": 0.4
+        },
+        "n_decodable": 9,
+        "n_dichotomies": 9,
+        "ccgp_score": 1.0,
+        "dichotomies": [
+          {
+            "group_a": [
+              "analogical"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.89,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "contrastive"
+            ],
+            "group_b": [
+              "analogical",
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "dialectical"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "linear"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "socratic"
+            ],
+            "group_b": [
+              "analogical",
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.8300000000000001,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "contrastive"
+            ],
+            "group_b": [
+              "dialectical",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.7,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "dialectical"
+            ],
+            "group_b": [
+              "contrastive",
+              "linear",
+              "socratic"
+            ],
+            "mean_accuracy": 0.74,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "linear"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "socratic"
+            ],
+            "mean_accuracy": 0.8099999999999999,
+            "decodable": true
+          },
+          {
+            "group_a": [
+              "analogical",
+              "socratic"
+            ],
+            "group_b": [
+              "contrastive",
+              "dialectical",
+              "linear"
+            ],
+            "mean_accuracy": 0.6799999999999999,
+            "decodable": true
+          }
+        ]
+      }
+    }
+  },
+  "delta_hyperbolicity": {
+    "tier": "T2+T2.5",
+    "euclidean_centroid_distances": {
+      "analogical__contrastive": 14.091950416564941,
+      "analogical__dialectical": 13.61069393157959,
+      "analogical__linear": 13.955188751220703,
+      "analogical__socratic": 11.691411018371582,
+      "contrastive__dialectical": 7.005053520202637,
+      "contrastive__linear": 10.353277206420898,
+      "contrastive__socratic": 8.674149513244629,
+      "dialectical__linear": 10.362908363342285,
+      "dialectical__socratic": 8.461385726928711,
+      "linear__socratic": 7.56058931350708
+    },
+    "cosine_centroid_distances": {
+      "analogical__contrastive": 1.5269133875969503,
+      "analogical__dialectical": 1.465608003581522,
+      "analogical__linear": 1.399623750316298,
+      "analogical__socratic": 1.2254493753840499,
+      "contrastive__dialectical": 0.662370995845583,
+      "contrastive__linear": 1.2667950537973933,
+      "contrastive__socratic": 1.2768961775789023,
+      "dialectical__linear": 1.3232667709509032,
+      "dialectical__socratic": 1.2843947736506514,
+      "linear__socratic": 0.8442303646465545
+    },
+    "manhattan_centroid_distances": {
+      "analogical__contrastive": 215.91659545898438,
+      "analogical__dialectical": 200.6145782470703,
+      "analogical__linear": 208.37591552734375,
+      "analogical__socratic": 176.69696044921875,
+      "contrastive__dialectical": 103.12187194824219,
+      "contrastive__linear": 160.529052734375,
+      "contrastive__socratic": 134.88058471679688,
+      "dialectical__linear": 156.62747192382812,
+      "dialectical__socratic": 129.11273193359375,
+      "linear__socratic": 117.59146118164062
+    },
+    "hierarchical_clustering": {
+      "euclidean_single": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "euclidean_average": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "euclidean_complete": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "euclidean_ward": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "cosine_single": "((contrastive,dialectical),(analogical,(linear,socratic)))",
+      "cosine_average": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "cosine_complete": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "manhattan_single": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "manhattan_average": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "manhattan_complete": "(analogical,((contrastive,dialectical),(linear,socratic)))"
+    },
+    "centroid_verification": {
+      "analogical": {
+        "l2_diff": 0.0,
+        "match": true
+      },
+      "contrastive": {
+        "l2_diff": 0.0,
+        "match": true
+      },
+      "dialectical": {
+        "l2_diff": 0.0,
+        "match": true
+      },
+      "linear": {
+        "l2_diff": 0.0,
+        "match": true
+      },
+      "socratic": {
+        "l2_diff": 0.0,
+        "match": true
+      }
+    },
+    "topology_summary": {
+      "euclidean": {
+        "nearest_pair": "contrastive-dialectical",
+        "nearest_dist": 7.005053520202637,
+        "farthest_pair": "analogical-contrastive",
+        "farthest_dist": 14.091950416564941,
+        "analogical_outgroup_ratio": 1.526667131155981,
+        "lin_soc_dist": 7.56058931350708,
+        "con_dia_dist": 7.005053520202637
+      },
+      "cosine": {
+        "nearest_pair": "contrastive-dialectical",
+        "nearest_dist": 0.662370995845583,
+        "farthest_pair": "analogical-contrastive",
+        "farthest_dist": 1.5269133875969503,
+        "analogical_outgroup_ratio": 1.2656127697187565,
+        "lin_soc_dist": 0.8442303646465545,
+        "con_dia_dist": 0.662370995845583
+      },
+      "manhattan": {
+        "nearest_pair": "contrastive-dialectical",
+        "nearest_dist": 103.12187194824219,
+        "farthest_pair": "analogical-contrastive",
+        "farthest_dist": 215.91659545898438,
+        "analogical_outgroup_ratio": 1.4995152700034378,
+        "lin_soc_dist": 117.59146118164062,
+        "con_dia_dist": 103.12187194824219
+      }
+    },
+    "manhattan_delta": {
+      "delta_max": 130.37851758836769,
+      "delta_relative": 0.18677345059626616,
+      "delta_mean": 17.52977267478323,
+      "diameter": 698.057015984552
+    }
+  },
+  "silhouette": {
+    "T1": {
+      "silhouette_score": -0.004502096679061651
+    },
+    "T2": {
+      "silhouette_score": 0.008777821436524391
+    },
+    "T2.5": {
+      "silhouette_score": 0.011772128753364086
+    },
+    "T3": {
+      "silhouette_score": -0.005471238400787115
+    },
+    "T2+T2.5": {
+      "silhouette_score": 0.015079502947628498
+    },
+    "combined": {
+      "silhouette_score": 0.005167011171579361
+    }
+  },
+  "stability_summary": {
+    "data_integrity": "PASS",
+    "id_global_stability": {
+      "T1": {
+        "point_estimate": 18.180949019080373,
+        "boot_means_across_seeds": [
+          17.343587191789275,
+          17.418596563908462,
+          17.51014835940318
+        ],
+        "cross_seed_range": 0.16656116761390294,
+        "cross_seed_std": 0.06811000882634867,
+        "stable": true
+      },
+      "T2": {
+        "point_estimate": 16.204897540797536,
+        "boot_means_across_seeds": [
+          16.187133245210035,
+          16.184578955909178,
+          16.35404616020472
+        ],
+        "cross_seed_range": 0.16946720429554318,
+        "cross_seed_std": 0.07929241165710849,
+        "stable": true
+      },
+      "T2.5": {
+        "point_estimate": 17.167314668951708,
+        "boot_means_across_seeds": [
+          17.296406002047334,
+          17.206396557002403,
+          17.068598462461317
+        ],
+        "cross_seed_range": 0.22780753958601707,
+        "cross_seed_std": 0.09368166555396543,
+        "stable": true
+      },
+      "T3": {
+        "point_estimate": 26.178841127658146,
+        "boot_means_across_seeds": [
+          25.46549696097899,
+          25.377672413787003,
+          25.50469654004782
+        ],
+        "cross_seed_range": 0.12702412626081738,
+        "cross_seed_std": 0.05310878431313826,
+        "stable": true
+      },
+      "T2+T2.5": {
+        "point_estimate": 21.714001825546916,
+        "boot_means_across_seeds": [
+          19.991698019034274,
+          19.90424096401586,
+          19.939611469464968
+        ],
+        "cross_seed_range": 0.08745705501841528,
+        "cross_seed_std": 0.03592092824563941,
+        "stable": true
+      },
+      "combined": {
+        "point_estimate": 24.0809027876663,
+        "boot_means_across_seeds": [
+          24.632712433784327,
+          24.554477563915153,
+          24.47056675851325
+        ],
+        "cross_seed_range": 0.16214567527107704,
+        "cross_seed_std": 0.06620921229603777,
+        "stable": true
+      }
+    },
+    "id_per_mode_stability": {
+      "analogical": {
+        "point_estimate": 28.182804543523737,
+        "skdim_estimate": 23.966975808261076,
+        "boot_means_across_seeds": [
+          26.381157541410577,
+          26.031193161107222,
+          26.74139126476527
+        ],
+        "cross_seed_range": 0.7101981036580476,
+        "stable": true
+      },
+      "contrastive": {
+        "point_estimate": 21.777579233255853,
+        "skdim_estimate": 18.569738053813357,
+        "boot_means_across_seeds": [
+          21.202567152899483,
+          21.6142283451266,
+          21.47691699344201
+        ],
+        "cross_seed_range": 0.4116611922271183,
+        "stable": true
+      },
+      "dialectical": {
+        "point_estimate": 24.558142325801363,
+        "skdim_estimate": 20.877505970240986,
+        "boot_means_across_seeds": [
+          26.48798473943948,
+          26.475199650453924,
+          26.029188786164017
+        ],
+        "cross_seed_range": 0.4587959532754624,
+        "stable": true
+      },
+      "linear": {
+        "point_estimate": 17.29604433953846,
+        "skdim_estimate": 14.706963541110115,
+        "boot_means_across_seeds": [
+          18.082343847805564,
+          18.292571161298003,
+          17.716379795139115
+        ],
+        "cross_seed_range": 0.5761913661588878,
+        "stable": true
+      },
+      "socratic": {
+        "point_estimate": 27.87590356985089,
+        "skdim_estimate": 23.696668538642175,
+        "boot_means_across_seeds": [
+          27.68040796596194,
+          26.864665964029562,
+          26.613514625259036
+        ],
+        "cross_seed_range": 1.0668933407029044,
+        "stable": true
+      }
+    },
+    "id_key_claims": {
+      "T1_approx_18": true,
+      "T2_approx_16": true,
+      "T2.5_approx_17": true,
+      "T3_approx_26": true,
+      "T2T25_approx_22": true,
+      "combined_approx_24": true,
+      "T3_dramatically_higher": true,
+      "actual_values": {
+        "T1": 18.180949019080373,
+        "T2": 16.204897540797536,
+        "T2.5": 17.167314668951708,
+        "T3": 26.178841127658146,
+        "T2+T2.5": 21.714001825546916,
+        "combined": 24.0809027876663
+      }
+    },
+    "ccgp_stability": {
+      "ccgp_scores": {
+        "knn3_seed42_5fold": 1.0,
+        "knn3_seed123_5fold": 1.0,
+        "knn3_seed777_5fold": 1.0,
+        "knn5_seed42_5fold": 1.0,
+        "linearsvc_seed42_5fold": 1.0,
+        "rf_seed42_5fold": 1.0,
+        "knn3_seed42_4fold": 1.0,
+        "knn3_seed42_10fold": 1.0,
+        "knn3_seed42_20fold": 1.0,
+        "knn3_seed42_5fold_T2": 1.0,
+        "knn3_seed42_5fold_T2.5": 1.0,
+        "knn3_seed42_5fold_combined": 1.0
+      },
+      "multiclass_means": {
+        "knn3_seed42_5fold": 0.53,
+        "knn3_seed123_5fold": 0.5900000000000001,
+        "knn3_seed777_5fold": 0.55,
+        "knn5_seed42_5fold": 0.64,
+        "linearsvc_seed42_5fold": 0.7899999999999999,
+        "rf_seed42_5fold": 0.6599999999999999,
+        "knn3_seed42_4fold": 0.56,
+        "knn3_seed42_10fold": 0.5700000000000001,
+        "knn3_seed42_20fold": 0.5800000000000001,
+        "knn3_seed42_5fold_T2": 0.53,
+        "knn3_seed42_5fold_T2.5": 0.45,
+        "knn3_seed42_5fold_combined": 0.4600000000000001
+      },
+      "analogical_recall_across_variants": {
+        "knn3_seed42_5fold": 0.95,
+        "knn3_seed123_5fold": 0.95,
+        "knn3_seed777_5fold": 0.95,
+        "knn5_seed42_5fold": 1.0,
+        "linearsvc_seed42_5fold": 1.0,
+        "rf_seed42_5fold": 0.9,
+        "knn3_seed42_4fold": 0.95,
+        "knn3_seed42_10fold": 0.9,
+        "knn3_seed42_20fold": 0.9
+      },
+      "analogical_consistently_high": true,
+      "ccgp_score_range": 0.0
+    },
+    "topology_stability": {
+      "euclidean": {
+        "nearest_pair": "contrastive-dialectical",
+        "analogical_outgroup_ratio": 1.526667131155981,
+        "analogical_is_outgroup": true
+      },
+      "cosine": {
+        "nearest_pair": "contrastive-dialectical",
+        "analogical_outgroup_ratio": 1.2656127697187565,
+        "analogical_is_outgroup": true
+      },
+      "manhattan": {
+        "nearest_pair": "contrastive-dialectical",
+        "analogical_outgroup_ratio": 1.4995152700034378,
+        "analogical_is_outgroup": true
+      },
+      "consistent_nearest_pair": true,
+      "nearest_pairs_seen": [
+        "contrastive-dialectical"
+      ]
+    },
+    "clustering_trees": {
+      "euclidean_single": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "euclidean_average": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "euclidean_complete": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "euclidean_ward": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "cosine_single": "((contrastive,dialectical),(analogical,(linear,socratic)))",
+      "cosine_average": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "cosine_complete": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "manhattan_single": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "manhattan_average": "(analogical,((contrastive,dialectical),(linear,socratic)))",
+      "manhattan_complete": "(analogical,((contrastive,dialectical),(linear,socratic)))"
+    }
+  }
+}

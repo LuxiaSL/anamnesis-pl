@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Binary prompt-swap confound test — Phase 0 methodology on v2 data.
+"""Binary prompt-swap confound test.
 
 For each swap type (e.g. swap_socratic→linear), trains a binary classifier
 on the two relevant modes from core data, then predicts on swap samples.
@@ -7,7 +7,7 @@ on the two relevant modes from core data, then predicts on swap samples.
 If swap samples are classified as the execution mode → signal is execution-based.
 If classified as the system-prompt mode → signal is confounded by prompt.
 
-This matches the Phase 0 protocol for apples-to-apples comparison.
+This matches the original protocol for apples-to-apples comparison.
 
 Usage:
     python -m anamnesis.scripts.run_binary_prompt_swap --run 8b_v2

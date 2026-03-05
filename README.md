@@ -118,7 +118,7 @@ anamnesis/
 │       └── delta_hyperbolicity.py # Gromov hyperbolicity
 ├── modes/                         # Processing mode definitions (system prompts)
 │   ├── extended_modes.py          # 8 modes (5 core + structured, compressed, associative)
-│   ├── run4_modes.py              # Phase 0 compatible 5-way modes
+│   ├── run4_modes.py              # Canonical 5-way modes
 │   └── prompt_swap.py             # Prompt-swap control conditions
 ├── scripts/                       # Experiment runners
 │   ├── run_8b_experiment.py       # Main extraction experiment

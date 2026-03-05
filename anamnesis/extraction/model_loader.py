@@ -1,6 +1,5 @@
 """Model loading and pre-RoPE hook management.
 
-Adapted from Phase 0 for Phase 1 (Llama 3.1 8B Instruct).
 Architecture-agnostic — all model specifics come from ModelConfig.
 
 Responsibilities:
