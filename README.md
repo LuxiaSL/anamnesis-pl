@@ -12,57 +12,57 @@ The analogy is an **EKG**: a general-purpose diagnostic that measures temporal d
 
 ## The hypothesis
 
-Transformers carry a structured internal axis that tracks *how* something is processed, independent of *what* is produced. This axis is:
+Transformers carry a structured internal axis that tracks *how* something is processed, independent of *what* is produced. Specifically:
 
-- **Execution-based** — it reflects what the model *does*, not what it was *told*
-- **Semantically orthogonal** — semantic embeddings of the output text carry effectively zero information about computational features (median R^2 = -1.11 for text-to-compute prediction)
-- **Architecturally localized** — concentrated in attention routing and KV cache dynamics, not in output statistics
-- **Geometrically structured** — lives on curved manifolds requiring nonlinear access to extract
+- **Execution-based** — the signal reflects what the model *does*, not what it was *told*. A prompt-swap test (socratic instruction, linear execution) produces signatures indistinguishable from pure linear.
+- **Semantically orthogonal** — semantic embeddings of the output text carry effectively zero information about computational features. These are independent information axes: *what* was discussed vs *how* it was processed.
+- **Sub-semantic** — under format control (all modes producing identical-looking paragraph prose), the signal persists. Whatever is being detected lives below the surface of the text.
 
 ### What this is NOT about
 
 This project does not classify "reasoning styles" or detect cognitive modes. The processing modes used in experiments are **scaffolding** — experimental variables that force the model into distinguishable computational regimes so we can test whether the internal dynamics differ. The modes are coarse bins on a continuous computational manifold; the signature contains the full computational state, of which mode information is one lossy projection.
 
-The claim is not "we solved mode detection." It's "we demonstrated a phenomenon exists — computation creates structured, measurable internal dynamics orthogonal to content — here's one model's instantiation of it, and here's what should transfer."
+The claim is not "we solved mode detection." It's "we demonstrated a phenomenon exists — computation creates structured, measurable internal dynamics orthogonal to content — and we built the first instrument to detect it."
 
-## Key findings
+## What we measure and why
 
-### The tier inversion
+The pipeline captures four categories of internal state during generation, each motivated by a different hypothesis about where computational signatures might live:
 
-As surface confounds are progressively stripped away, discriminative power migrates from shallow output statistics to deep computational dynamics:
+**Attention weights** — the routing decisions. At each generation step, the model decides how to distribute attention across all previous tokens. If different computational strategies route information differently, this is where it shows up. Measured as entropy, head agreement (generalized JSD), region decomposition (how much attention goes to system prompt vs recent tokens vs middle context), and temporal dynamics of these quantities.
 
-| Control level | T1 (logit stats) | T2 (attention) | T2.5 (KV cache) |
-|---------------|------------------|----------------|-----------------|
-| No format control | dominant | mid | weak |
-| Format-controlled | near chance | mid | **dominant** |
+**Pre-RoPE key projections** — the cache's semantic content, stripped of positional encoding. The KV cache accumulates a record of how the model has been processing information. By capturing keys *before* rotary position embeddings are applied, we isolate representational evolution from positional artifacts. Measured as key drift (how fast representations change), key novelty (how different each new key is from the running average), lookback ratio, and epoch detection (when the cache "reorganizes").
 
-Under format control, where all modes produce visually identical paragraph prose, dropping KV cache dynamics costs 11pp but dropping logits costs 1pp. Removing 80% of features unrelated to attention routing and KV cache dynamics actually *improves* discrimination.
+**Hidden states** — the residual stream. The running computation at each layer. Measured as activation norms, inter-layer deltas, spectral properties, and trajectory geometry (velocity, curvature through layer-space).
 
-### Double dissociation
+**Logits** — the output distribution. What the model was about to say at each step. Measured as entropy, top-k concentration, token surprise, rank statistics. These turn out to be the *least* informative features under format control — when all modes produce similar-looking text, they produce similar output distributions by necessity.
 
-| Manipulation | T1 (logits) | T2.5 (KV cache) |
-|--------------|-------------|-----------------|
-| Temperature (0.3 vs 0.9) | 90% | ~chance |
-| Processing mode (format-controlled) | ~chance | 64% |
+### Feature tiers
 
-T1 and T2.5 are **functionally independent systems**. Temperature controls token sampling (T1 sensitive); mode controls information routing (T2.5 sensitive). Neither responds to the other's manipulation.
+The features are organized into tiers reflecting architectural depth:
 
-### Execution, not instruction
+| Tier | Source | What it captures |
+|------|--------|-----------------|
+| T1 | Logits, activation norms | Output distribution properties |
+| T2 | Attention weights, residual deltas | Information routing patterns |
+| T2.5 | Pre-RoPE keys | KV cache temporal dynamics |
+| T3 | Hidden states (PCA) | Content-axis variance |
 
-Prompt-swap test: system prompt says "socratic," user message overrides to "write linearly," model complies. The pipeline classifies these as *computationally indistinguishable from pure linear* (50%, chance). It detects what the model does, not what it was told.
+And engineered families that cut across tiers:
 
-### Semantic independence
+| Family | Source | What it captures |
+|--------|--------|-----------------|
+| attention_flow | Attention weights | Region decomposition, recency bias, head diversity |
+| temporal_dynamics | Attention + KV cache | Time-resolved windowed statistics with STFT |
+| gate_features | Hidden states (MLP) | SwiGLU activation sparsity and drift |
+| contrastive_projection | Hidden states | Learned nonlinear projections for manifold-unwrapping |
 
-Ridge regression predicting 366 compute features from 384-dim semantic embeddings: **363 of 366 features below R^2 = 0.1**. Adding semantic features to the compute model provides zero additional mode information (McNemar's p = 1.000). These are orthogonal information axes.
+## Architecture dependence is the prediction
 
-### Headline numbers
+The specific features that carry signal are expected to vary across model families — this is a prediction, not a weakness. What should transfer is the *principle*: temporal dynamics of computation-relevant architecture carry processing-mode information.
 
-| Metric | Value |
-|--------|-------|
-| 5-way RF, format-controlled (chance=20%) | 70% (8B), p < 0.001 |
-| Contrastive kNN, topic-heldout (T2+T2.5) | 85% (8B) |
-| T2+T2.5 super-additivity | 366 features (20%) outperform all 1837 combined |
-| Length-only baseline | At chance |
+- **Within-family** (Llama 3.2 3B -> Llama 3.1 8B): features partially transfer, signal principle holds
+- **Across-family** (Llama -> Mistral -> GPT): feature families likely need redesign, but the *type* of feature (temporal dynamics of attention/cache/routing) should remain informative
+- **Across-architecture** (dense transformer -> MoE -> state-space): even the feature type may shift, but temporal dynamics of computation-relevant components should hold
 
 ## The pipeline
 
@@ -70,37 +70,18 @@ Ridge regression predicting 366 compute features from 384-dim semantic embedding
 
 During autoregressive generation, captures per-step internal states via forward hooks on sampled layers (7 of 32), with no modification to the model:
 
-- **Pre-RoPE key projections** — output of `k_proj` linear layers *before* rotary position embeddings, so position doesn't confound geometric features
+- **Pre-RoPE key projections** — hooks on `k_proj` linear layers, *before* rotary position embeddings
 - **Attention weights** — requires `attn_implementation="eager"` (flash/SDPA don't materialize the attention matrix)
 - **Hidden states** — residual stream activations at each layer
 - **Logits** — full vocabulary distribution per step
 
 ### 2. Feature engineering
 
-Raw tensors become feature vectors across tiers:
-
-| Tier | Features | What it measures |
-|------|----------|-----------------|
-| T1 | Activation norms, logit stats, token dynamics | Output distribution properties |
-| T2 | Attention entropy, head agreement (generalized JSD), residual deltas | Information routing patterns |
-| T2.5 | Key drift, key novelty, lookback ratio, epoch detection | KV cache temporal dynamics |
-| T3 | PCA projections of residual stream | Content-axis variance (dies under format control) |
-| attention_flow | Region decomposition, recency bias, head diversity | Prompt-vs-generation attention structure |
-| temporal_dynamics | Windowed T2/T2.5 with STFT | Time-resolved dynamics |
-| gate_features | SwiGLU sparsity and drift | Activation gating patterns |
-| contrastive_projection | Learned nonlinear projections | Manifold-unwrapping |
+Raw tensors are transformed into feature vectors by `state_extractor.py` (pure numpy, no model dependency) and the pluggable `feature_families/` modules. Features are computed per-generation and saved alongside metadata.
 
 ### 3. Analysis
 
 Classification (Random Forest, contrastive kNN), tier ablation, geometric verification (intrinsic dimension, CCGP, delta-hyperbolicity), clustering, semantic controls, prompt-swap controls.
-
-## Architecture dependence is the prediction
-
-The specific features are expected to vary across model families. What should transfer is the *principle*: temporal dynamics of computation-relevant architecture carry processing-mode information. The testable predictions:
-
-- **Within-family** (Llama 3.2 3B -> Llama 3.1 8B): features partially transfer, T2+T2.5 dominance holds
-- **Across-family** (Llama -> Mistral -> GPT): feature families need redesign, but the *type* (temporal dynamics of attention/cache/routing) remains right
-- **Across-architecture** (dense transformer -> MoE -> state-space): even the feature type may shift, but temporal dynamics of computation-relevant components should hold
 
 ## Structure
 
