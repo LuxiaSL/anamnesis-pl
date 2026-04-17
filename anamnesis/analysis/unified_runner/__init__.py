@@ -34,6 +34,7 @@ from .results_schema import (
     IntegrityResult,
     IntrinsicDimensionResult,
     ManifoldGeometryResult,
+    ScorecardResult,
     SemanticResult,
     TierAblationResult,
     TopologyResult,
@@ -53,6 +54,7 @@ SECTION_MODELS: dict[str, type[BaseModel]] = {
     "clustering": ClusteringResult,
     "contrastive": ContrastiveResult,
     "semantic": SemanticResult,
+    "scorecard": ScorecardResult,
     "manifold_geometry": ManifoldGeometryResult,
 }
 
@@ -478,15 +480,15 @@ def _print_summary(results: dict) -> None:
             print(f"    {tier_name}: {', '.join(parts)}")
 
     # Scorecard
-    sc = results.get("scorecard", {})
-    if sc:
-        summary = sc.get("summary", {})
+    sc = results.get("scorecard")
+    if isinstance(sc, ScorecardResult):
+        summary = sc.summary
         print(f"\n  Prediction scorecard: "
-              f"{summary.get('confirmed', 0)} confirmed, "
-              f"{summary.get('partial', 0)} partial, "
-              f"{summary.get('wrong', 0)} wrong")
-        for pred in sc.get("predictions", []):
-            print(f"    {pred['prediction']}: {pred['outcome']}")
+              f"{summary.confirmed} confirmed, "
+              f"{summary.partial} partial, "
+              f"{summary.wrong} wrong")
+        for pred in sc.predictions:
+            print(f"    {pred.prediction}: {pred.outcome}")
 
     # Section times
     times = results.get("section_times", {})
