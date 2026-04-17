@@ -103,32 +103,37 @@ anamnesis/
 │       ├── residual_stream.py     # Trajectory features (velocity, curvature)
 │       └── operators.py           # Shared temporal operators (window stats, slopes)
 ├── analysis/                      # Downstream analysis
-│   ├── unified_runner/            # Main analysis pipeline
+│   ├── unified_runner/            # Main analysis pipeline (sections 1-11)
 │   │   ├── classification.py      # RF, logistic regression, cross-validation
 │   │   ├── contrastive.py         # Contrastive kNN evaluation
 │   │   ├── tier_ablation.py       # Leave-one-out and pairwise tier analysis
 │   │   ├── clustering.py          # K-means, silhouette analysis
-│   │   ├── geometry.py            # Distance matrices, hierarchical clustering
+│   │   ├── geometry.py            # Intrinsic dim, CCGP, topology, manifold geometry
 │   │   ├── semantic.py            # TF-IDF baselines, semantic disambiguation
 │   │   ├── integrity.py           # Data quality checks
+│   │   ├── scorecard.py           # Pre-registered prediction scorecard
 │   │   └── data_loading.py        # Unified data loading across runs
-│   └── geometric_trio/            # Geometric verification
-│       ├── intrinsic_dimension.py # MLE, TwoNN, DADApy estimators
-│       ├── ccgp.py                # Cross-condition generalization performance
-│       └── delta_hyperbolicity.py # Gromov hyperbolicity
+│   └── geometric_trio/            # Shared tier constants + historical results
+│       ├── data_loader.py         # Run4Data + tier groupings (load-bearing)
+│       └── results/               # Frozen outputs from the standalone CLIs
+│                                  # (live analyses now in unified_runner/geometry.py)
 ├── modes/                         # Processing mode definitions (system prompts)
 │   ├── extended_modes.py          # 8 modes (5 core + structured, compressed, associative)
 │   ├── run4_modes.py              # Canonical 5-way modes
+│   ├── run3_original_modes.py     # Verbatim Phase-0 R2 process modes (non-format-controlled)
 │   └── prompt_swap.py             # Prompt-swap control conditions
 ├── scripts/                       # Experiment runners
 │   ├── run_8b_experiment.py       # Main extraction experiment
 │   ├── run_8b_calibration.py      # Positional decomposition calibration
 │   ├── run_extraction.py          # Unified extraction (multi-model, multi-mode)
+│   ├── run_8b_r2_experiment.py    # R2-equivalent extraction (non-format-controlled process modes)
 │   ├── run_unified_analysis.py    # Main analysis entry point
 │   ├── run_binary_prompt_swap.py  # Prompt-swap control analysis
 │   ├── analyze_complementarity.py # Cross-tier complementarity analysis
 │   ├── run_subfamily_decomp.py    # Sub-family decomposition
 │   ├── train_contrastive_projection.py  # Contrastive MLP training
+│   ├── run_cross_run_transfer.py  # Cross-run functional transfer R2<->R3 at 8B
+│   ├── run_cross_run_transfer_followup.py  # Follow-up cross-run transfer probes
 │   └── run_judge_scoring.py       # LLM judge evaluation
 ├── prompts/
 │   └── prompt_sets.json           # 20 topics x mode prompts
@@ -164,18 +169,46 @@ python -m anamnesis.scripts.run_8b_calibration
 # Full 8B experiment (20 topics x 5 modes x 2 reps = 200 generations)
 python -m anamnesis.scripts.run_8b_experiment
 
-# Or unified extraction with custom modes/model
-ANAMNESIS_RUN_NAME=my_run python -m anamnesis.scripts.run_extraction
+# Or unified extraction with custom modes/model (also writes raw tensors
+# under outputs/runs/<name>/raw_tensors/ when --save-raw is passed,
+# which is required for the v2 feature pipeline)
+python -m anamnesis.scripts.run_extraction \
+    --model 8b --modes run4 --n-samples 20 \
+    --save-raw \
+    --run-name my_run
 ```
+
+### 2.5. Train contrastive projection (once per model)
+
+The v2 feature pipeline can include a learned contrastive projection.
+Train one model per architecture against the saved raw tensors:
+
+```bash
+python -m anamnesis.scripts.train_contrastive_projection \
+    --raw-dir outputs/runs/my_run/raw_tensors/ \
+    --output-path outputs/calibration/llama31_8b/contrastive.npz \
+    --model 8b
+```
+
+The resulting `.npz` is what `--contrastive-model` consumes below.
 
 ### 3. Feature engineering (v2 families over saved raw tensors)
 
 ```bash
 python -m anamnesis.extraction.feature_pipeline \
-    --run my_run \
-    --families attention_flow,temporal_dynamics,gate_features \
+    --raw-dir outputs/runs/my_run/raw_tensors/ \
+    --output-dir outputs/runs/my_run/signatures_v2/ \
+    --v2 \
+    --model 8b \
+    --pca-model outputs/calibration/llama31_8b/pca_model.pkl \
+    --contrastive-model outputs/calibration/llama31_8b/contrastive.npz \
     --workers 8
 ```
+
+`--v2` is required to engage the pluggable feature families. Each family
+can be turned off individually with `--no-attention-flow`,
+`--no-temporal-dynamics`, `--no-gate`, `--no-trajectory`, `--no-stft`,
+or `--no-baseline` (drops T1/T2/T2.5/T3 for ablation runs).
 
 ### 4. Analysis
 
