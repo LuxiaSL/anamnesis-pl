@@ -17,6 +17,11 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from anamnesis.modes.run4_modes import (
+    RUN4_MODE_INDEX as MODE_INDEX,
+    RUN4_MODES as PROCESSING_MODES,
+)
+
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
@@ -267,56 +272,9 @@ ProcessingMode = Literal[
     "dialectical",
 ]
 
-# Standard format constraint
-_FORMAT_CONSTRAINT = (
-    " Write in flowing paragraphs. Do not use bullet points, numbered lists, "
-    "headers, or any visual formatting structure."
-)
-
-# Canonical mode prompts — identical across 3B and 8B for comparability
-PROCESSING_MODES: dict[ProcessingMode, str] = {
-    "linear": (
-        "Present your ideas in a clear sequence, each building on the last. "
-        "Move forward without backtracking or reconsidering previous points. "
-        "Lay out the topic step by step from beginning to end."
-        + _FORMAT_CONSTRAINT
-    ),
-    "analogical": (
-        "Explain this primarily through extended analogies and parallels to "
-        "other domains. For each key concept, find a comparison from everyday "
-        "life or another field that illuminates it. Build understanding "
-        "through these connections."
-        + _FORMAT_CONSTRAINT
-    ),
-    "socratic": (
-        "Develop your exploration through a sequence of questions and "
-        "provisional answers. Pose a question, offer a tentative answer, "
-        "then use that answer to generate the next question. Let the chain "
-        "of inquiry drive the explanation forward."
-        + _FORMAT_CONSTRAINT
-    ),
-    "contrastive": (
-        "Explore this by comparing and contrasting multiple perspectives or "
-        "approaches. For each major point, present at least two different "
-        "viewpoints and evaluate their relative strengths and weaknesses."
-        + _FORMAT_CONSTRAINT
-    ),
-    "dialectical": (
-        "Begin by proposing a clear position on the topic. Then challenge "
-        "that position with the strongest counterarguments you can find. "
-        "Work toward a revised understanding that accounts for both the "
-        "original position and its critiques."
-        + _FORMAT_CONSTRAINT
-    ),
-}
-
-MODE_INDEX: dict[ProcessingMode, int] = {
-    "linear": 0,
-    "analogical": 1,
-    "socratic": 2,
-    "contrastive": 3,
-    "dialectical": 4,
-}
+# Canonical mode prompts and index live in `anamnesis.modes.run4_modes` and are
+# re-exported at the top of this module so consumers that already import them
+# from `anamnesis.config` keep working.
 
 
 class GenerationSpec(BaseModel):
