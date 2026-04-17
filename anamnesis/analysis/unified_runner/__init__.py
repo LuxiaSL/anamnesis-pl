@@ -15,13 +15,19 @@ Performs the full analysis gauntlet on any set of extraction signatures:
 
 Supports checkpoint-based resume: saves results after each section completes.
 On restart, detects which sections already have results and skips them.
+
+Sections are declared in the ``SECTIONS`` registry below and dispatched by a
+single loop in ``run_full_analysis``.
 """
 
 from __future__ import annotations
 
+import importlib
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 from pydantic import BaseModel, ValidationError
 
@@ -42,9 +48,105 @@ from .results_schema import (
 )
 from .utils import clean_for_json
 
-# Registry mapping section-results key → pydantic model class.
-# Populated incrementally across Phase 3a commits; sections without an
-# entry continue to store raw dicts (fully backward-compatible).
+
+@dataclass(frozen=True)
+class SectionSpec:
+    """Declarative orchestration entry for a single analysis section.
+
+    Attributes
+    ----------
+    number : int
+        User-facing section number (1-11); accepted by ``--skip``.
+    name : str
+        Printed section header.
+    key : str
+        Results-dict key; also the schema model key in ``SECTION_MODELS``.
+    runner : Callable[[dict[str, Any]], Any]
+        Closure that imports the section module and invokes its ``run_*``
+        function. Lazy — nothing is loaded until the section actually runs.
+    requires_text : bool
+        True if the section consumes ``data.generated_texts`` (section 9).
+        Controls ``load_text`` on ``load_analysis_data``.
+    always_rerun : bool
+        True for sections that consume other sections' results (section 10).
+        Never treated as "already completed" on resume; no per-section timing
+        or checkpoint save inside the loop.
+    """
+
+    number: int
+    name: str
+    key: str
+    runner: Callable[[dict[str, Any]], Any]
+    requires_text: bool = False
+    always_rerun: bool = False
+
+
+def _lazy_call(module: str, fn_name: str, *args: Any, **kwargs: Any) -> Any:
+    """Import ``module`` relative to this package and call ``fn_name``.
+
+    Called inside section runners so heavy imports (``dadapy``,
+    ``sentence_transformers``, ``torch``) only happen when their section runs.
+    """
+    mod = importlib.import_module(f".{module}", package=__name__)
+    return getattr(mod, fn_name)(*args, **kwargs)
+
+
+def _run_data_only(module: str, fn_name: str) -> Callable[[dict[str, Any]], Any]:
+    """Runner factory for sections that only consume ``ctx['data']``."""
+
+    def run(ctx: dict[str, Any]) -> Any:
+        return _lazy_call(module, fn_name, ctx["data"])
+
+    return run
+
+
+def _run_semantic(ctx: dict[str, Any]) -> Any:
+    return _lazy_call(
+        "semantic",
+        "run_semantic",
+        ctx["data"],
+        signature_dir=ctx["signature_dir"],
+        addon_dirs=ctx["addon_dirs"],
+    )
+
+
+def _run_scorecard(ctx: dict[str, Any]) -> Any:
+    return _lazy_call("scorecard", "run_scorecard", ctx["results"])
+
+
+SECTIONS: list[SectionSpec] = [
+    SectionSpec(1, "Data Integrity", "integrity",
+                _run_data_only("integrity", "run_integrity_checks")),
+    SectionSpec(2, "Classification", "classification",
+                _run_data_only("classification", "run_classification")),
+    SectionSpec(3, "Tier Ablation", "tier_ablation",
+                _run_data_only("tier_ablation", "run_tier_ablation")),
+    SectionSpec(4, "Intrinsic Dimension", "intrinsic_dimension",
+                _run_data_only("geometry", "run_intrinsic_dimension")),
+    SectionSpec(5, "CCGP", "ccgp",
+                _run_data_only("geometry", "run_ccgp")),
+    SectionSpec(6, "Topology", "topology",
+                _run_data_only("geometry", "run_topology")),
+    SectionSpec(7, "Clustering", "clustering",
+                _run_data_only("clustering", "run_clustering")),
+    SectionSpec(8, "Contrastive Projection", "contrastive",
+                _run_data_only("contrastive", "run_contrastive")),
+    SectionSpec(9, "Semantic Independence", "semantic",
+                _run_semantic, requires_text=True),
+    SectionSpec(10, "Prediction Scorecard", "scorecard",
+                _run_scorecard, always_rerun=True),
+    SectionSpec(11, "Manifold Geometry", "manifold_geometry",
+                _run_data_only("geometry", "run_manifold_geometry")),
+]
+
+# Lookup tables derived from SECTIONS for any external consumers and for
+# readability when scanning the module.
+SECTION_KEYS: dict[int, str] = {spec.number: spec.key for spec in SECTIONS}
+SECTION_NAMES: dict[int, str] = {spec.number: spec.name for spec in SECTIONS}
+
+# Registry mapping section-results key → pydantic model class. Used by
+# ``_rehydrate_section`` to validate checkpointed dicts back into typed
+# models so downstream consumers can use attribute access.
 SECTION_MODELS: dict[str, type[BaseModel]] = {
     "integrity": IntegrityResult,
     "classification": ClassificationResult,
@@ -86,35 +188,6 @@ def _rehydrate_section(key: str, value: object) -> object:
         print(f"  Warning: could not validate checkpointed '{key}' against schema: {e}")
         return value
 
-# Section number → results key mapping
-SECTION_KEYS: dict[int, str] = {
-    1: "integrity",
-    2: "classification",
-    3: "tier_ablation",
-    4: "intrinsic_dimension",
-    5: "ccgp",
-    6: "topology",
-    7: "clustering",
-    8: "contrastive",
-    9: "semantic",
-    10: "scorecard",
-    11: "manifold_geometry",
-}
-
-SECTION_NAMES: dict[int, str] = {
-    1: "Data Integrity",
-    2: "Classification",
-    3: "Tier Ablation",
-    4: "Intrinsic Dimension",
-    5: "CCGP",
-    6: "Topology",
-    7: "Clustering",
-    8: "Contrastive Projection",
-    9: "Semantic Independence",
-    10: "Prediction Scorecard",
-    11: "Manifold Geometry",
-}
-
 
 def _save_checkpoint(results: dict, output_dir: Path) -> None:
     """Save current results as checkpoint."""
@@ -136,14 +209,19 @@ def _load_checkpoint(output_dir: Path) -> dict | None:
 
 
 def _detect_completed_sections(checkpoint: dict) -> set[int]:
-    """Detect which sections have results in a checkpoint."""
-    completed = set()
-    for section_num, key in SECTION_KEYS.items():
-        if key in checkpoint and checkpoint[key] is not None:
-            # Check it's not just an error stub
-            if _is_error_value(checkpoint[key]):
+    """Detect which sections have usable results in a checkpoint.
+
+    ``always_rerun`` sections (scorecard) are never treated as completed;
+    they reassemble their output from other sections on every run.
+    """
+    completed: set[int] = set()
+    for spec in SECTIONS:
+        if spec.always_rerun:
+            continue
+        if spec.key in checkpoint and checkpoint[spec.key] is not None:
+            if _is_error_value(checkpoint[spec.key]):
                 continue
-            completed.add(section_num)
+            completed.add(spec.number)
     return completed
 
 
@@ -206,10 +284,12 @@ def run_full_analysis(
             if completed:
                 print(f"\nResuming from checkpoint. Completed sections: {sorted(completed)}")
                 results = checkpoint
-                for section_num in completed:
-                    key = SECTION_KEYS[section_num]
-                    if key in results:
-                        results[key] = _rehydrate_section(key, results[key])
+                # Rehydrate every schema-bearing key present in the checkpoint
+                # (including always_rerun sections, so _print_summary sees typed
+                # values if scorecard is explicitly --skip'd with a prior result).
+                for spec in SECTIONS:
+                    if spec.key in results:
+                        results[spec.key] = _rehydrate_section(spec.key, results[spec.key])
                 skip = skip | completed
             else:
                 print("\nCheckpoint found but no completed sections. Starting fresh.")
@@ -223,9 +303,11 @@ def run_full_analysis(
         results["core_only"] = core_only
     results["last_updated"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
-    # Load data
+    # Load data — only pull generated text if a requires_text section will run.
     print("\nLoading data...")
-    load_text = 9 not in skip
+    load_text = any(
+        spec.requires_text and spec.number not in skip for spec in SECTIONS
+    )
     data = load_analysis_data(
         signature_dir=signature_dir,
         run_name=run_name,
@@ -238,142 +320,39 @@ def run_full_analysis(
     print(f"  {data.n_samples} samples, {len(data.unique_modes)} modes, "
           f"{len(data.unique_topics)} topics")
 
-    # Track timing per section
+    # Section timing (carried across resumes)
     section_times: dict[str, float] = results.get("section_times", {})
 
-    # ── Section 1: Data integrity ──
-    if 1 not in skip:
-        print("\n--- Section 1: Data Integrity ---")
-        from .integrity import run_integrity_checks
+    # Context handed to each section runner. ``results`` is passed by
+    # reference so scorecard sees every prior section's populated entry.
+    ctx: dict[str, Any] = {
+        "data": data,
+        "results": results,
+        "signature_dir": signature_dir,
+        "addon_dirs": addon_dirs,
+    }
+
+    for spec in SECTIONS:
+        if spec.number in skip:
+            print(f"\n--- Section {spec.number}: {spec.name} --- SKIPPED")
+            continue
+
+        print(f"\n--- Section {spec.number}: {spec.name} ---")
         t0 = time.perf_counter()
-        results["integrity"] = run_integrity_checks(data)
-        section_times["integrity"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['integrity']:.1f}s)")
+        section_result = spec.runner(ctx)
+        results[spec.key] = section_result
+
+        if spec.always_rerun:
+            # Scorecard evaluates accumulated results; not timed or checkpointed.
+            continue
+
+        section_times[spec.key] = time.perf_counter() - t0
+        print(f"  Done ({section_times[spec.key]:.1f}s)")
         _save_checkpoint(results, output_dir)
 
-        if not results["integrity"].all_clean:
+        # Integrity surfaces NaN/Inf loudly so operators spot corruption immediately.
+        if spec.key == "integrity" and not section_result.all_clean:
             print("  WARNING: NaN/Inf detected in features!")
-    else:
-        print("\n--- Section 1: Data Integrity --- SKIPPED")
-
-    # ── Section 2: Classification ──
-    if 2 not in skip:
-        print("\n--- Section 2: Classification ---")
-        from .classification import run_classification
-        t0 = time.perf_counter()
-        results["classification"] = run_classification(data)
-        section_times["classification"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['classification']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 2: Classification --- SKIPPED")
-
-    # ── Section 3: Tier ablation ──
-    if 3 not in skip:
-        print("\n--- Section 3: Tier Ablation ---")
-        from .tier_ablation import run_tier_ablation
-        t0 = time.perf_counter()
-        results["tier_ablation"] = run_tier_ablation(data)
-        section_times["tier_ablation"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['tier_ablation']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 3: Tier Ablation --- SKIPPED")
-
-    # ── Section 4: Intrinsic dimension ──
-    if 4 not in skip:
-        print("\n--- Section 4: Intrinsic Dimension ---")
-        from .geometry import run_intrinsic_dimension
-        t0 = time.perf_counter()
-        results["intrinsic_dimension"] = run_intrinsic_dimension(data)
-        section_times["intrinsic_dimension"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['intrinsic_dimension']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 4: Intrinsic Dimension --- SKIPPED")
-
-    # ── Section 5: CCGP ──
-    if 5 not in skip:
-        print("\n--- Section 5: CCGP ---")
-        from .geometry import run_ccgp
-        t0 = time.perf_counter()
-        results["ccgp"] = run_ccgp(data)
-        section_times["ccgp"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['ccgp']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 5: CCGP --- SKIPPED")
-
-    # ── Section 6: Topology & hyperbolicity ──
-    if 6 not in skip:
-        print("\n--- Section 6: Topology ---")
-        from .geometry import run_topology
-        t0 = time.perf_counter()
-        results["topology"] = run_topology(data)
-        section_times["topology"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['topology']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 6: Topology --- SKIPPED")
-
-    # ── Section 7: Clustering ──
-    if 7 not in skip:
-        print("\n--- Section 7: Clustering ---")
-        from .clustering import run_clustering
-        t0 = time.perf_counter()
-        results["clustering"] = run_clustering(data)
-        section_times["clustering"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['clustering']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 7: Clustering --- SKIPPED")
-
-    # ── Section 8: Contrastive projection ──
-    if 8 not in skip:
-        print("\n--- Section 8: Contrastive Projection ---")
-        from .contrastive import run_contrastive
-        t0 = time.perf_counter()
-        results["contrastive"] = run_contrastive(data)
-        section_times["contrastive"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['contrastive']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 8: Contrastive Projection --- SKIPPED")
-
-    # ── Section 9: Semantic independence ──
-    if 9 not in skip:
-        print("\n--- Section 9: Semantic Independence ---")
-        from .semantic import run_semantic
-        t0 = time.perf_counter()
-        results["semantic"] = run_semantic(
-            data,
-            signature_dir=signature_dir,
-            addon_dirs=addon_dirs,
-        )
-        section_times["semantic"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['semantic']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 9: Semantic Independence --- SKIPPED")
-
-    # ── Section 10: Prediction scorecard ──
-    # Scorecard always re-runs (it evaluates results from other sections)
-    if 10 not in skip:
-        print("\n--- Section 10: Prediction Scorecard ---")
-        from .scorecard import run_scorecard
-        results["scorecard"] = run_scorecard(results)
-
-    # ── Section 11: Manifold Geometry ──
-    if 11 not in skip:
-        print("\n--- Section 11: Manifold Geometry ---")
-        from .geometry import run_manifold_geometry
-        t0 = time.perf_counter()
-        results["manifold_geometry"] = run_manifold_geometry(data)
-        section_times["manifold_geometry"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['manifold_geometry']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-    else:
-        print("\n--- Section 11: Manifold Geometry --- SKIPPED")
 
     # Save final timing
     results["section_times"] = section_times
