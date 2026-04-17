@@ -8,6 +8,7 @@ from typing import Any, Generator
 
 import numpy as np
 from numpy.typing import NDArray
+from pydantic import BaseModel
 
 
 def standardize(X: NDArray[np.floating]) -> NDArray[np.float64]:
@@ -26,7 +27,12 @@ def remove_constant(X: NDArray[np.float64], threshold: float = 1e-12) -> NDArray
 
 
 def clean_for_json(obj: object) -> object:
-    """Recursively make objects JSON-serializable."""
+    """Recursively make objects JSON-serializable.
+
+    Handles: NaN/Inf floats (→ None), numpy scalars/arrays, dicts, lists,
+    and pydantic BaseModel instances (dumped with ``exclude_none=True`` so
+    Optional error fields vanish when unset).
+    """
     if isinstance(obj, float) and (np.isnan(obj) or np.isinf(obj)):
         return None
     if isinstance(obj, np.bool_):
@@ -37,6 +43,8 @@ def clean_for_json(obj: object) -> object:
         return float(obj)
     if isinstance(obj, np.ndarray):
         return obj.tolist()
+    if isinstance(obj, BaseModel):
+        return clean_for_json(obj.model_dump(mode="json", exclude_none=True))
     if isinstance(obj, dict):
         return {str(k): clean_for_json(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):

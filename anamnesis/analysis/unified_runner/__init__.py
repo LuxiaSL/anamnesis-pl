@@ -23,8 +23,45 @@ import json
 import time
 from pathlib import Path
 
+from pydantic import BaseModel, ValidationError
+
 from .data_loading import AnalysisData, load_analysis_data
+from .results_schema import IntegrityResult
 from .utils import clean_for_json
+
+# Registry mapping section-results key → pydantic model class.
+# Populated incrementally across Phase 3a commits; sections without an
+# entry continue to store raw dicts (fully backward-compatible).
+SECTION_MODELS: dict[str, type[BaseModel]] = {
+    "integrity": IntegrityResult,
+}
+
+
+def _is_error_value(value: object) -> bool:
+    """True if a result dict/model carries an error stub (skip-on-resume)."""
+    if isinstance(value, BaseModel):
+        return bool(getattr(value, "error", None))
+    if isinstance(value, dict):
+        return bool(value.get("error"))
+    return False
+
+
+def _rehydrate_section(key: str, value: object) -> object:
+    """Validate a checkpointed dict into its typed model when a schema exists.
+
+    Unknown sections (no entry in ``SECTION_MODELS``) and error stubs pass
+    through untouched so consumers still see the legacy shape.
+    """
+    model_cls = SECTION_MODELS.get(key)
+    if model_cls is None or not isinstance(value, dict):
+        return value
+    if _is_error_value(value):
+        return value
+    try:
+        return model_cls.model_validate(value)
+    except ValidationError as e:
+        print(f"  Warning: could not validate checkpointed '{key}' against schema: {e}")
+        return value
 
 # Section number → results key mapping
 SECTION_KEYS: dict[int, str] = {
@@ -81,8 +118,7 @@ def _detect_completed_sections(checkpoint: dict) -> set[int]:
     for section_num, key in SECTION_KEYS.items():
         if key in checkpoint and checkpoint[key] is not None:
             # Check it's not just an error stub
-            val = checkpoint[key]
-            if isinstance(val, dict) and val.get("error"):
+            if _is_error_value(checkpoint[key]):
                 continue
             completed.add(section_num)
     return completed
@@ -144,6 +180,10 @@ def run_full_analysis(
             if completed:
                 print(f"\nResuming from checkpoint. Completed sections: {sorted(completed)}")
                 results = checkpoint
+                for section_num in completed:
+                    key = SECTION_KEYS[section_num]
+                    if key in results:
+                        results[key] = _rehydrate_section(key, results[key])
                 skip = skip | completed
             else:
                 print("\nCheckpoint found but no completed sections. Starting fresh.")
@@ -185,7 +225,7 @@ def run_full_analysis(
         print(f"  Done ({section_times['integrity']:.1f}s)")
         _save_checkpoint(results, output_dir)
 
-        if not results["integrity"].get("all_clean", False):
+        if not results["integrity"].all_clean:
             print("  WARNING: NaN/Inf detected in features!")
     else:
         print("\n--- Section 1: Data Integrity --- SKIPPED")
