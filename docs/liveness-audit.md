@@ -144,25 +144,27 @@ Archive candidates — one-off A/B tests or profiling tools (all deleted in Phas
 
 ## Duplication & drift (the real entanglement)
 
-### 1. Layer presets duplicated three times
+### 1. Layer presets duplicated three times — RESOLVED in Phase 2
 
-- `config.py:100-147` — `ExtractionConfig` defaults (8B only, single model).
-- `scripts/run_extraction.py:54-87` — `MODEL_CONFIGS` (8B + 3B, full model identity).
-- `extraction/feature_pipeline.py:463-480` — `_MODEL_LAYER_PRESETS` (8B + 3B, subset of above).
+- ~~`config.py:100-147` — `ExtractionConfig` defaults (8B only, single model).~~
+- ~~`scripts/run_extraction.py:54-87` — `MODEL_CONFIGS` (8B + 3B, full model identity).~~
+- ~~`extraction/feature_pipeline.py:463-480` — `_MODEL_LAYER_PRESETS` (8B + 3B, subset of above).~~
 
-**Consequence:** changing a layer list or adding a new model means editing three files with different shapes. Fix: single pydantic `ModelPreset` registry in `config.py`, consumed by all three.
+Phase 2 added a `ModelPreset` pydantic model + `MODEL_PRESETS` registry to
+`config.py` (8b + 3b) and switched both consumers to attribute access.
+`ExtractionConfig` defaults intentionally still describe the 8B baseline
+per the refactor plan (Phase 4 deferred work).
 
-### 2. `PROCESSING_MODES` vs `RUN4_MODES`
+### 2. `PROCESSING_MODES` vs `RUN4_MODES` — RESOLVED in Phase 2
 
-- `config.py:277-311` — `PROCESSING_MODES` dict.
-- `modes/run4_modes.py:14-60` — `RUN4_MODES` dict, verbatim identical.
+- ~~`config.py:277-311` — `PROCESSING_MODES` dict.~~
+- `modes/run4_modes.py:14-60` — `RUN4_MODES` dict (now the sole copy).
 
-`run4_modes.py`'s own module docstring admits the duplication. The split
-consumers: `run_8b_experiment.py → generation_runner → config.PROCESSING_MODES`;
-`run_extraction.py → modes.run4_modes.RUN4_MODES`.
-
-Fix: `config.PROCESSING_MODES = modes.run4_modes.RUN4_MODES` (single-line
-re-export) or route all consumers through `modes/`.
+Phase 2 replaced the literal dict in `config.py` with a re-export
+(`from anamnesis.modes.run4_modes import RUN4_MODES as PROCESSING_MODES,
+RUN4_MODE_INDEX as MODE_INDEX`) and dropped the now-unused
+`_FORMAT_CONSTRAINT`. Existing consumers that import from
+`anamnesis.config` keep working unchanged.
 
 ### 3. `verification_runner.py` reimplements `unified_runner/` utilities
 
@@ -206,32 +208,45 @@ coexist. v1 is reached only when `--v2` is not passed to the CLI. Practically,
 all current production data is v2. v1 is effectively "v2 with
 `include_baseline_tiers=True` and all families disabled" — collapsible.
 
-### 6. `KNOWN_RUNS` / `KNOWN_ADDONS` in a script
+### 6. `KNOWN_RUNS` / `KNOWN_ADDONS` in a script — RESOLVED in Phase 2
 
-`scripts/run_unified_analysis.py:24-42` hardcodes run locations and addon
-directories. This is canonical project metadata, not CLI logic. Belongs in
-`config.py` as a `RunRegistry`.
+~~`scripts/run_unified_analysis.py:24-42` hardcodes run locations and addon
+directories.~~ Phase 2 added a `RunSpec` pydantic model + `RUNS` registry
+to `config.py` covering the four canonical runs (8b_baseline, 3b_run4,
+8b_v2, 3b_v2) with their signature and addon directories. The unified
+analysis CLI now consumes the registry; `--run` / `--sig-dir` user-facing
+behavior is unchanged.
 
-## README drift
+**Still duplicated (out of scope for Phase 2):** `scripts/run_subfamily_decomp.py`
+and `scripts/run_binary_prompt_swap.py` keep their own local
+`KNOWN_RUNS` / `KNOWN_ADDONS` dicts (paths identical to the new `RUNS`
+registry). Those weren't flagged in the original audit; folding them into
+`config.RUNS` is a follow-up.
 
-- **Quick start §3** (lines 173-178) documents a `feature_pipeline` CLI with
-  `--run` and `--families` flags. These **do not exist**. Actual flags:
-  `--raw-dir`, `--output-dir`, `--v2`, `--no-trajectory`, `--no-attention-flow`,
-  `--no-gate`, `--no-temporal-dynamics`, `--no-stft`, `--no-baseline`,
-  `--contrastive-model`, `--pca-model`, `--model {8b|3b}`, `--workers`,
-  `--metadata-dir`, `--no-tier3`.
-- **Quick start is missing a step** between extraction and feature
-  recomputation: `train_contrastive_projection.py` must have been run before
-  `--contrastive-model` can be passed. Readers following the Quick Start won't
-  know that contrastive projection requires separately-trained weights.
-- Scripts listed in README (§Structure): 9. Scripts present: 14. Missing from
-  README: `run_8b_r2_experiment`, `run_cross_run_transfer`,
-  `test_fast_postprocess`, `compare_streaming_vs_hf`, `profile_generate_overhead`.
-- `modes/` listed in README: 3 files. Actually 4 (missing `run3_original_modes.py`).
-- `geometric_trio/` listed in README: 3 files. Actually 6 (missing `data_loader.py`,
-  `verification_runner.py`, `__init__.py`). `data_loader.py` is load-bearing
-  (shared dep for unified_runner) so its omission is material.
-- `analysis/` §Structure omits `t3_investigation.py`.
+## README drift — RESOLVED in Phase 2 (subtask 2a)
+
+All items below were addressed when the README was synced to the
+post-Phase-2 layout:
+
+- ~~**Quick start §3** documented a `feature_pipeline` CLI with `--run` and
+  `--families` flags that don't exist.~~ Replaced with the real
+  `--raw-dir` / `--output-dir` / `--v2` / `--no-<family>` interface.
+- ~~**Quick start is missing a step** between extraction and feature
+  recomputation for `train_contrastive_projection.py`.~~ Added §2.5
+  "Train contrastive projection (once per model)" with the real CLI
+  flags.
+- ~~Scripts listed in README (§Structure): 9. Scripts present: 14.~~
+  Listing now includes `run_8b_r2_experiment`, `run_cross_run_transfer`,
+  and `run_cross_run_transfer_followup`. The three Phase-1-deleted
+  one-offs (`test_fast_postprocess`, `compare_streaming_vs_hf`,
+  `profile_generate_overhead`) are gone from the tree.
+- ~~`modes/` listed in README: 3 files. Actually 4 (missing
+  `run3_original_modes.py`).~~ Added.
+- ~~`geometric_trio/` listed in README: 3 files. Actually 6.~~ Listing now
+  reflects the post-Phase-1 state (`data_loader.py` + `results/` only)
+  with a pointer to `unified_runner/geometry.py` for the live analyses.
+- ~~`analysis/` §Structure omits `t3_investigation.py`.~~ Already deleted
+  in Phase 1; no listing entry needed.
 
 ## CLAUDE.md coverage gap
 
@@ -245,32 +260,42 @@ directories. This is canonical project metadata, not CLI logic. Belongs in
 
 ## Latent bugs + minor cleanup spotted during audit
 
-- `unified_runner/__init__.py:250-258` — "Section 6b" (manifold geometry) only
+- ~~`unified_runner/__init__.py:250-258` — "Section 6b" (manifold geometry) only
   runs when section 6 is not skipped, and does not emit a "SKIPPED" log when
   section 6 is skipped. If a user passes `--skip 6`, manifold_geometry silently
-  does not run.
-- `unified_runner/semantic.py:25` — `StratifiedKFold` is imported but never
+  does not run.~~ **Fixed in Phase 2 (subtask 2d).** Manifold geometry is now
+  Section 11 with its own skip guard, registered in `SECTION_KEYS` and
+  `SECTION_NAMES`; the `--skip` CLI advertises 1-11.
+- ~~`unified_runner/semantic.py:25` — `StratifiedKFold` is imported but never
   used in the file (only `GroupKFold` is used for topic-heldout splits).
-  One-line delete.
+  One-line delete.~~ **Fixed in Phase 2 (subtask 2c).**
 
 ## Proposed cleanup order (deferred — for discussion)
 
 Ranked by parseability payoff per unit of risk:
 
-1. **Fix README drift.** Zero-risk documentation fix. Highest clarity gain per
-   minute of work.
-2. **Collapse layer preset duplication.** Single `ModelPreset` registry in
-   `config.py` consumed by `run_extraction.py` and `feature_pipeline.py`.
-3. **Collapse `PROCESSING_MODES` → `RUN4_MODES`.** One-line re-export.
-4. **Decide fate of `verification_runner.py`.** Either delete (output
-   preserved) or refactor to import. No middle ground.
-5. **Move `KNOWN_RUNS` / `KNOWN_ADDONS` to `config.py` as `RunRegistry`.**
+1. ~~**Fix README drift.**~~ **DONE (Phase 2 — subtask 2a).** Quick Start
+   §2.5/§3 now match the real CLI; §Structure listing matches the tree.
+2. ~~**Collapse layer preset duplication.**~~ **DONE (Phase 2 — subtask 2e).**
+   `ModelPreset` + `MODEL_PRESETS` registry in `config.py`; `run_extraction.py`
+   and `feature_pipeline.py` consume from it.
+3. ~~**Collapse `PROCESSING_MODES` → `RUN4_MODES`.**~~ **DONE (Phase 2 —
+   subtask 2b).** Re-export from `modes/run4_modes.py` in `config.py`.
+4. **Decide fate of `verification_runner.py`.** ~~Either delete (output
+   preserved) or refactor to import. No middle ground.~~ Resolved in Phase 1
+   — file deleted; output preserved at `geometric_trio/results/verification_run.json`.
+5. ~~**Move `KNOWN_RUNS` / `KNOWN_ADDONS` to `config.py` as `RunRegistry`.**~~
+   **DONE (Phase 2 — subtask 2f).** `RunSpec` + `RUNS` registry in
+   `config.py`; `run_unified_analysis.py` consumes it. Two other scripts
+   (`run_subfamily_decomp`, `run_binary_prompt_swap`) still hold local
+   copies — see §6 above.
 6. ~~**Archive the A/B benchmarks and profilers.**~~ **DONE (Phase 1)** — all three files deleted rather than archived: `test_fast_postprocess.py`, `compare_streaming_vs_hf.py`, `profile_generate_overhead.py`. Git history preserves them if needed. Future optimization work would want a fresh profiler tailored to its target, not this one.
 7. **Add schemas for analysis result dicts.** Pydantic result types for each
    `run_<section>()` would make the 400+ `clf.get("tier", {}).get("rf_5way", ...)` accesses
    in `__init__.py:_print_summary` and `analyze_complementarity.py` type-safe.
 8. **Section registry for `run_full_analysis`.** Collapses 10 hardcoded if/else
-   blocks, fixes the 6b skip bug. Small but clarifying.
+   blocks. (The 6b skip bug it would have fixed is already resolved in
+   Phase 2 subtask 2d, but the registry-based dispatch is still desirable.)
 9. ~~**Fate of `t3_investigation.py` and `geometric_trio/{intrinsic_dimension, ccgp, delta_hyperbolicity, verification_runner}.py` standalone CLIs.**~~ **DONE (Phase 1)** — all 5 deleted. `geometric_trio/` now contains only `data_loader.py` (load-bearing shared dep) + `results/` (historical outputs). Analysis functionality lives in `unified_runner/geometry.py` (`run_intrinsic_dimension`, `run_ccgp`, `run_topology`) and is the living code path.
 10. **Retrofit `state_extractor.extract_tier*` to `FeatureFamilyResult` contract.**
     High value, high blast radius — last.
