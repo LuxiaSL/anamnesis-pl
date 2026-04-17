@@ -28,6 +28,7 @@ from pydantic import BaseModel, ValidationError
 from .data_loading import AnalysisData, load_analysis_data
 from .results_schema import (
     ClassificationResult,
+    ClusteringResult,
     IntegrityResult,
     TierAblationResult,
 )
@@ -40,6 +41,7 @@ SECTION_MODELS: dict[str, type[BaseModel]] = {
     "integrity": IntegrityResult,
     "classification": ClassificationResult,
     "tier_ablation": TierAblationResult,
+    "clustering": ClusteringResult,
 }
 
 
