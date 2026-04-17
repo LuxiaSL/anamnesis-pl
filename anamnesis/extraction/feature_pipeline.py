@@ -28,7 +28,11 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from anamnesis.config import ExtractionConfig, FeaturePipelineConfig
+from anamnesis.config import (
+    MODEL_PRESETS,
+    ExtractionConfig,
+    FeaturePipelineConfig,
+)
 from anamnesis.extraction.raw_saver import list_raw_tensor_ids, load_raw_tensors
 from anamnesis.extraction.state_extractor import ExtractionResult, extract_all_features
 
@@ -458,28 +462,6 @@ def _load_pca_model(
     return components, mean
 
 
-# ── Model-specific layer presets ──────────────────────────────────────────────
-
-_MODEL_LAYER_PRESETS: dict[str, dict[str, list[int]]] = {
-    "8b": {
-        "sampled_layers": [0, 8, 16, 20, 24, 28, 31],
-        "pca_layers": [8, 16, 20, 24, 28],
-        "trajectory_layers": [8, 16, 20, 24, 28],
-        "contrastive_layers": [8, 16, 20, 24, 28],
-        "early_layer_cutoff": 8,
-        "late_layer_cutoff": 24,
-    },
-    "3b": {
-        "sampled_layers": [0, 7, 14, 18, 21, 24, 27],
-        "pca_layers": [7, 14, 18, 21, 24],
-        "trajectory_layers": [7, 14, 18, 21, 24],
-        "contrastive_layers": [7, 14, 18, 21, 24],
-        "early_layer_cutoff": 7,
-        "late_layer_cutoff": 21,
-    },
-}
-
-
 def main() -> None:
     """CLI entry point for batch feature recomputation."""
     logging.basicConfig(
@@ -517,7 +499,7 @@ def main() -> None:
         help="Enable v2 pipeline with pluggable feature families",
     )
     parser.add_argument(
-        "--model", choices=list(_MODEL_LAYER_PRESETS.keys()), default=None,
+        "--model", choices=list(MODEL_PRESETS.keys()), default=None,
         help="Model preset for layer-specific config (sets trajectory_layers, sampled_layers, etc.)",
     )
     parser.add_argument(
@@ -559,13 +541,13 @@ def main() -> None:
 
     # Build ExtractionConfig with model-specific layers
     config_kwargs: dict = {}
-    if args.model:
-        preset = _MODEL_LAYER_PRESETS[args.model]
+    preset = MODEL_PRESETS[args.model] if args.model else None
+    if preset is not None:
         config_kwargs.update({
-            "sampled_layers": preset["sampled_layers"],
-            "pca_layers": preset["pca_layers"],
-            "early_layer_cutoff": preset["early_layer_cutoff"],
-            "late_layer_cutoff": preset["late_layer_cutoff"],
+            "sampled_layers": preset.sampled_layers,
+            "pca_layers": preset.pca_layers,
+            "early_layer_cutoff": preset.early_layer_cutoff,
+            "late_layer_cutoff": preset.late_layer_cutoff,
         })
     config = ExtractionConfig(**config_kwargs)
     if args.no_tier3:
@@ -591,11 +573,9 @@ def main() -> None:
             "enable_contrastive_projection": args.contrastive_model is not None,
             "contrastive_model_path": args.contrastive_model,
         }
-        if args.model:
-            preset = _MODEL_LAYER_PRESETS[args.model]
-            family_kwargs["trajectory_layers"] = preset["trajectory_layers"]
-            if "contrastive_layers" in preset:
-                family_kwargs["contrastive_layers"] = preset["contrastive_layers"]
+        if preset is not None:
+            family_kwargs["trajectory_layers"] = preset.trajectory_layers
+            family_kwargs["contrastive_layers"] = preset.contrastive_layers
         family_config = FeaturePipelineConfig(**family_kwargs)
 
     recompute_all_features(

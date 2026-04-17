@@ -262,6 +262,76 @@ class CalibrationConfig(BaseModel):
     )
 
 
+# ── Model presets ──────────────────────────────────────────────────────────────
+
+class ModelPreset(BaseModel):
+    """Per-model architecture + sampling defaults.
+
+    Single source of truth for everything that varies between Llama 3.1 8B
+    and Llama 3.2 3B (architecture, sampled layers, decode params,
+    calibration paths). Consumed by `scripts.run_extraction` and
+    `extraction.feature_pipeline` so layer presets stay in sync across
+    extraction and feature recomputation.
+    """
+
+    model_id: str
+    torch_dtype: str
+    num_layers: int
+    hidden_dim: int
+    num_attention_heads: int
+    num_kv_heads: int
+    head_dim: int
+    sampled_layers: list[int]
+    pca_layers: list[int]
+    trajectory_layers: list[int]
+    contrastive_layers: list[int]
+    early_layer_cutoff: int
+    late_layer_cutoff: int
+    temperature: float
+    eos_token_ids: list[int]
+    calibration_dir: Path
+
+
+MODEL_PRESETS: dict[str, ModelPreset] = {
+    "8b": ModelPreset(
+        model_id="meta-llama/Llama-3.1-8B-Instruct",
+        torch_dtype="bfloat16",
+        num_layers=32,
+        hidden_dim=4096,
+        num_attention_heads=32,
+        num_kv_heads=8,
+        head_dim=128,
+        sampled_layers=[0, 8, 16, 20, 24, 28, 31],
+        pca_layers=[8, 16, 20, 24, 28],
+        trajectory_layers=[8, 16, 20, 24, 28],
+        contrastive_layers=[8, 16, 20, 24, 28],
+        early_layer_cutoff=8,
+        late_layer_cutoff=24,
+        temperature=0.6,
+        eos_token_ids=[128001, 128008, 128009],
+        calibration_dir=OUTPUTS_BASE / "calibration" / "llama31_8b",
+    ),
+    "3b": ModelPreset(
+        model_id="meta-llama/Llama-3.2-3B-Instruct",
+        torch_dtype="float16",
+        num_layers=28,
+        hidden_dim=3072,
+        num_attention_heads=24,
+        num_kv_heads=8,
+        head_dim=128,
+        sampled_layers=[0, 7, 14, 18, 21, 24, 27],
+        pca_layers=[7, 14, 18, 21, 24],
+        trajectory_layers=[7, 14, 18, 21, 24],
+        contrastive_layers=[7, 14, 18, 21, 24],
+        early_layer_cutoff=7,
+        late_layer_cutoff=21,
+        temperature=0.7,
+        eos_token_ids=[128001, 128009],
+        calibration_dir=LEGACY_DATA_ROOT / "outputs" / "calibration",
+    ),
+}
+
+
 # ── Experiment ─────────────────────────────────────────────────────────────────
 
 ProcessingMode = Literal[

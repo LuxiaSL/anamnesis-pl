@@ -36,6 +36,8 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from anamnesis.config import MODEL_PRESETS
+
 F32 = NDArray[np.float32]
 
 logger = logging.getLogger(__name__)
@@ -47,44 +49,6 @@ LEGACY_DATA_ROOT = Path(os.environ.get(
     str(PROJECT_ROOT.parent / "phase_0"),
 ))
 OUTPUTS_BASE = PROJECT_ROOT / "outputs"
-
-
-# ── Model configs ─────────────────────────────────────────────────────────────
-
-MODEL_CONFIGS = {
-    "8b": {
-        "model_id": "meta-llama/Llama-3.1-8B-Instruct",
-        "num_layers": 32,
-        "hidden_dim": 4096,
-        "num_attention_heads": 32,
-        "num_kv_heads": 8,
-        "head_dim": 128,
-        "torch_dtype": "bfloat16",
-        "sampled_layers": [0, 8, 16, 20, 24, 28, 31],
-        "pca_layers": [8, 16, 20, 24, 28],
-        "early_layer_cutoff": 8,
-        "late_layer_cutoff": 24,
-        "temperature": 0.6,
-        "eos_token_ids": [128001, 128008, 128009],
-        "calibration_dir": OUTPUTS_BASE / "calibration" / "llama31_8b",
-    },
-    "3b": {
-        "model_id": "meta-llama/Llama-3.2-3B-Instruct",
-        "num_layers": 28,
-        "hidden_dim": 3072,
-        "num_attention_heads": 24,
-        "num_kv_heads": 8,
-        "head_dim": 128,
-        "torch_dtype": "float16",
-        "sampled_layers": [0, 7, 14, 18, 21, 24, 27],
-        "pca_layers": [7, 14, 18, 21, 24],
-        "early_layer_cutoff": 7,
-        "late_layer_cutoff": 21,
-        "temperature": 0.7,
-        "eos_token_ids": [128001, 128009],
-        "calibration_dir": LEGACY_DATA_ROOT / "outputs" / "calibration",
-    },
-}
 
 
 # ── Spec builders ─────────────────────────────────────────────────────────────
@@ -208,7 +172,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Unified extraction script")
     parser.add_argument(
-        "--model", choices=list(MODEL_CONFIGS.keys()), required=True,
+        "--model", choices=list(MODEL_PRESETS.keys()), required=True,
         help="Model to use (3b or 8b)",
     )
     parser.add_argument(
@@ -245,7 +209,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    model_cfg = MODEL_CONFIGS[args.model]
+    model_cfg = MODEL_PRESETS[args.model]
 
     if args.smoke_test:
         args.n_samples = 1
@@ -269,7 +233,7 @@ def main() -> None:
         mode_counts[s["mode"]] = mode_counts.get(s["mode"], 0) + 1
 
     print(f"Extraction run: {args.run_name}")
-    print(f"  Model: {model_cfg['model_id']}")
+    print(f"  Model: {model_cfg.model_id}")
     print(f"  Modes: {args.modes} ({len(mode_counts)} modes)")
     for mode, count in sorted(mode_counts.items()):
         cond = "swap" if mode.startswith("swap_") else "standard"
@@ -296,31 +260,31 @@ def main() -> None:
 
     # Build config
     extraction_config = ExtractionConfig(
-        sampled_layers=model_cfg["sampled_layers"],
-        pca_layers=model_cfg["pca_layers"],
-        early_layer_cutoff=model_cfg["early_layer_cutoff"],
-        late_layer_cutoff=model_cfg["late_layer_cutoff"],
+        sampled_layers=model_cfg.sampled_layers,
+        pca_layers=model_cfg.pca_layers,
+        early_layer_cutoff=model_cfg.early_layer_cutoff,
+        late_layer_cutoff=model_cfg.late_layer_cutoff,
         enable_tier3=not args.no_tier3,
         save_raw_tensors=args.save_raw,
     )
 
     gen_config = GenerationConfig(
-        temperature=model_cfg["temperature"],
-        eos_token_ids=model_cfg["eos_token_ids"],
+        temperature=model_cfg.temperature,
+        eos_token_ids=model_cfg.eos_token_ids,
         max_new_tokens=100 if args.smoke_test else 512,
     )
 
     model_config = ModelConfig(
-        model_id=model_cfg["model_id"],
-        num_layers=model_cfg["num_layers"],
-        hidden_dim=model_cfg["hidden_dim"],
-        num_attention_heads=model_cfg["num_attention_heads"],
-        num_kv_heads=model_cfg["num_kv_heads"],
-        head_dim=model_cfg["head_dim"],
-        torch_dtype=model_cfg["torch_dtype"],
+        model_id=model_cfg.model_id,
+        num_layers=model_cfg.num_layers,
+        hidden_dim=model_cfg.hidden_dim,
+        num_attention_heads=model_cfg.num_attention_heads,
+        num_kv_heads=model_cfg.num_kv_heads,
+        head_dim=model_cfg.head_dim,
+        torch_dtype=model_cfg.torch_dtype,
     )
 
-    cal_dir = model_cfg["calibration_dir"]
+    cal_dir = model_cfg.calibration_dir
     cal_config = CalibrationConfig(
         positional_means_path=cal_dir / "positional_means.npz",
         pca_model_path=cal_dir / "pca_model.pkl",
