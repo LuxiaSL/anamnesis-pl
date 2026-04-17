@@ -12,41 +12,20 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-
-# Known run configurations
-KNOWN_RUNS: dict[str, Path] = {
-    "8b_baseline": Path("outputs/runs/run_8b_baseline/signatures"),
-    "3b_run4": Path(os.environ.get(
-        "ANAMNESIS_LEGACY_DATA", "phase_0"
-    )) / "outputs" / "runs" / "run4_format_controlled" / "signatures",
-    "8b_v2": Path("outputs/runs/8b_fat_01/signatures_v2"),
-    "3b_v2": Path("outputs/runs/3b_fat_01/signatures_v2"),
-}
-
-# Addon directories for runs with split feature computation
-KNOWN_ADDONS: dict[str, list[Path]] = {
-    "8b_v2": [
-        Path("outputs/runs/8b_fat_01/signatures_v2_addon"),
-        Path("outputs/runs/8b_fat_01/signatures_v2_contrastive"),
-    ],
-    "3b_v2": [
-        Path("outputs/runs/3b_fat_01/signatures_v2_contrastive"),
-    ],
-}
+from anamnesis.config import RUNS
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Unified analysis runner")
     parser.add_argument(
         "--run", type=str, required=True,
-        help=f"Run name. Known: {list(KNOWN_RUNS.keys())}. Or use --sig-dir for custom path.",
+        help=f"Run name. Known: {list(RUNS.keys())}. Or use --sig-dir for custom path.",
     )
     parser.add_argument(
         "--sig-dir", type=str, default=None,
@@ -81,10 +60,10 @@ def main() -> None:
     # Resolve signature directory
     if args.sig_dir:
         sig_dir = Path(args.sig_dir)
-    elif args.run in KNOWN_RUNS:
-        sig_dir = KNOWN_RUNS[args.run]
+    elif args.run in RUNS:
+        sig_dir = RUNS[args.run].signature_dir
     else:
-        print(f"Unknown run '{args.run}'. Use --sig-dir or one of: {list(KNOWN_RUNS.keys())}")
+        print(f"Unknown run '{args.run}'. Use --sig-dir or one of: {list(RUNS.keys())}")
         sys.exit(1)
 
     if not sig_dir.exists():
@@ -97,8 +76,8 @@ def main() -> None:
     addon_dirs: list[Path] | None = None
     if args.addon_dirs:
         addon_dirs = [Path(d) for d in args.addon_dirs]
-    elif args.run in KNOWN_ADDONS:
-        addon_dirs = KNOWN_ADDONS[args.run]
+    elif args.run in RUNS and RUNS[args.run].addon_dirs:
+        addon_dirs = list(RUNS[args.run].addon_dirs)
 
     # Parse mode filter
     mode_filter: list[str] | None = None

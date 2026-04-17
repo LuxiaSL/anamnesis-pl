@@ -332,6 +332,54 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
 }
 
 
+# ── Run registry ───────────────────────────────────────────────────────────────
+
+class RunSpec(BaseModel):
+    """A named extraction run that the unified analysis can target.
+
+    Centralises the canonical signature paths (and any addon directories
+    holding split-out feature families) so callers don't have to hardcode
+    layout in scripts.
+    """
+
+    name: str
+    signature_dir: Path
+    addon_dirs: list[Path] = Field(default_factory=list)
+    description: str = ""
+
+
+RUNS: dict[str, RunSpec] = {
+    "8b_baseline": RunSpec(
+        name="8b_baseline",
+        signature_dir=Path("outputs/runs/run_8b_baseline/signatures"),
+        description="Baseline 8B extraction (5 format-controlled modes).",
+    ),
+    "3b_run4": RunSpec(
+        name="3b_run4",
+        signature_dir=LEGACY_DATA_ROOT / "outputs" / "runs"
+            / "run4_format_controlled" / "signatures",
+        description="Phase-0 3B run4 (format-controlled).",
+    ),
+    "8b_v2": RunSpec(
+        name="8b_v2",
+        signature_dir=Path("outputs/runs/8b_fat_01/signatures_v2"),
+        addon_dirs=[
+            Path("outputs/runs/8b_fat_01/signatures_v2_addon"),
+            Path("outputs/runs/8b_fat_01/signatures_v2_contrastive"),
+        ],
+        description="8B v2 feature-pipeline with engineered families + contrastive.",
+    ),
+    "3b_v2": RunSpec(
+        name="3b_v2",
+        signature_dir=Path("outputs/runs/3b_fat_01/signatures_v2"),
+        addon_dirs=[
+            Path("outputs/runs/3b_fat_01/signatures_v2_contrastive"),
+        ],
+        description="3B v2 feature-pipeline.",
+    ),
+}
+
+
 # ── Experiment ─────────────────────────────────────────────────────────────────
 
 ProcessingMode = Literal[
