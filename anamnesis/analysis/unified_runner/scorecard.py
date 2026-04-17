@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .data_loading import AnalysisData
+from pydantic import BaseModel
 
 
 def _safe_get(d: dict, *keys, default=None):
@@ -13,6 +13,19 @@ def _safe_get(d: dict, *keys, default=None):
         else:
             return default
     return d
+
+
+def _as_dict(value: object) -> dict:
+    """Return a dict view of a section result.
+
+    Sections typed with pydantic models during Phase 3a are dumped to a
+    dict so the legacy ``_safe_get``-based scorecard logic continues to
+    work unchanged. Subsection schemas (Phase 3a part viii) will replace
+    this with attribute access.
+    """
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", exclude_none=True)
+    return value if isinstance(value, dict) else {}
 
 
 def run_scorecard(all_results: dict) -> dict:
@@ -167,7 +180,7 @@ def run_scorecard(all_results: dict) -> dict:
     })
 
     # ── Prediction 7: 5-way accuracy ~67-73% ──
-    clf_data = all_results.get("classification", {})
+    clf_data = _as_dict(all_results.get("classification"))
     t2t25_acc = _safe_get(clf_data, "T2+T2.5", "rf_5way", "accuracy")
     combined_acc = _safe_get(clf_data, "combined", "rf_5way", "accuracy")
 

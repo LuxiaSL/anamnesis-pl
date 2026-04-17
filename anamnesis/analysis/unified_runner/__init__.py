@@ -26,7 +26,7 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from .data_loading import AnalysisData, load_analysis_data
-from .results_schema import IntegrityResult
+from .results_schema import ClassificationResult, IntegrityResult
 from .utils import clean_for_json
 
 # Registry mapping section-results key → pydantic model class.
@@ -34,6 +34,7 @@ from .utils import clean_for_json
 # entry continue to store raw dicts (fully backward-compatible).
 SECTION_MODELS: dict[str, type[BaseModel]] = {
     "integrity": IntegrityResult,
+    "classification": ClassificationResult,
 }
 
 
@@ -371,27 +372,31 @@ def _print_summary(results: dict) -> None:
     print("=" * 60)
 
     # Classification
-    clf = results.get("classification", {})
+    clf = results.get("classification")
+    clf_by_tier: dict = {}
+    if isinstance(clf, ClassificationResult):
+        clf_by_tier = clf.by_tier
     # Show all tiers that have results
     reported_tiers = ["T2+T2.5", "combined", "engineered", "combined_v2",
                       "T2+T2.5+engineered"]
     for tier in reported_tiers:
-        acc = clf.get(tier, {}).get("rf_5way", {}).get("accuracy")
-        if acc is not None:
-            print(f"\n  5-way RF ({tier}): {acc:.1%}")
+        tier_clf = clf_by_tier.get(tier)
+        if tier_clf is not None and tier_clf.rf_5way.accuracy is not None:
+            print(f"\n  5-way RF ({tier}): {tier_clf.rf_5way.accuracy:.1%}")
 
     # CV stability
     for tier in ["T2+T2.5", "combined_v2", "combined"]:
-        stab = clf.get(tier, {}).get("cv_stability", {})
-        if stab and "median" in stab:
-            print(f"  CV stability ({tier}): median={stab['median']:.1%}, "
-                  f"95% CI=[{stab['ci_lo']:.1%}, {stab['ci_hi']:.1%}]")
+        tier_clf = clf_by_tier.get(tier)
+        if tier_clf is not None and tier_clf.cv_stability is not None:
+            stab = tier_clf.cv_stability
+            print(f"  CV stability ({tier}): median={stab.median:.1%}, "
+                  f"95% CI=[{stab.ci_lo:.1%}, {stab.ci_hi:.1%}]")
 
     # Permutation test
     for tier in ["T2+T2.5", "combined_v2", "combined"]:
-        perm = clf.get(tier, {}).get("permutation_test", {})
-        if perm and "p_value" in perm:
-            print(f"  Permutation p ({tier}): {perm['p_value']}")
+        tier_clf = clf_by_tier.get(tier)
+        if tier_clf is not None and tier_clf.permutation_test is not None:
+            print(f"  Permutation p ({tier}): {tier_clf.permutation_test.p_value}")
 
     # Tier ablation
     ablation = results.get("tier_ablation", {})

@@ -25,6 +25,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from anamnesis.analysis.unified_runner.results_schema import (  # noqa: E402
+    ClassificationResult,
+)
+
 
 # ── Configuration ──
 
@@ -92,14 +96,37 @@ SUBFAMILIES: dict[str, dict[str, str]] = {
 
 
 def load_results(path: Path) -> dict | None:
-    """Load a results.json file, return None if not found."""
+    """Load a results.json file, return None if not found.
+
+    Typed sections (e.g. classification) are validated into their
+    pydantic models at load time so downstream consumers can use
+    attribute access without dict scaffolding.
+    """
     if not path.exists():
         return None
     try:
         with open(path) as f:
-            return json.load(f)
+            raw = json.load(f)
     except (json.JSONDecodeError, OSError):
         return None
+    if isinstance(raw.get("classification"), dict):
+        try:
+            raw["classification"] = ClassificationResult.model_validate(
+                raw["classification"],
+            )
+        except Exception as e:
+            print(f"  Warning: classification schema validation failed for {path}: {e}")
+    return raw
+
+
+def _classification_by_tier(r: dict | None) -> dict[str, Any]:
+    """Return the classification by-tier mapping (empty if absent/untyped)."""
+    if not r:
+        return {}
+    clf = r.get("classification")
+    if isinstance(clf, ClassificationResult):
+        return clf.by_tier
+    return {}
 
 
 def _get_pair_name(m1: str, m2: str) -> str:
@@ -147,13 +174,15 @@ def analyze_consistency(results: dict[str, dict]) -> dict:
             continue
 
         print(f"\n  {label}")
-        clf_a = r_a.get("classification", {})
-        clf_b = r_b.get("classification", {})
+        clf_a_by_tier = _classification_by_tier(r_a)
+        clf_b_by_tier = _classification_by_tier(r_b)
 
         comp = {"label": label, "tiers": {}}
         for tier in baseline_tiers:
-            acc_a = clf_a.get(tier, {}).get("rf_5way", {}).get("accuracy")
-            acc_b = clf_b.get(tier, {}).get("rf_5way", {}).get("accuracy")
+            tier_a = clf_a_by_tier.get(tier)
+            tier_b = clf_b_by_tier.get(tier)
+            acc_a = tier_a.rf_5way.accuracy if tier_a is not None else None
+            acc_b = tier_b.rf_5way.accuracy if tier_b is not None else None
             if acc_a is not None and acc_b is not None:
                 diff = acc_b - acc_a
                 flag = " *** DIVERGENT" if abs(diff) > 0.05 else ""
@@ -184,15 +213,14 @@ def analyze_resolution(results: dict[str, dict]) -> dict:
             continue
 
         print(f"\n  --- {run_name} ---")
-        clf = r.get("classification", {})
+        clf_by_tier = _classification_by_tier(r)
 
         # Get all tiers that have pairwise data
         tier_resolution: dict[str, dict] = {}
-        all_tiers = sorted(k for k, v in clf.items()
-                          if isinstance(v, dict) and "pairwise_binary" in v)
+        all_tiers = sorted(k for k, v in clf_by_tier.items() if v.pairwise_binary)
 
         for tier in all_tiers:
-            pw = clf[tier].get("pairwise_binary", {})
+            pw = clf_by_tier[tier].pairwise_binary
             if not pw:
                 continue
 
@@ -201,11 +229,9 @@ def analyze_resolution(results: dict[str, dict]) -> dict:
             }
 
             for pair, data in pw.items():
-                if not isinstance(data, dict) or "accuracy" not in data:
-                    continue
                 cat = _classify_pair(pair)
                 if cat in buckets:
-                    buckets[cat].append(data["accuracy"])
+                    buckets[cat].append(data.accuracy)
 
             tier_resolution[tier] = {
                 cat: {
@@ -252,27 +278,26 @@ def analyze_complementarity(results: dict[str, dict]) -> dict:
             continue
 
         print(f"\n  --- {run_name} ---")
-        clf = r.get("classification", {})
+        clf_by_tier = _classification_by_tier(r)
 
         # Build accuracy vectors per tier
-        tiers_with_pw = [k for k, v in clf.items()
-                        if isinstance(v, dict) and "pairwise_binary" in v
+        tiers_with_pw = [k for k, v in clf_by_tier.items()
+                        if v.pairwise_binary
                         and k not in ("combined_v2",)]  # Skip perfect tiers
 
         # Get union of all pairs
         all_pairs: set[str] = set()
         for tier in tiers_with_pw:
-            pw = clf[tier].get("pairwise_binary", {})
-            all_pairs.update(pw.keys())
+            all_pairs.update(clf_by_tier[tier].pairwise_binary.keys())
         all_pairs_sorted = sorted(all_pairs)
 
         # Build accuracy matrix: tiers × pairs
         acc_matrix = np.zeros((len(tiers_with_pw), len(all_pairs_sorted)))
         for i, tier in enumerate(tiers_with_pw):
-            pw = clf[tier].get("pairwise_binary", {})
+            pw = clf_by_tier[tier].pairwise_binary
             for j, pair in enumerate(all_pairs_sorted):
-                data = pw.get(pair, {})
-                acc_matrix[i, j] = data.get("accuracy", 0.5) if isinstance(data, dict) else 0.5
+                entry = pw.get(pair)
+                acc_matrix[i, j] = entry.accuracy if entry is not None else 0.5
 
         # Focus on HARD pairs only — easy/hard structure dominates raw correlation
         hard_indices = [j for j, pair in enumerate(all_pairs_sorted)
@@ -531,15 +556,13 @@ def analyze_confusion_overlap(results: dict[str, dict]) -> dict:
             continue
 
         print(f"\n  --- {run_name} ---")
-        clf = r.get("classification", {})
+        clf_by_tier = _classification_by_tier(r)
 
         # Extract confusion matrices
         tiers_with_cm: dict[str, Any] = {}
-        for tier_name, tier_data in clf.items():
-            if not isinstance(tier_data, dict):
-                continue
-            cm = tier_data.get("rf_5way", {}).get("confusion_matrix")
-            if cm and isinstance(cm, list):
+        for tier_name, tier_clf in clf_by_tier.items():
+            cm = tier_clf.rf_5way.confusion_matrix
+            if cm:
                 tiers_with_cm[tier_name] = np.array(cm)
 
         if not tiers_with_cm:
@@ -551,7 +574,10 @@ def analyze_confusion_overlap(results: dict[str, dict]) -> dict:
         for tier, cm in sorted(tiers_with_cm.items()):
             if cm.shape[0] < 3:
                 continue
-            modes_list = sorted(clf.get(tier, {}).get("rf_5way", {}).get("class_labels", []))
+            # NOTE: original code looked up `class_labels` but the schema
+            # field is `labels`; keeping the original lookup name preserves
+            # behavior (hardest-confusion table was effectively never printed).
+            modes_list = sorted(getattr(clf_by_tier.get(tier), "class_labels", []) or [])
             if not modes_list or len(modes_list) != cm.shape[0]:
                 continue
 
@@ -592,11 +618,16 @@ def analyze_tier_inversion(results: dict[str, dict]) -> dict:
         if not r:
             continue
 
-        clf = r.get("classification", {})
-        t1_acc = clf.get("T1", {}).get("rf_5way", {}).get("accuracy")
-        t2_acc = clf.get("T2", {}).get("rf_5way", {}).get("accuracy")
-        t25_acc = clf.get("T2.5", {}).get("rf_5way", {}).get("accuracy")
-        t3_acc = clf.get("T3", {}).get("rf_5way", {}).get("accuracy")
+        clf_by_tier = _classification_by_tier(r)
+
+        def _tier_5way(name: str) -> float | None:
+            tier_clf = clf_by_tier.get(name)
+            return tier_clf.rf_5way.accuracy if tier_clf is not None else None
+
+        t1_acc = _tier_5way("T1")
+        t2_acc = _tier_5way("T2")
+        t25_acc = _tier_5way("T2.5")
+        t3_acc = _tier_5way("T3")
 
         if all(x is not None for x in [t1_acc, t2_acc, t25_acc]):
             inversion = t25_acc > t2_acc > t1_acc
@@ -636,12 +667,16 @@ def analyze_value_add(results: dict[str, dict]) -> dict:
             continue
 
         print(f"\n  --- {model} ---")
-        clf_base = r_base.get("classification", {})
-        clf_v2 = r_v2.get("classification", {})
+        clf_base_by_tier = _classification_by_tier(r_base)
+        clf_v2_by_tier = _classification_by_tier(r_v2)
+
+        def _acc(by_tier: dict[str, Any], name: str) -> float | None:
+            tier_clf = by_tier.get(name)
+            return tier_clf.rf_5way.accuracy if tier_clf is not None else None
 
         # Baseline composites
-        base_t2t25 = clf_base.get("T2+T2.5", {}).get("rf_5way", {}).get("accuracy")
-        base_combined = clf_base.get("combined", {}).get("rf_5way", {}).get("accuracy")
+        base_t2t25 = _acc(clf_base_by_tier, "T2+T2.5")
+        base_combined = _acc(clf_base_by_tier, "combined")
 
         # V2 individual new families
         new_families = ["residual_trajectory", "attention_flow", "gate_features",
@@ -652,14 +687,14 @@ def analyze_value_add(results: dict[str, dict]) -> dict:
 
         print(f"\n  New families (v2 data, 5-mode):")
         for fam in new_families:
-            acc = clf_v2.get(fam, {}).get("rf_5way", {}).get("accuracy")
+            acc = _acc(clf_v2_by_tier, fam)
             if acc is not None:
                 delta = acc - (base_t2t25 or 0)
                 print(f"    {fam:<25} {acc:.1%}  (vs baseline T2+T2.5: {delta:+.1%})")
 
         print(f"\n  V2 composites:")
         for comp in v2_composites:
-            acc = clf_v2.get(comp, {}).get("rf_5way", {}).get("accuracy")
+            acc = _acc(clf_v2_by_tier, comp)
             if acc is not None:
                 delta = acc - (base_combined or 0)
                 print(f"    {comp:<25} {acc:.1%}  (vs baseline combined: {delta:+.1%})")
