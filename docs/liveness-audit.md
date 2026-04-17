@@ -291,9 +291,18 @@ Ranked by parseability payoff per unit of risk:
    commit applying the same pattern to `run_subfamily_decomp.py` and
    `run_binary_prompt_swap.py`. No remaining local copies.
 6. ~~**Archive the A/B benchmarks and profilers.**~~ **DONE (Phase 1)** — all three files deleted rather than archived: `test_fast_postprocess.py`, `compare_streaming_vs_hf.py`, `profile_generate_overhead.py`. Git history preserves them if needed. Future optimization work would want a fresh profiler tailored to its target, not this one.
-7. **Add schemas for analysis result dicts.** Pydantic result types for each
-   `run_<section>()` would make the 400+ `clf.get("tier", {}).get("rf_5way", ...)` accesses
-   in `__init__.py:_print_summary` and `analyze_complementarity.py` type-safe.
+7. ~~**Add schemas for analysis result dicts.**~~ **DONE (Phase 3 — subtask 3a).**
+   Pydantic v2 result types (`unified_runner/results_schema.py`) now
+   cover every `run_<section>()` function plus a top-level
+   `AnalysisResults` composite. One commit per section (integrity,
+   classification, tier_ablation, clustering, contrastive, the four
+   geometry sections, semantic, scorecard), each verified to round-trip
+   against the four canonical runs (8b_v2, 3b_v2, 8b_baseline, 3b_run4)
+   with no structural diff. `_print_summary` in `__init__.py` and the
+   affected analyses in `analyze_complementarity.py` now use attribute
+   access. The JSON wire format under `outputs/analysis/*/results.json`
+   is unchanged — `clean_for_json` handles BaseModel values on the
+   write path.
 8. **Section registry for `run_full_analysis`.** Collapses 10 hardcoded if/else
    blocks. (The 6b skip bug it would have fixed is already resolved in
    Phase 2 subtask 2d, but the registry-based dispatch is still desirable.)
