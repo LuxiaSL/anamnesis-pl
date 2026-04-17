@@ -11,6 +11,16 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler
 
 from .data_loading import AnalysisData
+from .results_schema import (
+    CapacitySweepEntry,
+    ContrastiveAblationEntry,
+    ContrastivePairwiseEntry,
+    ContrastiveResult,
+    ContrastiveSuperAdditivity,
+    ContrastiveTierAblation,
+    ContrastiveTierResult,
+    LinearBaselineEntry,
+)
 from ..geometric_trio.data_loader import BASELINE_TIERS, ENGINEERED_TIERS
 
 # Try to import torch — this section is optional
@@ -54,7 +64,6 @@ def _train_contrastive_mlp(
     torch.manual_seed(seed)
     input_dim = X_train.shape[1]
 
-    # Simple projection network
     model = nn.Sequential(
         nn.Linear(input_dim, hidden_dim),
         nn.ReLU(),
@@ -74,7 +83,6 @@ def _train_contrastive_mlp(
     rng = np.random.default_rng(seed)
 
     for epoch in range(n_epochs):
-        # Sample triplets
         anchors, positives, negatives = [], [], []
         for _ in range(min(256, len(X_train) * 2)):
             label = unique_labels[rng.integers(len(unique_labels))]
@@ -96,7 +104,6 @@ def _train_contrastive_mlp(
         p = model(X_t[positives])
         n = model(X_t[negatives])
 
-        # L2 normalize
         a = nn.functional.normalize(a, dim=1)
         p = nn.functional.normalize(p, dim=1)
         n = nn.functional.normalize(n, dim=1)
@@ -121,66 +128,56 @@ def _embed(model, X: NDArray) -> NDArray:
     return emb.numpy()
 
 
-def run_contrastive(data: AnalysisData) -> dict:
+def run_contrastive(data: AnalysisData) -> ContrastiveResult:
     """Run contrastive projection analysis."""
     if not HAS_TORCH:
-        return {"error": "PyTorch not installed — skipping contrastive projection"}
+        return ContrastiveResult(error="PyTorch not installed — skipping contrastive projection")
 
-    results: dict = {}
+    tier_results: dict[str, ContrastiveTierResult] = {}
 
     for tier_name in ["T2+T2.5", "combined"]:
         print(f"    Contrastive: {tier_name}")
         X = data.get_tier(tier_name)
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+        X_scaled = StandardScaler().fit_transform(X)
 
         folds = _build_topic_folds(data.topics, n_folds=5, seed=42)
 
-        fold_accs = []
-        fold_sils = []
-        per_mode_sils: dict[str, list[float]] = {m: [] for m in data.unique_modes}
+        fold_accs: list[float] = []
+        fold_sils: list[float] = []
 
         for train_mask, test_mask in folds:
-            X_train = X_scaled[train_mask]
             y_train = data.modes[train_mask]
-            X_test = X_scaled[test_mask]
             y_test = data.modes[test_mask]
 
             try:
-                model = _train_contrastive_mlp(X_train, y_train)
-                emb_train = _embed(model, X_train)
-                emb_test = _embed(model, X_test)
+                model = _train_contrastive_mlp(X_scaled[train_mask], y_train)
+                emb_train = _embed(model, X_scaled[train_mask])
+                emb_test = _embed(model, X_scaled[test_mask])
 
-                # kNN accuracy
                 knn = KNeighborsClassifier(n_neighbors=3)
                 knn.fit(emb_train, y_train)
                 y_pred = knn.predict(emb_test)
                 fold_accs.append(float(np.mean(y_pred == y_test)))
 
-                # Silhouette on test embedding
                 if len(set(y_test)) > 1:
-                    sil = float(silhouette_score(emb_test, y_test))
-                    fold_sils.append(sil)
-
+                    fold_sils.append(float(silhouette_score(emb_test, y_test)))
             except Exception as e:
                 fold_accs.append(0.0)
                 print(f"      Fold failed: {e}")
 
-        tier_result: dict = {
-            "knn_accuracy_mean": float(np.mean(fold_accs)) if fold_accs else 0.0,
-            "knn_accuracy_std": float(np.std(fold_accs)) if fold_accs else 0.0,
-            "knn_fold_accs": fold_accs,
-            "silhouette_mean": float(np.mean(fold_sils)) if fold_sils else None,
-        }
-
-        results[tier_name] = tier_result
+        tier_results[tier_name] = ContrastiveTierResult(
+            knn_accuracy_mean=float(np.mean(fold_accs)) if fold_accs else 0.0,
+            knn_accuracy_std=float(np.std(fold_accs)) if fold_accs else 0.0,
+            knn_fold_accs=fold_accs,
+            silhouette_mean=float(np.mean(fold_sils)) if fold_sils else None,
+        )
 
     # Capacity sweep (T2+T2.5 only)
     print("    Capacity sweep...")
     X_key = StandardScaler().fit_transform(data.get_tier("T2+T2.5"))
     folds = _build_topic_folds(data.topics, n_folds=5, seed=42)
     capacities = [64, 128, 256, 512]
-    capacity_results: dict = {}
+    capacity_results: dict[str, CapacitySweepEntry] = {}
 
     for hidden_dim in capacities:
         fold_accs = []
@@ -204,40 +201,39 @@ def run_contrastive(data: AnalysisData) -> dict:
             except Exception:
                 fold_accs.append(0.0)
 
-        capacity_results[hidden_dim] = {
-            "knn_accuracy": float(np.mean(fold_accs)) if fold_accs else 0.0,
-            "silhouette": float(np.mean(fold_sils)) if fold_sils else None,
-        }
-
-    results["capacity_sweep"] = capacity_results
+        capacity_results[str(hidden_dim)] = CapacitySweepEntry(
+            knn_accuracy=float(np.mean(fold_accs)) if fold_accs else 0.0,
+            silhouette=float(np.mean(fold_sils)) if fold_sils else None,
+        )
 
     # Contrastive tier ablation (per-tier + pairwise)
     print("    Contrastive tier ablation...")
-    results["tier_ablation"] = _run_contrastive_tier_ablation(data)
+    ablation = _run_contrastive_tier_ablation(data)
 
     # Linear projection baselines (LDA / NCA) — compare to nonlinear MLP
     print("    Linear projection baselines...")
-    results["linear_baselines"] = _run_linear_baselines(data)
+    baselines = _run_linear_baselines(data)
 
-    return results
+    return ContrastiveResult(
+        T2_T2_5=tier_results["T2+T2.5"],
+        combined=tier_results["combined"],
+        capacity_sweep=capacity_results,
+        tier_ablation=ablation,
+        linear_baselines=baselines,
+    )
 
 
-def _run_linear_baselines(data: AnalysisData) -> dict:
-    """LDA and NCA projection baselines on T2+T2.5.
-
-    If LDA/NCA match the MLP, the manifold isn't that curved.
-    If MLP >> LDA/NCA, the curvature is real and nonlinear access matters.
-    """
+def _run_linear_baselines(data: AnalysisData) -> dict[str, LinearBaselineEntry]:
+    """LDA and NCA projection baselines on T2+T2.5."""
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     from sklearn.neighbors import NeighborhoodComponentsAnalysis
 
     X = data.get_tier("T2+T2.5")
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_scaled = StandardScaler().fit_transform(X)
     folds = _build_topic_folds(data.topics, n_folds=5, seed=42)
     n_components = min(len(data.unique_modes) - 1, X.shape[1])
 
-    results: dict = {}
+    results: dict[str, LinearBaselineEntry] = {}
 
     for name, ProjectorClass, projector_kwargs in [
         ("LDA", LinearDiscriminantAnalysis, {}),
@@ -270,22 +266,21 @@ def _run_linear_baselines(data: AnalysisData) -> dict:
                 fold_accs.append(0.0)
                 print(f"        {name} fold failed: {e}")
 
-        results[name] = {
-            "knn_accuracy": float(np.mean(fold_accs)) if fold_accs else 0.0,
-            "knn_std": float(np.std(fold_accs)) if fold_accs else 0.0,
-            "silhouette": float(np.mean(fold_sils)) if fold_sils else None,
-            "n_components": n_components,
-        }
+        results[name] = LinearBaselineEntry(
+            knn_accuracy=float(np.mean(fold_accs)) if fold_accs else 0.0,
+            knn_std=float(np.std(fold_accs)) if fold_accs else 0.0,
+            silhouette=float(np.mean(fold_sils)) if fold_sils else None,
+            n_components=n_components,
+        )
 
     return results
 
 
 def _eval_contrastive_tier(
     X: NDArray, modes: NDArray, topics: NDArray, seed: int = 42,
-) -> dict:
+) -> ContrastiveAblationEntry:
     """Run contrastive MLP + kNN evaluation on a single feature set."""
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_scaled = StandardScaler().fit_transform(X)
     folds = _build_topic_folds(topics, n_folds=5, seed=seed)
 
     fold_accs: list[float] = []
@@ -310,75 +305,68 @@ def _eval_contrastive_tier(
             fold_accs.append(0.0)
             print(f"        Fold failed: {e}")
 
-    return {
-        "knn_accuracy": float(np.mean(fold_accs)) if fold_accs else 0.0,
-        "knn_std": float(np.std(fold_accs)) if fold_accs else 0.0,
-        "silhouette": float(np.mean(fold_sils)) if fold_sils else None,
-        "n_features": X.shape[1],
-    }
+    return ContrastiveAblationEntry(
+        knn_accuracy=float(np.mean(fold_accs)) if fold_accs else 0.0,
+        knn_std=float(np.std(fold_accs)) if fold_accs else 0.0,
+        silhouette=float(np.mean(fold_sils)) if fold_sils else None,
+        n_features=int(X.shape[1]),
+    )
 
 
-def _run_contrastive_tier_ablation(data: AnalysisData) -> dict:
-    """Contrastive MLP tier ablation: individual tiers, all pairs, and key combos.
-
-    This mirrors the original tier ablation which measured super-additivity
-    in contrastive kNN space, not RF accuracy.
-    """
-    results: dict = {}
-
-    # Discover present tiers
+def _run_contrastive_tier_ablation(data: AnalysisData) -> ContrastiveTierAblation:
+    """Contrastive MLP tier ablation: individual tiers, all pairs, key combos."""
     present_baseline = [t for t in BASELINE_TIERS if t in data.run4.tier_features]
     present_engineered = [t for t in ENGINEERED_TIERS if t in data.run4.tier_features]
     all_individual = present_baseline + present_engineered
 
     # Individual tiers
-    individual: dict[str, dict] = {}
+    individual: dict[str, ContrastiveAblationEntry] = {}
     for tier in all_individual:
         print(f"      Individual: {tier}")
-        X = data.get_tier(tier)
-        individual[tier] = _eval_contrastive_tier(X, data.modes, data.topics)
-    results["individual"] = individual
+        individual[tier] = _eval_contrastive_tier(data.get_tier(tier), data.modes, data.topics)
 
     # Pairwise combinations (within baseline only — bounded)
-    pairwise: dict[str, dict] = {}
+    pairwise: dict[str, ContrastivePairwiseEntry] = {}
     for t1, t2 in combinations(present_baseline, 2):
         key = f"{t1}+{t2}"
         print(f"      Pair: {key}")
         X_pair = np.concatenate([data.get_tier(t1), data.get_tier(t2)], axis=1)
         result = _eval_contrastive_tier(X_pair, data.modes, data.topics)
         best_individual = max(
-            individual[t1]["knn_accuracy"],
-            individual[t2]["knn_accuracy"],
+            individual[t1].knn_accuracy,
+            individual[t2].knn_accuracy,
         )
-        result["best_individual_knn"] = best_individual
-        result["gain_over_best_individual"] = result["knn_accuracy"] - best_individual
-        pairwise[key] = result
-    results["pairwise"] = pairwise
+        pairwise[key] = ContrastivePairwiseEntry(
+            knn_accuracy=result.knn_accuracy,
+            knn_std=result.knn_std,
+            silhouette=result.silhouette,
+            n_features=result.n_features,
+            best_individual_knn=best_individual,
+            gain_over_best_individual=result.knn_accuracy - best_individual,
+        )
 
-    # Key combos (T2+T2.5 and combined — should match main results)
     print("      Combo: T2+T2.5")
-    t2t25 = _eval_contrastive_tier(
-        data.get_tier("T2+T2.5"), data.modes, data.topics,
-    )
+    t2t25 = _eval_contrastive_tier(data.get_tier("T2+T2.5"), data.modes, data.topics)
     print("      Combo: combined")
-    combined = _eval_contrastive_tier(
-        data.get_tier("combined"), data.modes, data.topics,
-    )
-    results["T2+T2.5"] = t2t25
-    results["combined"] = combined
+    combined = _eval_contrastive_tier(data.get_tier("combined"), data.modes, data.topics)
 
-    # Super-additivity summary
-    t2_knn = individual["T2"]["knn_accuracy"]
-    t25_knn = individual["T2.5"]["knn_accuracy"]
-    t2t25_knn = pairwise["T2+T2.5"]["knn_accuracy"]
-    results["super_additivity"] = {
+    t2_knn = individual["T2"].knn_accuracy
+    t25_knn = individual["T2.5"].knn_accuracy
+    t2t25_knn = pairwise["T2+T2.5"].knn_accuracy
+    super_add = ContrastiveSuperAdditivity.model_validate({
         "T2_alone": t2_knn,
         "T2.5_alone": t25_knn,
         "T2+T2.5_pair": t2t25_knn,
         "best_individual": max(t2_knn, t25_knn),
         "gain": t2t25_knn - max(t2_knn, t25_knn),
-        "combined_knn": combined["knn_accuracy"],
-        "T2+T2.5_beats_combined": t2t25_knn > combined["knn_accuracy"],
-    }
+        "combined_knn": combined.knn_accuracy,
+        "T2+T2.5_beats_combined": t2t25_knn > combined.knn_accuracy,
+    })
 
-    return results
+    return ContrastiveTierAblation.model_validate({
+        "individual": individual,
+        "pairwise": pairwise,
+        "T2+T2.5": t2t25,
+        "combined": combined,
+        "super_additivity": super_add,
+    })

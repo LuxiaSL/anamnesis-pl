@@ -29,6 +29,7 @@ from .data_loading import AnalysisData, load_analysis_data
 from .results_schema import (
     ClassificationResult,
     ClusteringResult,
+    ContrastiveResult,
     IntegrityResult,
     TierAblationResult,
 )
@@ -42,6 +43,7 @@ SECTION_MODELS: dict[str, type[BaseModel]] = {
     "classification": ClassificationResult,
     "tier_ablation": TierAblationResult,
     "clustering": ClusteringResult,
+    "contrastive": ContrastiveResult,
 }
 
 
