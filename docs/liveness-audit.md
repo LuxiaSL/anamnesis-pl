@@ -303,9 +303,19 @@ Ranked by parseability payoff per unit of risk:
    access. The JSON wire format under `outputs/analysis/*/results.json`
    is unchanged — `clean_for_json` handles BaseModel values on the
    write path.
-8. **Section registry for `run_full_analysis`.** Collapses 10 hardcoded if/else
-   blocks. (The 6b skip bug it would have fixed is already resolved in
-   Phase 2 subtask 2d, but the registry-based dispatch is still desirable.)
+8. ~~**Section registry for `run_full_analysis`.**~~ **DONE (Phase 3 —
+   subtask 3b).** The eleven hardcoded `if N not in skip: ...` blocks in
+   `unified_runner/__init__.py` now collapse into a single loop over a
+   `list[SectionSpec]`. Each spec declares the section's number, name,
+   results-dict key, lazy runner closure, and flags for the two
+   non-uniform cases (`requires_text` for section 9, `always_rerun` for
+   scorecard). Lazy imports, per-section timing, checkpoint saves, the
+   NaN/Inf integrity warning, and scorecard's always-re-run semantics
+   are preserved; section 10 now also emits a SKIPPED log on explicit
+   `--skip 10` (previously silent). `run_full_analysis` body dropped
+   from ~247 to ~148 lines, and the JSON wire format is unchanged
+   (verified by structural diff on `outputs/analysis/8b_v2/results.json`
+   pre- and post-refactor).
 9. ~~**Fate of `t3_investigation.py` and `geometric_trio/{intrinsic_dimension, ccgp, delta_hyperbolicity, verification_runner}.py` standalone CLIs.**~~ **DONE (Phase 1)** — all 5 deleted. `geometric_trio/` now contains only `data_loader.py` (load-bearing shared dep) + `results/` (historical outputs). Analysis functionality lives in `unified_runner/geometry.py` (`run_intrinsic_dimension`, `run_ccgp`, `run_topology`) and is the living code path.
 10. **Retrofit `state_extractor.extract_tier*` to `FeatureFamilyResult` contract.**
     High value, high blast radius — last.
