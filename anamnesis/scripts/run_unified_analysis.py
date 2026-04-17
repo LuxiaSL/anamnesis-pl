@@ -62,7 +62,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--skip", type=int, nargs="+", default=[],
-        help="Section numbers to skip (1-10).",
+        help="Section numbers to skip (1-11).",
     )
     parser.add_argument(
         "--addon-dirs", type=str, nargs="+", default=None,

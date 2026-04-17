@@ -11,6 +11,7 @@ Performs the full analysis gauntlet on any set of extraction signatures:
   8. Contrastive projection (optional, requires torch)
   9. Semantic independence (optional, requires sentence-transformers)
   10. Prediction scorecard
+  11. Manifold geometry (curvature, geodesic, anisotropy)
 
 Supports checkpoint-based resume: saves results after each section completes.
 On restart, detects which sections already have results and skips them.
@@ -37,6 +38,7 @@ SECTION_KEYS: dict[int, str] = {
     8: "contrastive",
     9: "semantic",
     10: "scorecard",
+    11: "manifold_geometry",
 }
 
 SECTION_NAMES: dict[int, str] = {
@@ -50,6 +52,7 @@ SECTION_NAMES: dict[int, str] = {
     8: "Contrastive Projection",
     9: "Semantic Independence",
     10: "Prediction Scorecard",
+    11: "Manifold Geometry",
 }
 
 
@@ -108,7 +111,7 @@ def run_full_analysis(
     core_only : bool
         If True, use one rep per topic-mode pair.
     skip_sections : set of int, optional
-        Section numbers to skip (1-10).
+        Section numbers to skip (1-11).
     resume : bool
         If True, load existing checkpoint and skip completed sections.
     addon_dirs : list[Path], optional
@@ -247,16 +250,6 @@ def run_full_analysis(
     else:
         print("\n--- Section 6: Topology --- SKIPPED")
 
-    # ── Section 6b: Manifold Geometry ──
-    if 6 not in skip:
-        print("\n--- Section 6b: Manifold Geometry ---")
-        from .geometry import run_manifold_geometry
-        t0 = time.perf_counter()
-        results["manifold_geometry"] = run_manifold_geometry(data)
-        section_times["manifold_geometry"] = time.perf_counter() - t0
-        print(f"  Done ({section_times['manifold_geometry']:.1f}s)")
-        _save_checkpoint(results, output_dir)
-
     # ── Section 7: Clustering ──
     if 7 not in skip:
         print("\n--- Section 7: Clustering ---")
@@ -303,6 +296,18 @@ def run_full_analysis(
         print("\n--- Section 10: Prediction Scorecard ---")
         from .scorecard import run_scorecard
         results["scorecard"] = run_scorecard(results)
+
+    # ── Section 11: Manifold Geometry ──
+    if 11 not in skip:
+        print("\n--- Section 11: Manifold Geometry ---")
+        from .geometry import run_manifold_geometry
+        t0 = time.perf_counter()
+        results["manifold_geometry"] = run_manifold_geometry(data)
+        section_times["manifold_geometry"] = time.perf_counter() - t0
+        print(f"  Done ({section_times['manifold_geometry']:.1f}s)")
+        _save_checkpoint(results, output_dir)
+    else:
+        print("\n--- Section 11: Manifold Geometry --- SKIPPED")
 
     # Save final timing
     results["section_times"] = section_times

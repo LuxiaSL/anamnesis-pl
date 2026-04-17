@@ -505,7 +505,7 @@ def run_topology(data: AnalysisData) -> dict:
     return results
 
 
-# ── Section 6b: Manifold Geometry (tangent-space, geodesic distortion, curvature) ──
+# ── Section 11: Manifold Geometry (tangent-space, geodesic distortion, curvature) ──
 
 
 def run_manifold_geometry(data: AnalysisData) -> dict:
