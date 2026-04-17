@@ -37,24 +37,7 @@ from anamnesis.analysis.geometric_trio.data_loader import (
     ENGINEERED_TIERS,
     load_run4,
 )
-
-
-# ── Run configuration (duplicated from run_unified_analysis.py for independence) ──
-
-KNOWN_RUNS: dict[str, Path] = {
-    "8b_v2": Path("outputs/runs/8b_fat_01/signatures_v2"),
-    "3b_v2": Path("outputs/runs/3b_fat_01/signatures_v2"),
-}
-
-KNOWN_ADDONS: dict[str, list[Path]] = {
-    "8b_v2": [
-        Path("outputs/runs/8b_fat_01/signatures_v2_addon"),
-        Path("outputs/runs/8b_fat_01/signatures_v2_contrastive"),
-    ],
-    "3b_v2": [
-        Path("outputs/runs/3b_fat_01/signatures_v2_contrastive"),
-    ],
-}
+from anamnesis.config import RUNS
 
 
 def _parse_swap_mode(mode_str: str) -> tuple[str, str] | None:
@@ -315,7 +298,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Binary prompt-swap confound test")
     parser.add_argument(
         "--run", type=str, nargs="+", required=True,
-        help=f"Run name(s). Known: {list(KNOWN_RUNS.keys())}",
+        help=f"Run name(s). Known: {list(RUNS.keys())}",
     )
     parser.add_argument(
         "--output-dir", type=str, default="outputs/analysis",
@@ -326,16 +309,16 @@ def main() -> None:
     all_results: dict = {}
 
     for run_name in args.run:
-        if run_name not in KNOWN_RUNS:
-            print(f"Unknown run: {run_name}")
+        if run_name not in RUNS:
+            print(f"Unknown run: {run_name}. Known: {list(RUNS.keys())}")
             continue
 
         print(f"\n{'='*60}")
         print(f"BINARY PROMPT-SWAP: {run_name}")
         print(f"{'='*60}")
 
-        sig_dir = KNOWN_RUNS[run_name]
-        addon_dirs = KNOWN_ADDONS.get(run_name)
+        sig_dir = RUNS[run_name].signature_dir
+        addon_dirs = list(RUNS[run_name].addon_dirs) if RUNS[run_name].addon_dirs else None
 
         results = run_binary_prompt_swap(
             run_name=run_name,

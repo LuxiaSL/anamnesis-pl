@@ -33,22 +33,7 @@ from anamnesis.analysis.geometric_trio.data_loader import (
     TIER_GROUPS,
     load_run4,
 )
-
-# ── Known runs (duplicated for independence) ──
-
-KNOWN_RUNS: dict[str, Path] = {
-    "8b_v2": Path("outputs/runs/8b_fat_01/signatures_v2"),
-    "3b_v2": Path("outputs/runs/3b_fat_01/signatures_v2"),
-}
-KNOWN_ADDONS: dict[str, list[Path]] = {
-    "8b_v2": [
-        Path("outputs/runs/8b_fat_01/signatures_v2_addon"),
-        Path("outputs/runs/8b_fat_01/signatures_v2_contrastive"),
-    ],
-    "3b_v2": [
-        Path("outputs/runs/3b_fat_01/signatures_v2_contrastive"),
-    ],
-}
+from anamnesis.config import RUNS
 
 
 # ── Sub-family definitions ──
@@ -385,12 +370,12 @@ def main() -> None:
     all_results: dict = {}
 
     for run_name in args.run:
-        sig_dir = KNOWN_RUNS.get(run_name)
-        if not sig_dir:
-            print(f"Unknown run: {run_name}")
+        if run_name not in RUNS:
+            print(f"Unknown run: {run_name}. Known: {list(RUNS.keys())}")
             continue
 
-        addon_dirs = KNOWN_ADDONS.get(run_name)
+        sig_dir = RUNS[run_name].signature_dir
+        addon_dirs = list(RUNS[run_name].addon_dirs) if RUNS[run_name].addon_dirs else None
 
         print(f"\n{'='*60}")
         print(f"SUB-FAMILY DECOMPOSITION: {run_name}")

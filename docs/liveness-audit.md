@@ -217,11 +217,12 @@ to `config.py` covering the four canonical runs (8b_baseline, 3b_run4,
 analysis CLI now consumes the registry; `--run` / `--sig-dir` user-facing
 behavior is unchanged.
 
-**Still duplicated (out of scope for Phase 2):** `scripts/run_subfamily_decomp.py`
-and `scripts/run_binary_prompt_swap.py` keep their own local
-`KNOWN_RUNS` / `KNOWN_ADDONS` dicts (paths identical to the new `RUNS`
-registry). Those weren't flagged in the original audit; folding them into
-`config.RUNS` is a follow-up.
+Follow-up sweep: `scripts/run_subfamily_decomp.py` and
+`scripts/run_binary_prompt_swap.py` held their own local `KNOWN_RUNS` /
+`KNOWN_ADDONS` dicts (not flagged in the original audit — discovered
+during Phase 2). Both now consume `config.RUNS` directly via the same
+pattern as `run_unified_analysis.py`. No remaining `KNOWN_RUNS` /
+`KNOWN_ADDONS` references in any Python module.
 
 ## README drift — RESOLVED in Phase 2 (subtask 2a)
 
@@ -285,10 +286,10 @@ Ranked by parseability payoff per unit of risk:
    preserved) or refactor to import. No middle ground.~~ Resolved in Phase 1
    — file deleted; output preserved at `geometric_trio/results/verification_run.json`.
 5. ~~**Move `KNOWN_RUNS` / `KNOWN_ADDONS` to `config.py` as `RunRegistry`.**~~
-   **DONE (Phase 2 — subtask 2f).** `RunSpec` + `RUNS` registry in
-   `config.py`; `run_unified_analysis.py` consumes it. Two other scripts
-   (`run_subfamily_decomp`, `run_binary_prompt_swap`) still hold local
-   copies — see §6 above.
+   **DONE (Phase 2 — subtask 2f + follow-up).** `RunSpec` + `RUNS` registry
+   in `config.py` consumed by `run_unified_analysis.py`, plus a follow-up
+   commit applying the same pattern to `run_subfamily_decomp.py` and
+   `run_binary_prompt_swap.py`. No remaining local copies.
 6. ~~**Archive the A/B benchmarks and profilers.**~~ **DONE (Phase 1)** — all three files deleted rather than archived: `test_fast_postprocess.py`, `compare_streaming_vs_hf.py`, `profile_generate_overhead.py`. Git history preserves them if needed. Future optimization work would want a fresh profiler tailored to its target, not this one.
 7. **Add schemas for analysis result dicts.** Pydantic result types for each
    `run_<section>()` would make the 400+ `clf.get("tier", {}).get("rf_5way", ...)` accesses
