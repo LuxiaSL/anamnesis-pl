@@ -27,11 +27,15 @@ from pydantic import BaseModel, ValidationError
 
 from .data_loading import AnalysisData, load_analysis_data
 from .results_schema import (
+    CCGPResult,
     ClassificationResult,
     ClusteringResult,
     ContrastiveResult,
     IntegrityResult,
+    IntrinsicDimensionResult,
+    ManifoldGeometryResult,
     TierAblationResult,
+    TopologyResult,
 )
 from .utils import clean_for_json
 
@@ -42,8 +46,12 @@ SECTION_MODELS: dict[str, type[BaseModel]] = {
     "integrity": IntegrityResult,
     "classification": ClassificationResult,
     "tier_ablation": TierAblationResult,
+    "intrinsic_dimension": IntrinsicDimensionResult,
+    "ccgp": CCGPResult,
+    "topology": TopologyResult,
     "clustering": ClusteringResult,
     "contrastive": ContrastiveResult,
+    "manifold_geometry": ManifoldGeometryResult,
 }
 
 
@@ -417,31 +425,30 @@ def _print_summary(results: dict) -> None:
         print(f"  T2.5 > T2 > T1 inversion: {ablation.tier_inversion_t25_gt_t2_gt_t1}")
 
     # ID
-    id_data = results.get("intrinsic_dimension", {})
-    if id_data.get("global"):
+    id_data = results.get("intrinsic_dimension")
+    if isinstance(id_data, IntrinsicDimensionResult) and id_data.global_:
         print("\n  Intrinsic dimension:")
         for tier in ["T1", "T2", "T2.5", "T3", "T2+T2.5"]:
-            tid = id_data.get("global", {}).get(tier, {}).get("dadapy_id")
-            if isinstance(tid, (int, float)):
-                print(f"    {tier}: {tid:.1f}")
-        conv = id_data.get("tier_convergence", {})
-        if conv and "max_pairwise_diff" in conv:
-            print(f"  Tier convergence (max diff): {conv['max_pairwise_diff']:.1f}")
+            tier_id = id_data.global_.get(tier)
+            if tier_id is not None and isinstance(tier_id.dadapy_id, (int, float)):
+                print(f"    {tier}: {tier_id.dadapy_id:.1f}")
+        if id_data.tier_convergence is not None:
+            print(f"  Tier convergence (max diff): {id_data.tier_convergence.max_pairwise_diff:.1f}")
 
     # CCGP
-    ccgp = results.get("ccgp", {}).get("summary", {})
-    if ccgp:
-        print(f"\n  CCGP: min={ccgp.get('min_ccgp')}, all_perfect={ccgp.get('all_perfect')}")
+    ccgp = results.get("ccgp")
+    if isinstance(ccgp, CCGPResult):
+        summary = ccgp.summary
+        print(f"\n  CCGP: min={summary.min_ccgp}, all_perfect={summary.all_perfect}")
 
     # Topology
-    topo = results.get("topology", {}).get("topology_summary", {}).get("euclidean", {})
-    if topo:
-        print(f"\n  Topology: nearest={topo.get('nearest_pair')}, "
-              f"outgroup_ratio={topo.get('analogical_outgroup_ratio', 0):.2f}")
-
-    delta = results.get("topology", {}).get("gromov_delta_euclidean", {})
-    if delta:
-        print(f"  Delta-hyperbolicity: delta_rel={delta.get('delta_relative', 0):.3f}")
+    topo = results.get("topology")
+    if isinstance(topo, TopologyResult):
+        euc = topo.topology_summary.get("euclidean")
+        if euc is not None:
+            print(f"\n  Topology: nearest={euc.nearest_pair}, "
+                  f"outgroup_ratio={euc.analogical_outgroup_ratio:.2f}")
+        print(f"  Delta-hyperbolicity: delta_rel={topo.gromov_delta_euclidean.delta_relative:.3f}")
 
     # Semantic orthogonality
     semantic = results.get("semantic", {})

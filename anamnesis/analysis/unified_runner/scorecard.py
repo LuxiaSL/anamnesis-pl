@@ -37,7 +37,7 @@ def run_scorecard(all_results: dict) -> dict:
     scorecard: list[dict] = []
 
     # ── Prediction 1: CCGP = 1.0 ──
-    ccgp_data = all_results.get("ccgp", {})
+    ccgp_data = _as_dict(all_results.get("ccgp"))
     ccgp_scores = []
     for key, variant in ccgp_data.get("variants", {}).items():
         if isinstance(variant, dict) and "ccgp_score" in variant:
@@ -57,7 +57,7 @@ def run_scorecard(all_results: dict) -> dict:
     })
 
     # ── Prediction 2: Centroid topology preserved ──
-    topo = all_results.get("topology", {}).get("topology_summary", {})
+    topo = _as_dict(all_results.get("topology")).get("topology_summary", {})
     euc_topo = topo.get("euclidean", {})
     nearest = euc_topo.get("nearest_pair", "")
     outgroup_ratio = euc_topo.get("analogical_outgroup_ratio", 0)
@@ -81,7 +81,7 @@ def run_scorecard(all_results: dict) -> dict:
     })
 
     # ── Prediction 3: T1/T2/T2.5 ID convergence ──
-    id_data = all_results.get("intrinsic_dimension", {})
+    id_data = _as_dict(all_results.get("intrinsic_dimension"))
     convergence = id_data.get("tier_convergence", {})
     max_diff = convergence.get("max_pairwise_diff")
 
@@ -227,7 +227,7 @@ def run_scorecard(all_results: dict) -> dict:
     })
 
     # ── Prediction 9: Delta-hyperbolicity slight decrease ──
-    topo_data = all_results.get("topology", {})
+    topo_data = _as_dict(all_results.get("topology"))
     delta_rel = _safe_get(topo_data, "gromov_delta_euclidean", "delta_relative")
 
     if isinstance(delta_rel, (int, float)):

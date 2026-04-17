@@ -724,3 +724,346 @@ class ContrastiveResult(BaseModel):
         if self.error is not None:
             out["error"] = self.error
         return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Section 4: Intrinsic dimension
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class BootstrapStats(BaseModel):
+    """Per-seed bootstrap distribution of dadapy TwoNN IDs."""
+
+    model_config = _FORBID
+
+    mean: float
+    std: float
+    ci_lo: float
+    ci_hi: float
+    n_successful: int
+
+
+class GlobalTierIDResult(BaseModel):
+    """ID metrics for one tier of the full dataset.
+
+    ``dadapy_id`` / ``skdim_id`` fall back to ``"ERROR: ..."`` strings
+    when the respective estimator raises. ``dadapy_err`` is set only on
+    dadapy success. ``bootstrap_by_seed`` keys are stringified ints.
+    """
+
+    model_config = _FORBID
+
+    n_features_clean: int
+    dadapy_id: float | str | None = None
+    dadapy_err: float | None = None
+    skdim_id: float | str | None = None
+    bootstrap_by_seed: dict[str, BootstrapStats]
+
+
+class PerModeIDResult(BaseModel):
+    """ID metrics for one mode on the T2+T2.5 feature set."""
+
+    model_config = _FORBID
+
+    n_samples: int
+    dadapy_id: float | str | None = None
+    skdim_id: float | str | None = None
+    bootstrap_mean: float | None = None
+    bootstrap_std: float | None = None
+    bootstrap_ci: list[float] | None = None
+
+
+class GRIDEResult(BaseModel):
+    """Multiscale GRIDE estimator output or an error stub."""
+
+    model_config = _FORBID
+
+    ids: list[float] | None = None
+    errors: list[float] | None = None
+    error: str | None = None
+
+
+class TierConvergenceResult(BaseModel):
+    """T1/T2/T2.5 ID convergence summary."""
+
+    model_config = _FORBID
+
+    max_pairwise_diff: float
+    converged_within_2: bool
+    values: dict[str, float]
+
+
+class IntrinsicDimensionResult(BaseModel):
+    """Section 4 result.
+
+    All fields optional so the top-level "dadapy not installed" error
+    stub (``{"error": "..."}``) round-trips cleanly.
+    """
+
+    model_config = _FORBID
+
+    global_: dict[str, GlobalTierIDResult] | None = None
+    per_mode: dict[str, PerModeIDResult] | None = None
+    gride: GRIDEResult | None = None
+    tier_convergence: TierConvergenceResult | None = None
+    error: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_disk(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "global" in data:
+            out = dict(data)
+            out["global_"] = out.pop("global")
+            return out
+        return data
+
+    @model_serializer(mode="plain")
+    def _to_disk(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.global_ is not None:
+            out["global"] = {
+                k: v.model_dump(mode="json", exclude_none=True)
+                for k, v in self.global_.items()
+            }
+        if self.per_mode is not None:
+            out["per_mode"] = {
+                k: v.model_dump(mode="json", exclude_none=True)
+                for k, v in self.per_mode.items()
+            }
+        if self.gride is not None:
+            out["gride"] = self.gride.model_dump(mode="json", exclude_none=True)
+        if self.tier_convergence is not None:
+            out["tier_convergence"] = self.tier_convergence.model_dump(mode="json")
+        if self.error is not None:
+            out["error"] = self.error
+        return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Section 5: CCGP
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class CCGPDichotomy(BaseModel):
+    """Single binary dichotomy evaluation within a CCGP variant."""
+
+    model_config = _FORBID
+
+    group_a: list[str]
+    group_b: list[str]
+    mean_accuracy: float
+    decodable: bool
+
+
+class CCGPVariant(BaseModel):
+    """One CCGP variant (classifier × seed × fold-count × optional tier)."""
+
+    model_config = _FORBID
+
+    multiclass_mean: float
+    multiclass_fold_accs: list[float]
+    per_mode_recall: dict[str, float]
+    n_decodable: int
+    n_dichotomies: int
+    ccgp_score: float
+    dichotomies: list[CCGPDichotomy]
+
+
+class CCGPSummary(BaseModel):
+    """CCGP score summary across all variants."""
+
+    model_config = _FORBID
+
+    min_ccgp: float
+    max_ccgp: float
+    all_perfect: bool
+
+
+class CCGPResult(BaseModel):
+    """Section 5 result: CCGP across classifier/seed/fold variants."""
+
+    model_config = _FORBID
+
+    variants: dict[str, CCGPVariant]
+    summary: CCGPSummary
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Section 6: Topology & hyperbolicity
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TopologyMetricSummary(BaseModel):
+    """Nearest/farthest centroid-pair summary for one distance metric."""
+
+    model_config = _FORBID
+
+    nearest_pair: str
+    nearest_dist: float
+    farthest_pair: str
+    farthest_dist: float
+    analogical_outgroup_ratio: float
+
+
+class GromovDeltaResult(BaseModel):
+    """Gromov delta-hyperbolicity diagnostics (Euclidean)."""
+
+    model_config = _FORBID
+
+    delta_max: float
+    delta_relative: float
+    delta_mean: float
+    delta_median: float
+    diameter: float
+    n_quadruples: int
+
+
+class TopologyResult(BaseModel):
+    """Section 6 result: centroid distances, hierarchical clustering,
+    topology summary, and delta-hyperbolicity.
+
+    ``hierarchical_clustering`` values are Newick-string trees on success
+    or ``"ERROR: ..."`` strings on failure.
+    """
+
+    model_config = _FORBID
+
+    tier: str
+    euclidean_centroid_distances: dict[str, float]
+    cosine_centroid_distances: dict[str, float]
+    manhattan_centroid_distances: dict[str, float]
+    hierarchical_clustering: dict[str, str]
+    topology_summary: dict[str, TopologyMetricSummary]
+    gromov_delta_euclidean: GromovDeltaResult
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Section 11: Manifold geometry
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class TangentAngles(BaseModel):
+    """Principal angles between two mode subspaces."""
+
+    model_config = _FORBID
+
+    mean_angle_deg: float
+    max_angle_deg: float
+    min_angle_deg: float
+    angles_deg: list[float]
+
+
+class ModeVarianceExplained(BaseModel):
+    """PCA explained-variance-ratio summary for one mode."""
+
+    model_config = _FORBID
+
+    explained_variance_ratio: list[float]
+    cumulative_5: float
+    cumulative_10: float
+
+
+class TangentSpaceResult(BaseModel):
+    """Local tangent-space alignment + per-mode variance explained.
+
+    Returns an error stub on PCA failure; otherwise populates all three
+    success fields.
+    """
+
+    model_config = _FORBID
+
+    pairwise_angles: dict[str, TangentAngles] | None = None
+    mode_variance_explained: dict[str, ModeVarianceExplained] | None = None
+    n_components: int | None = None
+    error: str | None = None
+
+
+class GeodesicOverall(BaseModel):
+    """Overall geodesic-vs-Euclidean distortion stats."""
+
+    model_config = _FORBID
+
+    mean_distortion: float
+    std_distortion: float
+    max_distortion: float
+    median_distortion: float
+
+
+class GeodesicPerMode(BaseModel):
+    """Per-mode geodesic distortion (within-mode pairs only)."""
+
+    model_config = _FORBID
+
+    mean: float
+    std: float
+
+
+class GeodesicDistortionResult(BaseModel):
+    """Isomap geodesic / Euclidean distortion diagnostics."""
+
+    model_config = _FORBID
+
+    overall: GeodesicOverall | None = None
+    per_mode: dict[str, GeodesicPerMode] | None = None
+    within_mode_mean: float | None = None
+    between_mode_mean: float | None = None
+    isomap_n_neighbors: int | None = None
+    reconstruction_error: float | None = None
+    error: str | None = None
+
+
+class CurvatureScaleEntry(BaseModel):
+    """Local-PCA reconstruction-error proxy for curvature at one scale."""
+
+    model_config = _FORBID
+
+    mean_curvature: float
+    std_curvature: float
+    per_mode: dict[str, float]
+
+
+class CurvatureResult(BaseModel):
+    """Scale-dependent curvature proxies.
+
+    ``per_scale`` keys are stringified integers matching ``scales``.
+    """
+
+    model_config = _FORBID
+
+    scales: list[int] | None = None
+    per_scale: dict[str, CurvatureScaleEntry] | None = None
+    error: str | None = None
+
+
+class BettiNumberEntry(BaseModel):
+    """Persistent-homology summary for one dimension (H0/H1/H2)."""
+
+    model_config = _FORBID
+
+    n_features: int
+    n_finite: int
+    mean_lifetime: float
+    max_lifetime: float
+    median_lifetime: float
+
+
+class PersistentHomologyResult(BaseModel):
+    """Persistent homology via ripser (or error stub)."""
+
+    model_config = _FORBID
+
+    betti_numbers: dict[str, BettiNumberEntry] | None = None
+    n_subsampled: int | None = None
+    error: str | None = None
+
+
+class ManifoldGeometryResult(BaseModel):
+    """Section 11 result: tangent space, geodesic distortion,
+    curvature proxies, and persistent homology."""
+
+    model_config = _FORBID
+
+    tangent_space: TangentSpaceResult
+    geodesic_distortion: GeodesicDistortionResult
+    curvature: CurvatureResult
+    persistent_homology: PersistentHomologyResult
