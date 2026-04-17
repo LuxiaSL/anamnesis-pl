@@ -357,40 +357,61 @@ def save_generation(
     return npz_path, json_path
 
 
-def build_generation_specs(config: ExperimentConfig) -> list[GenerationSpec]:
-    """Build 200 generation specs: 20 topics × 5 modes × 2 reps.
+def build_generation_specs(
+    config: ExperimentConfig,
+    mode_dict: dict[str, str] | None = None,
+    topics: list[str] | None = None,
+    num_reps: int | None = None,
+    prompt_set: str = "8B",
+) -> list[GenerationSpec]:
+    """Build generation specs. Defaults reproduce the 8B baseline.
 
-    Uses the standard 20 topics (set_a + set_b). Same mode prompts.
-    Different seeds per rep to get independent samples.
+    Parameters
+    ----------
+    config : ExperimentConfig
+        Used only for `prompts_path`.
+    mode_dict : dict[str, str] | None
+        Maps mode name → system prompt. Defaults to `PROCESSING_MODES`
+        (the canonical 5 format-controlled modes).
+    topics : list[str] | None
+        Topic strings. Defaults to `set_a + set_b` from `prompts_path`.
+        Pass a subset for alternate experiments.
+    num_reps : int | None
+        Repetitions per (topic, mode) cell. Defaults to the `num_repetitions`
+        field of `prompts_path`, or 2.
+    prompt_set : str
+        Tag stored on each spec; also used as the seed-namespace prefix so
+        alternate experiments (e.g., "8B_r2") do not collide with baseline
+        seeds.
     """
     with open(config.prompts_path) as f:
-        prompts = json.load(f)
+        prompts_file = json.load(f)
+
+    if mode_dict is None:
+        mode_dict = dict(PROCESSING_MODES)
+    if topics is None:
+        topics = [*prompts_file["topics"]["set_a"], *prompts_file["topics"]["set_b"]]
+    if num_reps is None:
+        num_reps = prompts_file.get("num_repetitions", 2)
+
+    template = prompts_file.get("user_prompt_template", "Write about: {topic}")
+    modes = list(mode_dict.keys())
 
     specs: list[GenerationSpec] = []
     gen_id = 0
-    modes = list(PROCESSING_MODES.keys())
-    template = prompts.get("user_prompt_template", "Write about: {topic}")
-
-    # Combine set_a and set_b for 20 topics
-    all_topics: list[str] = []
-    all_topics.extend(prompts["topics"]["set_a"])
-    all_topics.extend(prompts["topics"]["set_b"])
-
-    num_reps = prompts.get("num_repetitions", 2)
-
     for rep in range(num_reps):
-        for topic_idx, topic in enumerate(all_topics):
+        for topic_idx, topic in enumerate(topics):
             for mode_idx, mode in enumerate(modes):
                 specs.append(GenerationSpec(
                     generation_id=gen_id,
-                    prompt_set="8B",
+                    prompt_set=prompt_set,
                     topic=topic,
                     topic_idx=topic_idx,
                     mode=mode,
                     mode_idx=mode_idx,
-                    system_prompt=PROCESSING_MODES[mode],
+                    system_prompt=mode_dict[mode],
                     user_prompt=template.format(topic=topic),
-                    seed=make_seed(topic_idx, mode_idx, rep),
+                    seed=make_seed(topic_idx, mode_idx, rep, prompt_set=prompt_set),
                     repetition=rep,
                 ))
                 gen_id += 1
