@@ -26,7 +26,11 @@ from pathlib import Path
 from pydantic import BaseModel, ValidationError
 
 from .data_loading import AnalysisData, load_analysis_data
-from .results_schema import ClassificationResult, IntegrityResult
+from .results_schema import (
+    ClassificationResult,
+    IntegrityResult,
+    TierAblationResult,
+)
 from .utils import clean_for_json
 
 # Registry mapping section-results key → pydantic model class.
@@ -35,6 +39,7 @@ from .utils import clean_for_json
 SECTION_MODELS: dict[str, type[BaseModel]] = {
     "integrity": IntegrityResult,
     "classification": ClassificationResult,
+    "tier_ablation": TierAblationResult,
 }
 
 
@@ -399,13 +404,13 @@ def _print_summary(results: dict) -> None:
             print(f"  Permutation p ({tier}): {tier_clf.permutation_test.p_value}")
 
     # Tier ablation
-    ablation = results.get("tier_ablation", {})
-    ranking = ablation.get("tier_ranking", [])
-    if ranking:
-        rank_str = " > ".join(f"{r['tier']}({r['accuracy']:.0%})" for r in ranking)
+    ablation = results.get("tier_ablation")
+    if isinstance(ablation, TierAblationResult) and ablation.tier_ranking:
+        rank_str = " > ".join(
+            f"{entry.tier}({entry.accuracy:.0%})" for entry in ablation.tier_ranking
+        )
         print(f"\n  Tier ranking: {rank_str}")
-        inversion = ablation.get("tier_inversion_t25_gt_t2_gt_t1")
-        print(f"  T2.5 > T2 > T1 inversion: {inversion}")
+        print(f"  T2.5 > T2 > T1 inversion: {ablation.tier_inversion_t25_gt_t2_gt_t1}")
 
     # ID
     id_data = results.get("intrinsic_dimension", {})

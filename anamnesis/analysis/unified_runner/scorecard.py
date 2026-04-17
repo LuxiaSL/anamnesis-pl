@@ -157,7 +157,7 @@ def run_scorecard(all_results: dict) -> dict:
     })
 
     # ── Prediction 6: T2.5 load-bearing (tier inversion) ──
-    ablation = all_results.get("tier_ablation", {})
+    ablation = _as_dict(all_results.get("tier_ablation"))
     tier_inversion = ablation.get("tier_inversion_t25_gt_t2_gt_t1", None)
     per_tier = ablation.get("per_tier_accuracy", {})
     removal_cost = ablation.get("leave_one_tier_out", {})

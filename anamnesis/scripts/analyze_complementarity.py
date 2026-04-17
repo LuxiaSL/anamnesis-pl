@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from anamnesis.analysis.unified_runner.results_schema import (  # noqa: E402
     ClassificationResult,
+    TierAblationResult,
 )
 
 
@@ -116,6 +117,13 @@ def load_results(path: Path) -> dict | None:
             )
         except Exception as e:
             print(f"  Warning: classification schema validation failed for {path}: {e}")
+    if isinstance(raw.get("tier_ablation"), dict):
+        try:
+            raw["tier_ablation"] = TierAblationResult.model_validate(
+                raw["tier_ablation"],
+            )
+        except Exception as e:
+            print(f"  Warning: tier_ablation schema validation failed for {path}: {e}")
     return raw
 
 
@@ -390,10 +398,10 @@ def analyze_subfamily_importance(results: dict[str, dict]) -> dict:
             continue
 
         print(f"\n  --- {run_name} ---")
-        abl = r.get("tier_ablation", {})
-        top_feats = abl.get("top_features_rf", [])
+        abl = r.get("tier_ablation")
+        top_feats = abl.top_features_rf if isinstance(abl, TierAblationResult) else None
 
-        if not isinstance(top_feats, list) or not top_feats:
+        if not top_feats:
             print("  No feature importance data available")
             continue
 
@@ -402,14 +410,12 @@ def analyze_subfamily_importance(results: dict[str, dict]) -> dict:
         subfam_importance: dict[str, float] = {}
 
         for feat in top_feats:
-            name = feat.get("name", "")
-            imp = feat.get("importance", 0)
+            name = feat.name
+            imp = feat.importance
 
-            # Determine family from prefix
             family = _feature_to_family(name)
             family_importance[family] = family_importance.get(family, 0) + imp
 
-            # Determine sub-family
             subfam = _feature_to_subfamily(name)
             subfam_importance[subfam] = subfam_importance.get(subfam, 0) + imp
 
@@ -421,19 +427,16 @@ def analyze_subfamily_importance(results: dict[str, dict]) -> dict:
         for subfam, imp in sorted(subfam_importance.items(), key=lambda x: -x[1])[:15]:
             print(f"    {subfam:<35} {imp:.4f}")
 
-        # Also check per-tier top features
-        for tier_key in ["top_features_rf_t2t25"]:
-            tier_feats = abl.get(tier_key, [])
-            if isinstance(tier_feats, list) and tier_feats:
-                print(f"\n  {tier_key} sub-families:")
-                tier_subfam: dict[str, float] = {}
-                for feat in tier_feats[:20]:
-                    name = feat.get("name", "")
-                    imp = feat.get("importance", 0)
-                    subfam = _feature_to_subfamily(name)
-                    tier_subfam[subfam] = tier_subfam.get(subfam, 0) + imp
-                for subfam, imp in sorted(tier_subfam.items(), key=lambda x: -x[1])[:10]:
-                    print(f"      {subfam:<35} {imp:.4f}")
+        # Also check per-tier top features (t2t25 — always present on typed abl)
+        if abl.top_features_rf_t2t25:
+            tier_feats = abl.top_features_rf_t2t25
+            print(f"\n  top_features_rf_t2t25 sub-families:")
+            tier_subfam: dict[str, float] = {}
+            for feat in tier_feats[:20]:
+                subfam = _feature_to_subfamily(feat.name)
+                tier_subfam[subfam] = tier_subfam.get(subfam, 0) + feat.importance
+            for subfam, imp in sorted(tier_subfam.items(), key=lambda x: -x[1])[:10]:
+                print(f"      {subfam:<35} {imp:.4f}")
 
         output[run_name] = {
             "family_importance": family_importance,
