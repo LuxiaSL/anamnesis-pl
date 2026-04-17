@@ -27,6 +27,7 @@ from pydantic import BaseModel, ValidationError
 
 from .data_loading import AnalysisData, load_analysis_data
 from .results_schema import (
+    AnalysisResults,
     CCGPResult,
     ClassificationResult,
     ClusteringResult,
@@ -155,7 +156,7 @@ def run_full_analysis(
     resume: bool = False,
     addon_dirs: list[Path | str] | None = None,
     mode_filter: list[str] | None = None,
-) -> dict:
+) -> AnalysisResults:
     """Run the complete analysis gauntlet.
 
     Parameters
@@ -179,7 +180,10 @@ def run_full_analysis(
 
     Returns
     -------
-    dict with all results.
+    AnalysisResults
+        Typed composite of run metadata + per-section typed results.
+        The JSON written under ``{output_dir}/results.json`` is
+        structurally identical to the pre-typed layout.
     """
     skip = set(skip_sections) if skip_sections else set()
 
@@ -374,7 +378,7 @@ def run_full_analysis(
     # Save final timing
     results["section_times"] = section_times
 
-    # Final save
+    # Final save (structurally identical wire format to pre-typed layout)
     results_path = output_dir / "results.json"
     with open(results_path, "w") as f:
         json.dump(clean_for_json(results), f, indent=2)
@@ -383,7 +387,10 @@ def run_full_analysis(
     # Print summary
     _print_summary(results)
 
-    return results
+    # Validate the accumulated dict into the typed composite for return.
+    # We model_validate the cleaned dict so any missing/Optional sections
+    # land cleanly and any drift surfaces loudly here (extra="forbid").
+    return AnalysisResults.model_validate(clean_for_json(results))
 
 
 def _print_summary(results: dict) -> None:

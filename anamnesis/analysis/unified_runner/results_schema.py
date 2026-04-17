@@ -1360,3 +1360,47 @@ class ScorecardResult(BaseModel):
 
     predictions: list[ScorecardPrediction]
     summary: ScorecardSummary
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Top-level composite
+# ─────────────────────────────────────────────────────────────────────────
+
+
+class AnalysisResults(BaseModel):
+    """Top-level ``run_full_analysis`` output.
+
+    Wraps run metadata (``run_name``, ``timestamp``, ``core_only``,
+    ``last_updated``, ``n_samples``, ``section_times``) and all 11 typed
+    section results. Sections are Optional because ``--skip`` can leave
+    any of them unpopulated. Unknown keys are forbidden so drift is
+    caught eagerly.
+
+    The JSON wire format is identical to the pre-typed layout: the
+    orchestrator accumulates into a dict and serializes via
+    ``clean_for_json`` (which handles BaseModel values), so
+    ``results.json`` on disk stays structurally unchanged.
+    """
+
+    model_config = _FORBID
+
+    # Run metadata
+    run_name: str
+    timestamp: str
+    core_only: bool
+    last_updated: str
+    n_samples: int
+    section_times: dict[str, float] = Field(default_factory=dict)
+
+    # Section results (11 in the current pipeline)
+    integrity: IntegrityResult | None = None
+    classification: ClassificationResult | None = None
+    tier_ablation: TierAblationResult | None = None
+    intrinsic_dimension: IntrinsicDimensionResult | None = None
+    ccgp: CCGPResult | None = None
+    topology: TopologyResult | None = None
+    clustering: ClusteringResult | None = None
+    contrastive: ContrastiveResult | None = None
+    semantic: SemanticResult | None = None
+    scorecard: ScorecardResult | None = None
+    manifold_geometry: ManifoldGeometryResult | None = None
