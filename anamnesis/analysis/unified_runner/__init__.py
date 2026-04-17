@@ -34,6 +34,7 @@ from .results_schema import (
     IntegrityResult,
     IntrinsicDimensionResult,
     ManifoldGeometryResult,
+    SemanticResult,
     TierAblationResult,
     TopologyResult,
 )
@@ -51,6 +52,7 @@ SECTION_MODELS: dict[str, type[BaseModel]] = {
     "topology": TopologyResult,
     "clustering": ClusteringResult,
     "contrastive": ContrastiveResult,
+    "semantic": SemanticResult,
     "manifold_geometry": ManifoldGeometryResult,
 }
 
@@ -451,28 +453,29 @@ def _print_summary(results: dict) -> None:
         print(f"  Delta-hyperbolicity: delta_rel={topo.gromov_delta_euclidean.delta_relative:.3f}")
 
     # Semantic orthogonality
-    semantic = results.get("semantic", {})
-    per_tier_sem = semantic.get("per_tier_semantic", {})
-    if per_tier_sem:
+    semantic = results.get("semantic")
+    if isinstance(semantic, SemanticResult) and semantic.per_tier_semantic:
+        per_tier_sem = semantic.per_tier_semantic
         print(f"\n  Semantic orthogonality ({len(per_tier_sem)} tiers tested):")
-        tfidf_acc = semantic.get("tfidf_classification", {}).get("rf", {}).get("accuracy")
-        if tfidf_acc is not None:
-            print(f"    TF-IDF surface baseline: {tfidf_acc:.1%}")
+        tfidf_bundle = semantic.tfidf_classification
+        if tfidf_bundle is not None and tfidf_bundle.rf is not None:
+            print(f"    TF-IDF surface baseline: {tfidf_bundle.rf.accuracy:.1%}")
         for tier_name, tier_data in per_tier_sem.items():
-            if isinstance(tier_data, dict) and "error" not in tier_data:
-                clf_acc = tier_data.get("classification", {}).get("rf", {}).get("accuracy")
-                mantel_r = tier_data.get("mantel_tfidf_cosine", {}).get("r")
-                r2_med = tier_data.get("text_to_compute_r2", {}).get("median_r2")
-                n_sub = tier_data.get("per_mode_surface_vs_compute", {}).get("n_sub_semantic", "?")
-                parts = []
-                if clf_acc is not None:
-                    parts.append(f"RF={clf_acc:.1%}")
-                if mantel_r is not None:
-                    parts.append(f"Mantel r={mantel_r:.3f}")
-                if r2_med is not None:
-                    parts.append(f"R²={r2_med:.3f}")
-                parts.append(f"sub-semantic modes={n_sub}")
-                print(f"    {tier_name}: {', '.join(parts)}")
+            if tier_data.error is not None:
+                continue
+            parts: list[str] = []
+            if tier_data.classification is not None and tier_data.classification.rf is not None:
+                parts.append(f"RF={tier_data.classification.rf.accuracy:.1%}")
+            if tier_data.mantel_tfidf_cosine is not None:
+                parts.append(f"Mantel r={tier_data.mantel_tfidf_cosine.r:.3f}")
+            if tier_data.text_to_compute_r2 is not None:
+                parts.append(f"R²={tier_data.text_to_compute_r2.median_r2:.3f}")
+            n_sub = (
+                tier_data.per_mode_surface_vs_compute.n_sub_semantic
+                if tier_data.per_mode_surface_vs_compute is not None else "?"
+            )
+            parts.append(f"sub-semantic modes={n_sub}")
+            print(f"    {tier_name}: {', '.join(parts)}")
 
     # Scorecard
     sc = results.get("scorecard", {})
