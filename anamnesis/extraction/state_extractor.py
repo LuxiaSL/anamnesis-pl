@@ -1028,8 +1028,11 @@ def extract_tier3(
     """Extract Tier 3: project hidden states onto pre-fitted PCA basis.
 
     Args:
-        pca_components: [n_components, hidden_dim] PCA basis vectors
-        pca_mean: [hidden_dim] mean used during PCA fitting
+        pca_components: PCA basis. Either a single [n_components, hidden_dim] array (pooled,
+            applied to every pca_layer — legacy) OR a dict {layer_idx: [n_components, hidden_dim]}
+            for the C5 per-layer corrected-PCA fix (each layer gets its own basis fit on
+            positionally-corrected calibration states).
+        pca_mean: matching mean — [hidden_dim] array (legacy) or {layer_idx: [hidden_dim]} (per-layer).
 
     Returns (feature_vector, feature_names).
     """
@@ -1040,7 +1043,7 @@ def extract_tier3(
     if T == 0 or pca_components is None or pca_mean is None:
         return np.array([], dtype=np.float32), []
 
-    n_components = min(config.pca_components, pca_components.shape[0])
+    per_layer = isinstance(pca_components, dict)
     traj_idx = _trajectory_indices(T, config.pca_temporal_samples)
 
     for l_idx in config.pca_layers:
@@ -1048,12 +1051,22 @@ def extract_tier3(
         if layer_offset >= data.hidden_states[0].shape[0]:
             continue
 
+        if per_layer:
+            if l_idx not in pca_components:
+                continue
+            comp_l, mean_l = pca_components[l_idx], pca_mean[l_idx]
+        else:
+            comp_l, mean_l = pca_components, pca_mean
+        n_components = min(config.pca_components, comp_l.shape[0])
+        comp_lt = comp_l[:n_components].T.astype(np.float64)
+        mean_l64 = mean_l.astype(np.float64)
+
         for ti, t in enumerate(traj_idx):
             abs_pos = data.prompt_length + t
             h = data.hidden_states[t][layer_offset]
             h_corrected = _correct_hidden_state(h, layer_offset, abs_pos, data.positional_means)
-            h_centered = h_corrected.astype(np.float64) - pca_mean.astype(np.float64)
-            projection = h_centered @ pca_components[:n_components].T
+            h_centered = h_corrected.astype(np.float64) - mean_l64
+            projection = h_centered @ comp_lt
             for ci in range(n_components):
                 features.append(float(projection[ci]))
                 names.append(f"pca_L{l_idx}_t{ti}_c{ci}")

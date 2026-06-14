@@ -311,16 +311,16 @@ def _process_one_sample(args: tuple) -> tuple[int, int | None, str | None]:
     (gen_id, n_features, error_message)
     """
     (gen_id, raw_dir, output_dir, metadata_dir, config, family_config,
-     pca_components, pca_mean, use_v2) = args
+     pca_components, pca_mean, use_v2, positional_means) = args
     try:
         if use_v2:
             result = compute_features_v2(
                 raw_dir, gen_id, config, family_config,
-                pca_components, pca_mean,
+                pca_components, pca_mean, positional_means,
             )
         else:
             result = compute_features_from_raw(
-                raw_dir, gen_id, config, pca_components, pca_mean,
+                raw_dir, gen_id, config, pca_components, pca_mean, positional_means,
             )
 
         # Load original metadata if available
@@ -348,6 +348,7 @@ def recompute_all_features(
     metadata_dir: Path | None = None,
     family_config: FeaturePipelineConfig | None = None,
     n_workers: int = 1,
+    positional_means: F32 | None = None,
 ) -> list[int]:
     """Recompute features for all raw tensor files in a directory.
 
@@ -416,7 +417,7 @@ def recompute_all_features(
     # Build argument tuples for each sample
     work_args = [
         (gen_id, raw_dir, output_dir, metadata_dir, config, family_config,
-         pca_components, pca_mean, use_v2)
+         pca_components, pca_mean, use_v2, positional_means)
         for gen_id in gen_ids
     ]
 
@@ -491,6 +492,12 @@ def _load_pca_model(
         pca_data = pickle.load(f)
 
     if isinstance(pca_data, dict):
+        # C5 per-layer format: {layer_idx: {"components", "mean", ...}} → return dicts
+        vals = list(pca_data.values())
+        if vals and isinstance(vals[0], dict) and "components" in vals[0]:
+            comp = {int(k): np.asarray(v["components"], dtype=np.float32) for k, v in pca_data.items()}
+            mean = {int(k): np.asarray(v["mean"], dtype=np.float32) for k, v in pca_data.items()}
+            return comp, mean  # type: ignore[return-value]
         components = pca_data.get("components")
         mean = pca_data.get("mean")
     else:
