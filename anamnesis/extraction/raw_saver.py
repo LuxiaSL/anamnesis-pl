@@ -221,6 +221,134 @@ def save_raw_tensors(
     return npz_path
 
 
+def save_raw_tensors_v3(
+    raw_data: RawGenerationData,
+    gen_id: int,
+    output_dir: Path,
+    prompt_length: int,
+    top_k_logits: int = 50,
+    hidden_dtype: str = "float16",
+    input_ids: NDArray | list[int] | None = None,
+) -> Path:
+    """Save the v3 replay-extract capture surface (compressed npz).
+
+    Differences from save_raw_tensors (the v2 generate-path saver):
+      - hidden_states + attentions banked for **all layers** (not sampled∪pca / sampled)
+      - pre_rope_keys + **v_proj_values** banked for all layers
+      - **queries** (pre-RoPE) banked for whatever layers raw_data.queries holds (sampled)
+      - gate_activations banked for whatever layers raw_data.gate_activations holds (sampled)
+      - positional_means is **NOT** banked per-gen (deduped — it is identical across all
+        gens; lives once in the run's calibration dir, injected at feature-compute time)
+
+    Per-surface layer-index arrays are stored so load_raw_tensors can reconstruct
+    the full [num_layers(+1)] tensors. Tagged extraction_version=3.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    npz_path = output_dir / f"gen_{gen_id:03d}.npz"
+
+    T = len(raw_data.hidden_states)
+    if T == 0:
+        logger.warning(f"gen_{gen_id}: no generation steps, saving empty")
+        np.savez_compressed(npz_path, T=np.array(0))
+        return npz_path
+
+    save_dtype = np.dtype(hidden_dtype)
+    n_total_layers_plus_one = raw_data.hidden_states[0].shape[0]  # num_layers + 1 (incl embedding)
+
+    # ── Hidden states: ALL layers (array idx 0 = embedding, 1..N = transformer) ──
+    hs_stacked = np.stack(
+        [h.astype(save_dtype) for h in raw_data.hidden_states]
+    )  # [T, n_total_layers_plus_one, hidden_dim]
+    hs_layer_indices = [-1] + list(range(n_total_layers_plus_one - 1))  # -1 = embedding
+
+    # ── Attentions: ALL layers, padded to max seq ──
+    n_attn_layers = raw_data.attentions[0].shape[0] if raw_data.attentions else 0
+    n_heads = raw_data.attentions[0].shape[1] if raw_data.attentions else 0
+    actual_lengths = np.array(
+        [raw_data.attentions[t].shape[2] for t in range(T)], dtype=np.int32
+    )
+    max_seq_len = int(actual_lengths.max()) if len(actual_lengths) > 0 else 0
+    attn_stacked = np.zeros((T, n_attn_layers, n_heads, max_seq_len), dtype=save_dtype)
+    for t in range(T):
+        attn_t = raw_data.attentions[t]
+        seq_len_t = attn_t.shape[2]
+        attn_stacked[t, :, :, :seq_len_t] = attn_t[:, :, :seq_len_t].astype(save_dtype)
+    attn_layer_indices = list(range(n_attn_layers))
+
+    # ── Stack a per-layer dict {layer_idx → list of T arrays} into [T, n_layers, *shape] ──
+    def _stack_layer_dict(d: dict[int, list] | None) -> tuple[NDArray, NDArray]:
+        layer_list = sorted(d.keys()) if d else []
+        if not layer_list:
+            return np.array([], dtype=save_dtype), np.array([], dtype=np.int32)
+        sample = np.asarray(d[layer_list[0]][0])
+        stacked = np.zeros((T, len(layer_list), *sample.shape), dtype=save_dtype)
+        for i, l in enumerate(layer_list):
+            seq = d[l]
+            for t in range(min(T, len(seq))):
+                stacked[t, i] = np.asarray(seq[t]).astype(save_dtype)
+        return stacked, np.array(layer_list, dtype=np.int32)
+
+    keys_stacked, kv_layer_indices = _stack_layer_dict(raw_data.pre_rope_keys)
+    values_stacked, value_layer_indices = _stack_layer_dict(raw_data.v_proj_values)
+    queries_stacked, query_layer_indices = _stack_layer_dict(raw_data.queries)
+    gates_stacked, gate_layer_indices = _stack_layer_dict(raw_data.gate_activations)
+
+    # ── Top-k logits + precomputed exact entropy (full vocab discarded) ──
+    if raw_data.logits and len(raw_data.logits) > 0:
+        k = min(top_k_logits, raw_data.logits[0].shape[0])
+        logits_values = np.zeros((T, k), dtype=np.float32)
+        logits_indices = np.zeros((T, k), dtype=np.int32)
+        logits_entropy = np.zeros(T, dtype=np.float32)
+        for t in range(min(T, len(raw_data.logits))):
+            logit_vec = raw_data.logits[t]
+            top_idx = np.argpartition(logit_vec, -k)[-k:]
+            top_idx_sorted = top_idx[np.argsort(logit_vec[top_idx])[::-1]]
+            logits_values[t] = logit_vec[top_idx_sorted]
+            logits_indices[t] = top_idx_sorted
+            probs = np.exp(logit_vec - np.max(logit_vec)).astype(np.float64)
+            probs /= probs.sum()
+            probs = probs[probs > 0]
+            logits_entropy[t] = float(-np.sum(probs * np.log(probs)))
+    else:
+        logits_values = np.array([], dtype=np.float32)
+        logits_indices = np.array([], dtype=np.int32)
+        logits_entropy = np.array([], dtype=np.float32)
+
+    chosen_ids = raw_data.chosen_token_ids.astype(np.int32)
+
+    save_dict = {
+        "hidden_states": hs_stacked,
+        "attentions": attn_stacked,
+        "pre_rope_keys": keys_stacked,
+        "v_proj_values": values_stacked,
+        "queries": queries_stacked,
+        "gate_activations": gates_stacked,
+        "logits_values": logits_values,
+        "logits_indices": logits_indices,
+        "logits_entropy": logits_entropy,
+        "chosen_ids": chosen_ids,
+        "actual_lengths": actual_lengths,
+        "prompt_length": np.array(prompt_length, dtype=np.int32),
+        "saved_layers_hs": np.array(hs_layer_indices, dtype=np.int32),
+        "saved_layers_attn": np.array(attn_layer_indices, dtype=np.int32),
+        "kv_layer_indices": kv_layer_indices,
+        "value_layer_indices": value_layer_indices,
+        "query_layer_indices": query_layer_indices,
+        "gate_layer_indices": gate_layer_indices,
+        "all_layers_count": np.array(n_total_layers_plus_one, dtype=np.int32),
+        "extraction_version": np.array(3, dtype=np.int32),
+    }
+    # Bank the full realized token sequence [prompt + generated] so any future
+    # re-processing needs no re-tokenization (cheap: ~L int32 ≈ a few KB).
+    if input_ids is not None:
+        save_dict["input_ids"] = np.asarray(input_ids, dtype=np.int32)
+    np.savez_compressed(npz_path, **save_dict)
+
+    size_mb = npz_path.stat().st_size / (1024 * 1024)
+    logger.info(f"Saved v3 raw tensors: {npz_path.name} ({size_mb:.1f} MB, T={T}, all-layer)")
+    return npz_path
+
+
 def load_raw_tensors(
     gen_id: int,
     raw_dir: Path,
@@ -270,6 +398,16 @@ def load_raw_tensors(
     saved_layers_hs = data["saved_layers_hs"]               # layer indices
     saved_layers_attn = data["saved_layers_attn"]           # layer indices
     kv_layer_indices = data["kv_layer_indices"] if "kv_layer_indices" in data else np.array([], dtype=np.int32)
+    values_stacked = (
+        data["v_proj_values"].astype(np.float32)
+        if ("v_proj_values" in data and data["v_proj_values"].size > 0) else None
+    )
+    value_layer_indices = data["value_layer_indices"] if "value_layer_indices" in data else np.array([], dtype=np.int32)
+    queries_stacked = (
+        data["queries"].astype(np.float32)
+        if ("queries" in data and data["queries"].size > 0) else None
+    )
+    query_layer_indices = data["query_layer_indices"] if "query_layer_indices" in data else np.array([], dtype=np.int32)
     n_total_layers = int(data["all_layers_count"])           # num_layers + 1
 
     T = hs_stacked.shape[0]
@@ -333,6 +471,19 @@ def load_raw_tensors(
                 key_list.append(keys_stacked[t, i])
             pre_rope_keys[layer_idx] = key_list
 
+    # ── Reconstruct v_proj values + pre-RoPE queries (v3 surface; absent in v2 npz) ──
+    v_proj_values: dict[int, list[F32]] | None = None
+    if values_stacked is not None and values_stacked.size > 0:
+        v_proj_values = {}
+        for i, layer_idx in enumerate(value_layer_indices):
+            v_proj_values[int(layer_idx)] = [values_stacked[t, i] for t in range(T)]
+
+    queries: dict[int, list[F32]] | None = None
+    if queries_stacked is not None and queries_stacked.size > 0:
+        queries = {}
+        for i, layer_idx in enumerate(query_layer_indices):
+            queries[int(layer_idx)] = [queries_stacked[t, i] for t in range(T)]
+
     # ── Reconstruct gate activations ──
     gate_activations: dict[int, list[F32]] | None = None
     gate_layer_indices_arr = data.get("gate_layer_indices")
@@ -366,6 +517,8 @@ def load_raw_tensors(
         prompt_length=prompt_length,
         positional_means=positional_means,
         gate_activations=gate_activations,
+        v_proj_values=v_proj_values,
+        queries=queries,
     )
 
 

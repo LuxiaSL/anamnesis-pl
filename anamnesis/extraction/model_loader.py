@@ -47,6 +47,16 @@ class HookState:
     # Apply SiLU in feature computation to get actual gate values.
     gate_activations: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
 
+    # layer_idx → list of v_proj outputs (values), reshaped [1, num_kv_heads, seq_len, head_dim].
+    # Captured at the same point as keys (post-projection, GQA layout). For replay (single
+    # forward) each list holds one full-sequence tensor; for generate, one per step.
+    v_proj_values: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+
+    # layer_idx → list of q_proj outputs (queries, PRE-RoPE), reshaped
+    # [1, num_attention_heads, seq_len, head_dim]. Position-free query content;
+    # re-apply RoPE offline (with banked positions) for post-RoPE QK geometry.
+    queries: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+
     enabled: bool = True
     _on_cpu: bool = field(default=False, repr=False)
 
@@ -67,6 +77,14 @@ class HookState:
             tensors = self.gate_activations[layer_idx]
             if tensors and tensors[0].is_cuda:
                 self.gate_activations[layer_idx] = [t.cpu() for t in tensors]
+        for layer_idx in list(self.v_proj_values.keys()):
+            tensors = self.v_proj_values[layer_idx]
+            if tensors and tensors[0].is_cuda:
+                self.v_proj_values[layer_idx] = [t.cpu() for t in tensors]
+        for layer_idx in list(self.queries.keys()):
+            tensors = self.queries[layer_idx]
+            if tensors and tensors[0].is_cuda:
+                self.queries[layer_idx] = [t.cpu() for t in tensors]
         self._on_cpu = True
 
     def clear(self) -> None:
@@ -77,6 +95,12 @@ class HookState:
         for tensors in self.gate_activations.values():
             del tensors[:]
         self.gate_activations.clear()
+        for tensors in self.v_proj_values.values():
+            del tensors[:]
+        self.v_proj_values.clear()
+        for tensors in self.queries.values():
+            del tensors[:]
+        self.queries.clear()
         self._on_cpu = False
 
     def get_generation_keys(self, layer_idx: int) -> list[Tensor]:
@@ -137,6 +161,55 @@ def _make_gate_proj_hook(
     return hook_fn
 
 
+def _make_v_proj_hook(
+    layer_idx: int,
+    hook_state: HookState,
+    num_kv_heads: int,
+    head_dim: int,
+) -> Any:
+    """Create a forward hook for a v_proj linear layer (attention values).
+
+    v_proj output shape: [batch, seq_len, num_kv_heads * head_dim] (GQA, same
+    layout as k_proj). Reshaped to [batch, num_kv_heads, seq_len, head_dim] and
+    kept on GPU. Call hook_state.flush_to_cpu() after the forward.
+    """
+
+    def hook_fn(module: nn.Module, args: tuple[Any, ...], output: Tensor) -> None:
+        if not hook_state.enabled:
+            return
+        batch, seq_len, _ = output.shape
+        reshaped = output.detach().reshape(batch, seq_len, num_kv_heads, head_dim)
+        reshaped = reshaped.transpose(1, 2)
+        hook_state.v_proj_values[layer_idx].append(reshaped)
+
+    return hook_fn
+
+
+def _make_q_proj_hook(
+    layer_idx: int,
+    hook_state: HookState,
+    num_attention_heads: int,
+    head_dim: int,
+) -> Any:
+    """Create a forward hook for a q_proj linear layer (PRE-RoPE queries).
+
+    q_proj output shape: [batch, seq_len, num_attention_heads * head_dim].
+    Reshaped to [batch, num_attention_heads, seq_len, head_dim] and kept on GPU.
+    Captured pre-RoPE (mirrors the pre-RoPE key design); re-apply RoPE offline
+    with banked positions for post-RoPE QK-space geometry.
+    """
+
+    def hook_fn(module: nn.Module, args: tuple[Any, ...], output: Tensor) -> None:
+        if not hook_state.enabled:
+            return
+        batch, seq_len, _ = output.shape
+        reshaped = output.detach().reshape(batch, seq_len, num_attention_heads, head_dim)
+        reshaped = reshaped.transpose(1, 2)
+        hook_state.queries[layer_idx].append(reshaped)
+
+    return hook_fn
+
+
 @dataclass
 class LoadedModel:
     """Bundle of model, tokenizer, hooks, and their state."""
@@ -175,16 +248,27 @@ def load_model(
     config: ModelConfig | None = None,
     sampled_layers: list[int] | None = None,
     register_gate_hooks: bool = False,
+    key_layers: list[int] | None = None,
+    value_layers: list[int] | None = None,
+    query_layers: list[int] | None = None,
 ) -> LoadedModel:
     """Load model, tokenizer, and register hooks.
 
     Args:
         config: Model configuration. Defaults to ModelConfig().
-        sampled_layers: Which layers to hook for pre-RoPE key extraction.
-            Defaults to {0, 7, 14, 18, 21, 24, 27}.
+        sampled_layers: Default layer set for gate_proj hooks and (unless
+            overridden by key_layers) k_proj hooks. Defaults to
+            {0, 7, 14, 18, 21, 24, 27}.
         register_gate_hooks: If True, also register hooks on gate_proj
             (SwiGLU MLP gate) at sampled layers. Captures pre-SiLU gate
             activations for gate sparsity/diversity features.
+        key_layers: Layers for k_proj (pre-RoPE key) hooks. Defaults to
+            sampled_layers (backward compatible). Pass all layers for the
+            full v3 capture surface.
+        value_layers: Layers for v_proj (value) hooks. Default None = no value
+            capture. Pass all layers to bank the OV-circuit value surface.
+        query_layers: Layers for q_proj (pre-RoPE query) hooks. Default None =
+            no query capture. Pass sampled layers for offline QK-space geometry.
 
     Returns:
         LoadedModel with everything wired up.
@@ -214,49 +298,72 @@ def load_model(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Register pre-RoPE hooks on k_proj for sampled layers
+    # ── Resolve which layers get which hooks ──
+    # Backward compatible: keys default to sampled_layers; values/queries are off
+    # unless explicitly requested (the full v3 replay surface passes all/sampled).
+    if key_layers is None:
+        key_layers = list(sampled_layers)
+
+    def _valid(layers: list[int]) -> list[int]:
+        out: list[int] = []
+        for i in layers:
+            if 0 <= i < config.num_layers:
+                out.append(i)
+            else:
+                logger.warning(
+                    f"Skipping invalid layer index {i} (model has {config.num_layers} layers)"
+                )
+        return out
+
+    key_layers = _valid(key_layers)
+    value_layers = _valid(value_layers or [])
+    query_layers = _valid(query_layers or [])
+
     hook_state = HookState()
     hook_handles: list[torch.utils.hooks.RemovableHook] = []
 
-    for layer_idx in sampled_layers:
-        if layer_idx < 0 or layer_idx >= config.num_layers:
-            logger.warning(f"Skipping invalid layer index {layer_idx} (model has {config.num_layers} layers)")
-            continue
-
-        layer = model.model.layers[layer_idx]
-        k_proj = layer.self_attn.k_proj
-
-        hook_fn = _make_k_proj_hook(
-            layer_idx=layer_idx,
-            hook_state=hook_state,
-            num_kv_heads=config.num_kv_heads,
-            head_dim=config.head_dim,
-        )
-        handle = k_proj.register_forward_hook(hook_fn)
+    # Pre-RoPE keys (k_proj)
+    for layer_idx in key_layers:
+        k_proj = model.model.layers[layer_idx].self_attn.k_proj
+        handle = k_proj.register_forward_hook(_make_k_proj_hook(
+            layer_idx=layer_idx, hook_state=hook_state,
+            num_kv_heads=config.num_kv_heads, head_dim=config.head_dim,
+        ))
         hook_handles.append(handle)
-        logger.debug(f"Registered pre-RoPE hook on layer {layer_idx}")
 
-    # Optionally register gate_proj hooks for SwiGLU gate features
+    # Values (v_proj) — OV-circuit surface
+    for layer_idx in value_layers:
+        v_proj = model.model.layers[layer_idx].self_attn.v_proj
+        handle = v_proj.register_forward_hook(_make_v_proj_hook(
+            layer_idx=layer_idx, hook_state=hook_state,
+            num_kv_heads=config.num_kv_heads, head_dim=config.head_dim,
+        ))
+        hook_handles.append(handle)
+
+    # Pre-RoPE queries (q_proj) — for offline QK-space geometry
+    for layer_idx in query_layers:
+        q_proj = model.model.layers[layer_idx].self_attn.q_proj
+        handle = q_proj.register_forward_hook(_make_q_proj_hook(
+            layer_idx=layer_idx, hook_state=hook_state,
+            num_attention_heads=config.num_attention_heads, head_dim=config.head_dim,
+        ))
+        hook_handles.append(handle)
+
+    # Optionally register gate_proj hooks for SwiGLU gate features (sampled layers)
     gate_hook_count = 0
     if register_gate_hooks:
-        for layer_idx in sampled_layers:
-            if layer_idx < 0 or layer_idx >= config.num_layers:
-                continue
-            layer = model.model.layers[layer_idx]
-            gate_proj = layer.mlp.gate_proj
-
-            gate_hook_fn = _make_gate_proj_hook(
-                layer_idx=layer_idx,
-                hook_state=hook_state,
-            )
-            handle = gate_proj.register_forward_hook(gate_hook_fn)
+        for layer_idx in _valid(list(sampled_layers)):
+            gate_proj = model.model.layers[layer_idx].mlp.gate_proj
+            handle = gate_proj.register_forward_hook(_make_gate_proj_hook(
+                layer_idx=layer_idx, hook_state=hook_state,
+            ))
             hook_handles.append(handle)
             gate_hook_count += 1
 
-    hook_summary = f"{len(hook_handles) - gate_hook_count} pre-RoPE hooks"
-    if gate_hook_count:
-        hook_summary += f" + {gate_hook_count} gate_proj hooks"
-    logger.info(f"Model loaded. {hook_summary} registered on layers {sampled_layers}")
+    logger.info(
+        f"Model loaded. Hooks — k_proj×{len(key_layers)}, v_proj×{len(value_layers)}, "
+        f"q_proj×{len(query_layers)}, gate_proj×{gate_hook_count}"
+    )
 
     return LoadedModel(
         model=model,

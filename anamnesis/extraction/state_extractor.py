@@ -49,6 +49,10 @@ class RawGenerationData:
         prompt_length: int — number of tokens in the prompt (for separating prompt/gen)
         positional_means: optional array [num_layers+1, max_calibrated_pos, hidden_dim]
             for positional decomposition correction
+        v_proj_values: optional dict layer_idx → list of T arrays [num_kv_heads, head_dim]
+            (attention values; OV-circuit surface; populated by replay-extract)
+        queries: optional dict layer_idx → list of T arrays [num_attention_heads, head_dim]
+            (PRE-RoPE queries; re-apply RoPE offline for QK geometry; replay-extract)
     """
 
     hidden_states: list[F32]       # T × [num_layers+1, hidden_dim]
@@ -60,6 +64,10 @@ class RawGenerationData:
     positional_means: F32 | None = None  # [num_layers+1, max_pos, hidden_dim]
     gate_activations: dict[int, list[F32]] | None = None  # layer_idx → T × [intermediate_size]
     # gate_activations are pre-SiLU gate_proj outputs. Apply SiLU to get actual gate values.
+    v_proj_values: dict[int, list[F32]] | None = None  # layer_idx → T × [num_kv_heads, head_dim]
+    # v_proj_values are attention values (post-projection); the OV-circuit surface.
+    queries: dict[int, list[F32]] | None = None  # layer_idx → T × [num_attention_heads, head_dim]
+    # queries are PRE-RoPE q_proj outputs; re-apply RoPE offline for post-RoPE QK geometry.
 
 
 @dataclass

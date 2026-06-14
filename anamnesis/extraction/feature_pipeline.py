@@ -34,7 +34,11 @@ from anamnesis.config import (
     FeaturePipelineConfig,
 )
 from anamnesis.extraction.raw_saver import list_raw_tensor_ids, load_raw_tensors
-from anamnesis.extraction.state_extractor import ExtractionResult, extract_all_features
+from anamnesis.extraction.state_extractor import (
+    ExtractionResult,
+    RawGenerationData,
+    extract_all_features,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +51,7 @@ def compute_features_from_raw(
     config: ExtractionConfig,
     pca_components: F32 | None = None,
     pca_mean: F32 | None = None,
+    positional_means: F32 | None = None,
 ) -> ExtractionResult:
     """Load raw tensors for one generation and compute features.
 
@@ -60,12 +65,17 @@ def compute_features_from_raw(
         Feature extraction configuration.
     pca_components, pca_mean : arrays, optional
         Pre-fitted PCA model for Tier 3 features.
+    positional_means : array, optional
+        Injected only if the loaded raw_data has none (v3 deduped raw stores
+        positional_means once in the calibration dir, not per-gen).
 
     Returns
     -------
     ExtractionResult with features, names, tier slices.
     """
     raw_data = load_raw_tensors(gen_id, raw_dir)
+    if raw_data.positional_means is None and positional_means is not None:
+        raw_data.positional_means = positional_means
     return extract_all_features(raw_data, config, pca_components, pca_mean)
 
 
@@ -76,11 +86,13 @@ def compute_features_v2(
     family_config: FeaturePipelineConfig,
     pca_components: F32 | None = None,
     pca_mean: F32 | None = None,
+    positional_means: F32 | None = None,
 ) -> ExtractionResult:
-    """Compute features using baseline tiers + pluggable feature families.
+    """Load raw tensors for one generation and compute v2 features.
 
-    This is the v2 iteration loop: load raw tensors, compute baseline
-    features, then compute enabled feature families and concatenate.
+    Thin wrapper over compute_features_v2_from_data: loads the saved raw tensors,
+    injects calibration positional_means when the npz lacks them (v3 raw is deduped —
+    pos_means lives once in the run's calibration dir, not per-gen), then computes.
 
     Parameters
     ----------
@@ -88,14 +100,33 @@ def compute_features_v2(
         Directory containing raw tensor npz files.
     gen_id : int
         Generation ID to process.
-    config : ExtractionConfig
-        Baseline feature extraction config.
-    family_config : FeaturePipelineConfig
-        Controls which feature families are enabled.
-    pca_components, pca_mean : arrays, optional
-        Pre-fitted PCA model for baseline Tier 3.
+    config, family_config, pca_components, pca_mean :
+        See compute_features_v2_from_data.
+    positional_means : array, optional
+        Injected only if the loaded raw_data has none (v3 deduped raw).
     """
     raw_data = load_raw_tensors(gen_id, raw_dir)
+    if raw_data.positional_means is None and positional_means is not None:
+        raw_data.positional_means = positional_means
+    return compute_features_v2_from_data(
+        raw_data, config, family_config, pca_components, pca_mean,
+    )
+
+
+def compute_features_v2_from_data(
+    raw_data: RawGenerationData,
+    config: ExtractionConfig,
+    family_config: FeaturePipelineConfig,
+    pca_components: F32 | None = None,
+    pca_mean: F32 | None = None,
+) -> ExtractionResult:
+    """Compute baseline tiers + pluggable feature families from in-memory raw_data.
+
+    The GPU-free feature loop: baseline features, then enabled families, concatenated.
+    Used by replay-extract (in-memory raw_data) and compute_features_v2 (from disk).
+    Caller is responsible for setting raw_data.positional_means (for positional
+    correction in T2.5/T3/per-head/residual families).
+    """
 
     # Baseline tiers
     if family_config.include_baseline_tiers:
