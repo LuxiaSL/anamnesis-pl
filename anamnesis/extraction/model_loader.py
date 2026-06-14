@@ -26,7 +26,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class HookState:
-    """Mutable storage for hook captures across generation steps."""
+    """Mutable storage for hook captures across generation steps.
+
+    Tensors are kept on GPU during generation to avoid per-step synchronous
+    CPU transfers. Call flush_to_cpu() after generation completes and before
+    accessing tensors via get_generation_keys() / get_generation_gates().
+    """
 
     # layer_idx → list of tensors, one per generation step
     # Each tensor shape: [1, num_kv_heads, seq_len_at_step, head_dim]
@@ -43,6 +48,26 @@ class HookState:
     gate_activations: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
 
     enabled: bool = True
+    _on_cpu: bool = field(default=False, repr=False)
+
+    def flush_to_cpu(self) -> None:
+        """Batch-transfer all captured tensors from GPU to CPU.
+
+        Replaces ~N*layers synchronous per-step transfers with one batch
+        transfer per layer. Must be called after generation completes and
+        before accessing tensors via get_generation_keys/gates.
+        """
+        if self._on_cpu:
+            return
+        for layer_idx in list(self.pre_rope_keys.keys()):
+            tensors = self.pre_rope_keys[layer_idx]
+            if tensors and tensors[0].is_cuda:
+                self.pre_rope_keys[layer_idx] = [t.cpu() for t in tensors]
+        for layer_idx in list(self.gate_activations.keys()):
+            tensors = self.gate_activations[layer_idx]
+            if tensors and tensors[0].is_cuda:
+                self.gate_activations[layer_idx] = [t.cpu() for t in tensors]
+        self._on_cpu = True
 
     def clear(self) -> None:
         """Release all captured tensors."""
@@ -52,6 +77,7 @@ class HookState:
         for tensors in self.gate_activations.values():
             del tensors[:]
         self.gate_activations.clear()
+        self._on_cpu = False
 
     def get_generation_keys(self, layer_idx: int) -> list[Tensor]:
         """Return captured keys for a layer (excluding prefill step 0)."""
@@ -78,17 +104,16 @@ def _make_k_proj_hook(
     """Create a forward hook for a k_proj linear layer.
 
     k_proj output shape: [batch, seq_len, num_kv_heads * head_dim]
-    We reshape to [batch, seq_len, num_kv_heads, head_dim] and detach to CPU.
+    We reshape to [batch, num_kv_heads, seq_len, head_dim] and keep on GPU.
+    Call hook_state.flush_to_cpu() after generation to batch-transfer.
     """
 
     def hook_fn(module: nn.Module, args: tuple[Any, ...], output: Tensor) -> None:
         if not hook_state.enabled:
             return
-        # output: [batch, seq_len, num_kv_heads * head_dim]
         batch, seq_len, _ = output.shape
         reshaped = output.detach().reshape(batch, seq_len, num_kv_heads, head_dim)
-        # Transpose to [batch, num_kv_heads, seq_len, head_dim] for consistency
-        reshaped = reshaped.transpose(1, 2).cpu()
+        reshaped = reshaped.transpose(1, 2)
         hook_state.pre_rope_keys[layer_idx].append(reshaped)
 
     return hook_fn
@@ -101,15 +126,13 @@ def _make_gate_proj_hook(
     """Create a forward hook for a gate_proj linear layer (SwiGLU gate).
 
     gate_proj output shape: [batch, seq_len, intermediate_size]
-    We detach and move to CPU. SiLU activation is applied later in feature computation.
+    Kept on GPU; call hook_state.flush_to_cpu() after generation.
     """
 
     def hook_fn(module: nn.Module, args: tuple[Any, ...], output: Tensor) -> None:
         if not hook_state.enabled:
             return
-        # output: [batch, seq_len, intermediate_size]
-        # During generation: [1, 1, intermediate_size]
-        hook_state.gate_activations[layer_idx].append(output.detach().cpu())
+        hook_state.gate_activations[layer_idx].append(output.detach())
 
     return hook_fn
 
@@ -134,6 +157,10 @@ class LoadedModel:
     def clear_hook_state(self) -> None:
         """Clear captured hook data without removing hooks."""
         self.hook_state.clear()
+
+    def flush_hooks_to_cpu(self) -> None:
+        """Batch-transfer hook tensors from GPU to CPU after generation."""
+        self.hook_state.flush_to_cpu()
 
     def disable_hooks(self) -> None:
         """Temporarily disable hook capture (e.g. during calibration)."""

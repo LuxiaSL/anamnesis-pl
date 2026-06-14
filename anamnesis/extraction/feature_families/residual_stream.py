@@ -230,7 +230,7 @@ def _trajectory_feature_names(
         for stat in ["mean", "std", "slope"]:
             names.append(f"{prefix}_velocity_norm_w{wi}_{stat}")
     if include_stft:
-        for feat in ["dominant_freq", "spectral_centroid", "bandwidth",
+        for feat in ["spectral_centroid", "bandwidth",
                       "low_band_energy", "mid_band_energy", "high_band_energy"]:
             names.append(f"{prefix}_velocity_norm_{feat}")
 
@@ -239,7 +239,7 @@ def _trajectory_feature_names(
         for stat in ["mean", "std", "slope"]:
             names.append(f"{prefix}_direction_change_w{wi}_{stat}")
     if include_stft:
-        for feat in ["dominant_freq", "spectral_centroid", "bandwidth",
+        for feat in ["spectral_centroid", "bandwidth",
                       "low_band_energy", "mid_band_energy", "high_band_energy"]:
             names.append(f"{prefix}_direction_change_{feat}")
 

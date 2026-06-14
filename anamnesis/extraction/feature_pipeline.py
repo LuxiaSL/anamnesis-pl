@@ -198,6 +198,18 @@ def compute_features_v2(
             all_names.extend(result.feature_names)
             offset += len(result)
 
+    if family_config.enable_per_head:
+        from anamnesis.extraction.feature_families.per_head import extract_per_head
+        result = extract_per_head(
+            raw_data,
+            sampled_layers=config.sampled_layers,
+        )
+        if len(result) > 0:
+            all_slices[result.family_name] = (offset, offset + len(result))
+            all_features.append(result.features)
+            all_names.extend(result.feature_names)
+            offset += len(result)
+
     # Concatenate
     if all_features:
         combined = np.concatenate(all_features)

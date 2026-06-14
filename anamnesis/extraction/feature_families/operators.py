@@ -98,8 +98,7 @@ def stft_features(
 ) -> tuple[F32, list[str]]:
     """Spectral decomposition of a time series via STFT.
 
-    Returns 6 features:
-        dominant_freq     — frequency with highest average power
+    Returns 5 features:
         spectral_centroid — power-weighted mean frequency
         bandwidth         — power-weighted std of frequency
         low_band_energy   — fraction of power in [0, 0.1) normalized freq
@@ -117,7 +116,6 @@ def stft_features(
     """
     T = len(time_series)
     feature_names = [
-        f"{prefix}_dominant_freq",
         f"{prefix}_spectral_centroid",
         f"{prefix}_bandwidth",
         f"{prefix}_low_band_energy",
@@ -126,15 +124,19 @@ def stft_features(
     ]
 
     if T < _MIN_T_STFT:
-        return np.zeros(6, dtype=np.float32), feature_names
+        return np.zeros(5, dtype=np.float32), feature_names
 
     ts = np.asarray(time_series, dtype=np.float64)
 
-    # Adjust nperseg for short sequences
-    actual_nperseg = min(nperseg, T)
-    # stft requires nperseg >= 2
-    if actual_nperseg < 2:
-        return np.zeros(6, dtype=np.float32), feature_names
+    # Pin nperseg to a constant so the frequency grid is identical across
+    # generations of different length; zero-pad series shorter than the window.
+    # For our generations T >> nperseg, so this is a no-op in practice (and a
+    # robustness fix for short sequences, e.g. kotodama turns).
+    if nperseg < 2:
+        return np.zeros(5, dtype=np.float32), feature_names
+    if T < nperseg:
+        ts = np.concatenate([ts, np.zeros(nperseg - T, dtype=np.float64)])
+    actual_nperseg = nperseg
 
     try:
         freqs, _, Zxx = scipy_stft(
@@ -147,17 +149,14 @@ def stft_features(
         power = np.mean(np.abs(Zxx) ** 2, axis=1)  # [n_freqs]
     except Exception as e:
         logger.warning(f"STFT failed for {prefix}: {e}")
-        return np.zeros(6, dtype=np.float32), feature_names
+        return np.zeros(5, dtype=np.float32), feature_names
 
     total_power = power.sum()
     if total_power < 1e-12:
-        return np.zeros(6, dtype=np.float32), feature_names
+        return np.zeros(5, dtype=np.float32), feature_names
 
     # Normalized power distribution
     p_norm = power / total_power
-
-    # Dominant frequency
-    dominant_freq = float(freqs[np.argmax(power)])
 
     # Spectral centroid (power-weighted mean frequency)
     spectral_centroid = float(np.sum(freqs * p_norm))
@@ -181,7 +180,7 @@ def stft_features(
     high_energy = float(p_norm[high_mask].sum()) if high_mask.any() else 0.0
 
     features = np.array([
-        dominant_freq, spectral_centroid, bandwidth,
+        spectral_centroid, bandwidth,
         low_energy, mid_energy, high_energy,
     ], dtype=np.float32)
 
@@ -198,7 +197,7 @@ def apply_operators(
     """Apply both temporal operators to a time series.
 
     Convenience function: windowed_stats + optional stft_features.
-    Returns ~18 features (12 windowed + 6 STFT) per time series.
+    Returns ~17 features (12 windowed + 5 STFT) per time series.
     """
     all_features: list[F32] = []
     all_names: list[str] = []

@@ -127,11 +127,12 @@ def streaming_generate(
     eos_set = set(eos_token_ids or [])
     prompt_length = input_ids.shape[1]
 
-    # Accumulators
+    # GPU accumulators — kept on device during generation to avoid
+    # per-step synchronous CPU transfers. Batch-converted after the loop.
     generated_ids: list[int] = []
-    hidden_list: list[F32] = []
-    attn_list: list[F32] = []
-    logit_list: list[F32] = []
+    hidden_gpu: list[torch.Tensor] = []
+    attn_gpu: list[torch.Tensor] = []
+    logit_gpu: list[torch.Tensor] = []
     prefill_hs: F32 | None = None
 
     past_key_values = None
@@ -139,7 +140,6 @@ def streaming_generate(
 
     with torch.no_grad():
         for step_idx in range(max_new_tokens):
-            # Forward pass — same as what HF generate does internally
             outputs = model(
                 input_ids=current_input,
                 past_key_values=past_key_values,
@@ -148,19 +148,15 @@ def streaming_generate(
                 output_attentions=output_attentions,
             )
 
-            # Extract logits for the last token position
             step_logits = outputs.logits[0, -1]  # [vocab_size]
 
-            # Sample next token
             next_token_id = _sample_top_p(step_logits, temperature, top_p)
             generated_ids.append(next_token_id)
 
-            # ── Collect states ──────────────────────────────────────
+            # ── Collect states on GPU ──────────────────────────────
 
             if step_idx == 0:
-                # PREFILL STEP — optionally collect full-sequence hidden states
                 if collect_prefill_hidden_states and output_hidden_states:
-                    # Stack all layers on GPU: [n_layers+1, prompt_len, hidden_dim]
                     prefill_stacked = torch.stack([
                         outputs.hidden_states[l][0]
                         for l in range(len(outputs.hidden_states))
@@ -168,33 +164,22 @@ def streaming_generate(
                     prefill_hs = prefill_stacked.cpu().float().numpy()
                     del prefill_stacked
 
-                # Don't add prefill to the per-step lists
-                # (matches HF generate alignment: skip index 0)
-
             else:
-                # GENERATION STEPS — collect last-token states efficiently
-
                 if output_hidden_states and outputs.hidden_states is not None:
-                    # Stack layers on GPU, single transfer
                     hs_stacked = torch.stack([
                         outputs.hidden_states[l][0, -1]
                         for l in range(len(outputs.hidden_states))
                     ])  # [n_layers+1, hidden_dim]
-                    hidden_list.append(hs_stacked.cpu().float().numpy())
-                    del hs_stacked
+                    hidden_gpu.append(hs_stacked)
 
                 if output_attentions and outputs.attentions is not None:
-                    # Stack layers on GPU, single transfer
-                    # Each attention: [1, n_heads, 1, current_seq_len]
                     attn_stacked = torch.stack([
                         outputs.attentions[l][0, :, -1, :]
                         for l in range(len(outputs.attentions))
                     ])  # [n_layers, n_heads, current_seq_len]
-                    attn_list.append(attn_stacked.cpu().float().numpy())
-                    del attn_stacked
+                    attn_gpu.append(attn_stacked)
 
-                # Logits for generation steps (not prefill)
-                logit_list.append(step_logits.cpu().float().numpy())
+                logit_gpu.append(step_logits.clone())
 
             # ── Advance state ───────────────────────────────────────
 
@@ -202,15 +187,28 @@ def streaming_generate(
             current_input = torch.tensor(
                 [[next_token_id]], device=device, dtype=input_ids.dtype
             )
-
-            # Free intermediate outputs before next step
             del outputs
 
-            # Check EOS
             if next_token_id in eos_set:
                 break
 
-    # Build full sequence tensor
+    # ── Batch GPU → CPU transfer ───────────────────────────────────
+    hidden_list: list[F32] = []
+    if hidden_gpu:
+        hs_batch = torch.stack(hidden_gpu).cpu().float().numpy()
+        hidden_list = [hs_batch[i] for i in range(hs_batch.shape[0])]
+        del hidden_gpu, hs_batch
+
+    logit_list: list[F32] = []
+    if logit_gpu:
+        lg_batch = torch.stack(logit_gpu).cpu().float().numpy()
+        logit_list = [lg_batch[i] for i in range(lg_batch.shape[0])]
+        del logit_gpu, lg_batch
+
+    # Attention has variable seq_len per step — can't stack, transfer individually
+    attn_list: list[F32] = [a.cpu().float().numpy() for a in attn_gpu]
+    del attn_gpu
+
     if generated_ids:
         gen_tensor = torch.tensor(
             generated_ids, device=device, dtype=input_ids.dtype

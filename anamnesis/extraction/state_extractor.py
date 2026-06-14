@@ -92,6 +92,111 @@ def _softmax(logits: F32) -> F32:
     return (e / e.sum()).astype(np.float32)
 
 
+def _batch_softmax(logits_array: np.ndarray) -> np.ndarray:
+    """Batch softmax over [T, vocab_size] in float64, returns float32."""
+    x = logits_array.astype(np.float64)
+    x = x - x.max(axis=1, keepdims=True)
+    e = np.exp(x)
+    return (e / e.sum(axis=1, keepdims=True)).astype(np.float32)
+
+
+@dataclass
+class LogitFeatures:
+    """All features derivable from per-step logits, computed in a single pass."""
+
+    entropy: F32          # [T]
+    top1_prob: F32        # [T]
+    top5_mass: F32        # [T]
+    chosen_rank: F32      # [T]
+    chosen_prob: F32      # [T]
+    surprise: F32         # [T]
+
+
+def _compute_logit_features(
+    logits: list[F32],
+    chosen_token_ids: F32,
+    vocab_size: int | None = None,
+) -> LogitFeatures:
+    """Compute all logit-derived features in a single per-row pass.
+
+    Processes each timestep's [V] vector individually (~1.2MB in L2 cache)
+    instead of creating [T, V] float64 arrays (~623MB, NUMA-hostile).
+    One exp() per timestep reused for entropy, top-k, rank, and chosen_prob.
+
+    Entropy uses the identity: H(softmax(x)) = log(Z) - sum(s*exp(s))/Z
+    where s = x - max(x), Z = sum(exp(s)). Algebraically identical to
+    softmax-then-entropy but avoids materializing the probability array.
+
+    Rank comparison on raw logits is exact (softmax is monotonic).
+    """
+    T = len(logits)
+    if vocab_size is None:
+        vocab_size = logits[0].shape[0] if T > 0 else 0
+    chosen_ids = chosen_token_ids.astype(np.intp)
+
+    # Surface (don't silently mask) chosen ids outside the vocab — these indicate
+    # an alignment bug; we still fall back to token 0 per-row below (v3/C8).
+    if T > 0:
+        n_oob = int(((chosen_ids[:T] < 0) | (chosen_ids[:T] >= vocab_size)).sum())
+        if n_oob:
+            logger.warning(
+                f"_compute_logit_features: {n_oob}/{T} chosen token ids out of "
+                f"[0,{vocab_size}); using token-0 fallback (possible alignment bug)."
+            )
+
+    entropy = np.empty(T, dtype=np.float32)
+    top1_prob = np.empty(T, dtype=np.float32)
+    top5_mass = np.empty(T, dtype=np.float32)
+    chosen_rank = np.empty(T, dtype=np.float32)
+    chosen_prob = np.empty(T, dtype=np.float32)
+
+    for i in range(T):
+        x = logits[i].astype(np.float64)
+        max_x = x.max()
+        s = x - max_x
+        exp_s = np.exp(s)
+        Z = exp_s.sum()
+        inv_Z = 1.0 / Z
+
+        entropy[i] = np.log(Z) - (s * exp_s).sum() * inv_Z
+        top1_prob[i] = exp_s.max() * inv_Z
+
+        top5_idx = np.argpartition(exp_s, -5)[-5:]
+        top5_mass[i] = exp_s[top5_idx].sum() * inv_Z
+
+        cid = int(chosen_ids[i]) if i < len(chosen_ids) and chosen_ids[i] < vocab_size else 0
+        chosen_rank[i] = (x > x[cid]).sum()
+        chosen_prob[i] = exp_s[cid] * inv_Z
+
+    chosen_prob = np.maximum(chosen_prob, 1e-10).astype(np.float32)
+    surprise = -np.log(chosen_prob).astype(np.float32)
+
+    return LogitFeatures(
+        entropy=entropy,
+        top1_prob=top1_prob,
+        top5_mass=top5_mass,
+        chosen_rank=chosen_rank,
+        chosen_prob=chosen_prob,
+        surprise=surprise,
+    )
+
+
+def _batch_entropy(probs_2d: np.ndarray) -> np.ndarray:
+    """Vectorized entropy over rows of a 2D probability array.
+
+    Handles zeros safely. Input shape: [N, D], returns [N].
+    """
+    p = np.asarray(probs_2d, dtype=np.float64)
+    p = np.maximum(p, 0.0)
+    row_sums = p.sum(axis=-1, keepdims=True)
+    row_sums = np.maximum(row_sums, 1e-12)
+    p = p / row_sums
+    log_p = np.zeros_like(p)
+    mask = p > 0
+    log_p[mask] = np.log(p[mask])
+    return -(p * log_p).sum(axis=-1).astype(np.float32)
+
+
 def _cosine_sim(a: F32, b: F32) -> float:
     """Cosine similarity between two vectors."""
     a = a.flatten().astype(np.float64)
@@ -175,95 +280,59 @@ def extract_tier1(
 
     traj_idx = _trajectory_indices(T, n_traj)
 
+    # ── Pre-stack for vectorized ops ──
+    hs_array = np.stack(data.hidden_states)  # [T, num_layers+1, hidden_dim]
+
     # ── 1.1 Per-Layer Activation Norms ──
-    # hidden_states[t][l+1] = transformer layer l at generation step t
+    positions = np.arange(T) + data.prompt_length
     for l in range(num_layers):
-        layer_norms = []
-        for t in range(T):
-            abs_pos = data.prompt_length + t
-            h = data.hidden_states[t][l + 1]  # +1 to skip embedding layer
-            h_corrected = _correct_hidden_state(h, l + 1, abs_pos, data.positional_means)
-            layer_norms.append(float(np.linalg.norm(h_corrected)))
+        h = hs_array[:, l + 1, :]  # [T, hidden_dim]
+        if data.positional_means is not None:
+            max_pos = data.positional_means.shape[1]
+            pos_idx = np.minimum(positions, max_pos - 1)
+            h = h - data.positional_means[l + 1, pos_idx, :]
+        norms = np.linalg.norm(h, axis=1).astype(np.float32)  # [T]
 
-        if len(layer_norms) == 0:
-            layer_norms = [0.0]
-
-        norms = np.array(layer_norms, dtype=np.float32)
         features.append(float(norms.mean()))
         names.append(f"activation_norm_mean_L{l}")
         features.append(float(norms.std()))
         names.append(f"activation_norm_std_L{l}")
 
-        # Trajectory: 5 temporal samples
         for i, ti in enumerate(traj_idx):
-            features.append(layer_norms[ti] if ti < len(layer_norms) else 0.0)
+            features.append(float(norms[ti]) if ti < T else 0.0)
             names.append(f"activation_norm_traj{i}_L{l}")
 
     # ── 1.2 Output Logit Statistics ──
-    entropies = []
-    top1_probs = []
-    top5_masses = []
+    # Single-pass per-row: entropy, top-k, rank, surprise from logits directly.
+    # Avoids materializing [T, vocab_size] probability arrays (~1.9GB float64).
+    lf = _compute_logit_features(data.logits, data.chosen_token_ids)
 
-    for t in range(T):
-        probs = _softmax(data.logits[t])
-        ent = _safe_entropy(probs)
-        entropies.append(ent)
-
-        sorted_probs = np.sort(probs)[::-1]
-        top1_probs.append(float(sorted_probs[0]))
-        top5_masses.append(float(sorted_probs[:5].sum()))
-
-    if len(entropies) == 0:
-        entropies = [0.0]
-        top1_probs = [0.0]
-        top5_masses = [0.0]
-
-    ent_arr = np.array(entropies, dtype=np.float32)
-    t1_arr = np.array(top1_probs, dtype=np.float32)
+    ent_arr = lf.entropy
+    top1_probs = lf.top1_prob
+    top5_masses = lf.top5_mass
 
     features.append(float(ent_arr.mean()))
     names.append("logit_entropy_mean")
     features.append(float(ent_arr.std()))
     names.append("logit_entropy_std")
     for i, ti in enumerate(traj_idx):
-        features.append(entropies[ti] if ti < len(entropies) else 0.0)
+        features.append(float(ent_arr[ti]) if ti < T else 0.0)
         names.append(f"logit_entropy_traj{i}")
 
-    features.append(float(t1_arr.mean()))
+    features.append(float(top1_probs.mean()))
     names.append("top1_prob_mean")
-    features.append(float(t1_arr.std()))
+    features.append(float(top1_probs.std()))
     names.append("top1_prob_std")
     for i, ti in enumerate(traj_idx):
-        features.append(top1_probs[ti] if ti < len(top1_probs) else 0.0)
+        features.append(float(top1_probs[ti]) if ti < T else 0.0)
         names.append(f"top1_prob_traj{i}")
 
-    features.append(float(np.mean(top5_masses)))
+    features.append(float(top5_masses.mean()))
     names.append("top5_mass_mean")
 
     # ── 1.3 Token Probability Dynamics ──
-    chosen_ranks = []
-    surprises = []
-
-    for t in range(T):
-        probs = _softmax(data.logits[t])
-        chosen_id = int(data.chosen_token_ids[t])
-
-        # Rank of chosen token (0-indexed)
-        sorted_indices = np.argsort(probs)[::-1]
-        rank = int(np.where(sorted_indices == chosen_id)[0][0]) if chosen_id < len(probs) else len(probs) - 1
-        chosen_ranks.append(rank)
-
-        # Surprise = -log(p(chosen))
-        chosen_prob = float(probs[chosen_id]) if chosen_id < len(probs) else 1e-10
-        chosen_prob = max(chosen_prob, 1e-10)  # avoid log(0)
-        surprises.append(-float(np.log(chosen_prob)))
-
-    if len(chosen_ranks) == 0:
-        chosen_ranks = [0]
-        surprises = [0.0]
-
-    rank_arr = np.array(chosen_ranks, dtype=np.float32)
-    surp_arr = np.array(surprises, dtype=np.float32)
+    rank_arr = lf.chosen_rank
+    surp_arr = lf.surprise
 
     features.append(float(rank_arr.mean()))
     names.append("mean_chosen_rank")
@@ -274,11 +343,11 @@ def extract_tier1(
     features.append(float(surp_arr.std()))
     names.append("std_surprise")
     for i, ti in enumerate(traj_idx):
-        features.append(surprises[ti] if ti < len(surprises) else 0.0)
+        features.append(float(surp_arr[ti]) if ti < T else 0.0)
         names.append(f"surprise_traj{i}")
 
     # Bayesian surprise: event boundary count
-    if len(surprises) >= config.surprise_window:
+    if T >= config.surprise_window:
         window = config.surprise_window
         threshold_sigma = config.surprise_threshold_sigma
         running_mean = np.convolve(surp_arr, np.ones(window) / window, mode="valid")
@@ -342,74 +411,72 @@ def extract_tier2(
         return np.array(features, dtype=np.float32), names
 
     # ── 2.1 Attention Entropy Per Layer ──
-    # Subsample steps for efficiency (every 5th step, or all if T < 20)
     attn_sample_steps = list(range(0, T, max(1, T // 60))) if T > 60 else list(range(T))
     for l in range(num_layers):
-        head_entropies_all = []
+        all_ents: list[np.ndarray] = []
         for t in attn_sample_steps:
-            attn = data.attentions[t][l]  # [num_heads, seq_len]
-            for h in range(num_heads):
-                head_entropies_all.append(_safe_entropy(attn[h]))
+            attn = data.attentions[t][l]  # [num_heads, seq_len_t]
+            all_ents.append(_batch_entropy(attn))  # [num_heads]
+        ent_flat = np.concatenate(all_ents)
 
-        ent_arr = np.array(head_entropies_all, dtype=np.float32)
-        features.append(float(ent_arr.mean()))
+        features.append(float(ent_flat.mean()))
         names.append(f"attn_entropy_mean_L{l}")
-        features.append(float(ent_arr.std()))
+        features.append(float(ent_flat.std()))
         names.append(f"attn_entropy_std_L{l}")
 
     # ── 2.2 Attention Head Agreement Per Layer ──
-    # Subsample steps (every 10th) and use vectorized JSD for speed
     agreement_sample_steps = list(range(0, T, max(1, T // 30))) if T > 30 else list(range(T))
+    max_jsd = float(np.log(num_heads)) if num_heads > 1 else 1.0
     for l in range(num_layers):
-        agreements = []
+        agreements_list: list[float] = []
         for t in agreement_sample_steps:
-            attn = data.attentions[t][l].astype(np.float64)  # [num_heads, seq_len]
-            # Normalize each head's distribution
+            attn = data.attentions[t][l].astype(np.float64)  # [num_heads, seq_len_t]
             row_sums = attn.sum(axis=1, keepdims=True)
             row_sums = np.maximum(row_sums, 1e-12)
             attn_norm = attn / row_sums
-            # Vectorized mean JSD: average pairwise JSD across all head pairs
-            # Use mean distribution trick: mean JSD ≈ entropy(mean) - mean(entropies)
-            mean_dist = attn_norm.mean(axis=0)  # [seq_len]
-            entropy_of_mean = _safe_entropy(mean_dist)
-            mean_of_entropies = np.mean([_safe_entropy(attn_norm[h]) for h in range(num_heads)])
-            # JSD(all heads) ≈ H(mean) - mean(H(individual))
-            # This is the generalized JSD, bounded [0, log(num_heads)]
-            jsd_approx = max(0.0, entropy_of_mean - mean_of_entropies)
-            # Normalize to [0, 1]
-            max_jsd = float(np.log(num_heads)) if num_heads > 1 else 1.0
-            agreements.append(1.0 - jsd_approx / max(max_jsd, 1e-12))
 
-        agr_arr = np.array(agreements, dtype=np.float32)
+            mean_dist = attn_norm.mean(axis=0, keepdims=True)  # [1, seq_len]
+            h_mean = float(_batch_entropy(mean_dist)[0])
+            h_heads = _batch_entropy(attn_norm)  # [num_heads]
+            mean_h = float(h_heads.mean())
+
+            jsd_approx = max(0.0, h_mean - mean_h)
+            agreements_list.append(1.0 - jsd_approx / max(max_jsd, 1e-12))
+
+        agr_arr = np.array(agreements_list, dtype=np.float32)
         features.append(float(agr_arr.mean()))
         names.append(f"head_agreement_mean_L{l}")
         features.append(float(agr_arr.std()))
         names.append(f"head_agreement_std_L{l}")
 
     # ── 2.3 Layer-to-Layer Residual Stream Deltas ──
-    num_model_layers = data.hidden_states[0].shape[0] - 1 if T > 0 else 28
+    hs_array = np.stack(data.hidden_states)  # [T, num_layers+1, hidden_dim]
+    num_model_layers = hs_array.shape[1] - 1
+    positions = np.arange(T) + data.prompt_length
     for l in range(num_model_layers - 1):
-        delta_norms = []
-        delta_cosines = []
-        for t in range(T):
-            abs_pos = data.prompt_length + t
-            h_l = _correct_hidden_state(
-                data.hidden_states[t][l + 1], l + 1, abs_pos, data.positional_means
-            )
-            h_l1 = _correct_hidden_state(
-                data.hidden_states[t][l + 2], l + 2, abs_pos, data.positional_means
-            )
-            delta = h_l1 - h_l
-            delta_norms.append(float(np.linalg.norm(delta)))
-            delta_cosines.append(_cosine_sim(delta, h_l))
+        h_l = hs_array[:, l + 1, :]  # [T, hidden_dim] — view, no copy
+        h_l1 = hs_array[:, l + 2, :]
+        if data.positional_means is not None:
+            max_pos = data.positional_means.shape[1]
+            pos_idx = np.minimum(positions, max_pos - 1)
+            h_l = h_l - data.positional_means[l + 1, pos_idx, :]
+            h_l1 = h_l1 - data.positional_means[l + 2, pos_idx, :]
+        delta = h_l1 - h_l  # [T, hidden_dim]
+        dn = np.linalg.norm(delta, axis=1).astype(np.float32)  # [T]
 
-        dn_arr = np.array(delta_norms, dtype=np.float32)
-        dc_arr = np.array(delta_cosines, dtype=np.float32)
-        features.append(float(dn_arr.mean()))
+        h_l_f64 = h_l.astype(np.float64)
+        delta_f64 = delta.astype(np.float64)
+        dots = (delta_f64 * h_l_f64).sum(axis=1)
+        norm_d = np.linalg.norm(delta_f64, axis=1)
+        norm_h = np.linalg.norm(h_l_f64, axis=1)
+        denom = np.maximum(norm_d * norm_h, 1e-12)
+        dc = (dots / denom).astype(np.float32)  # [T]
+
+        features.append(float(dn.mean()))
         names.append(f"delta_norm_mean_L{l}")
-        features.append(float(dn_arr.std()))
+        features.append(float(dn.std()))
         names.append(f"delta_norm_std_L{l}")
-        features.append(float(dc_arr.mean()))
+        features.append(float(dc.mean()))
         names.append(f"delta_cosine_mean_L{l}")
 
     # ── 2.4 Spectral Features ──
@@ -489,45 +556,57 @@ def _extract_spectral_features(
     A = 0.5 * (A + A.T)
     np.fill_diagonal(A, 0)  # no self-loops
 
-    # Graph Laplacian
+    # Unnormalized graph Laplacian L = D - A. (The symmetric normalized Laplacian
+    # collapses this near-complete attention-similarity graph to a near-constant
+    # spectrum — verified WORSE for fiedler/spectral_entropy, v3/B2 — so keep L's
+    # discriminative spectrum and make the SUMMARIES scale-free instead.)
     D = np.diag(A.sum(axis=1))
     L = D - A
-
-    # Add small epsilon for numerical stability
-    L += np.eye(n) * 1e-10
-
-    # Eigenvalues (symmetric matrix → use eigvalsh)
+    L += np.eye(n) * 1e-10  # numerical stability
     eigenvalues = la.eigvalsh(L)
-    eigenvalues = np.maximum(eigenvalues, 0)  # clamp numerical negatives
+    eigenvalues = np.maximum(eigenvalues, 0.0)  # clamp numerical negatives
 
-    # Fiedler value (second-smallest eigenvalue)
-    fiedler = float(eigenvalues[1]) if n > 1 else 0.0
-
-    # HFER: high-frequency energy ratio
     total_energy = eigenvalues.sum()
+    lam_max = float(eigenvalues[-1]) if n > 0 else 0.0
+
+    # Fiedler normalized by the spectral radius → scale-free (the raw 2nd
+    # eigenvalue scales with graph size n ∝ T) (v3/B2).
+    fiedler = float(eigenvalues[1] / lam_max) if (n > 1 and lam_max > 1e-12) else 0.0
+
+    # HFER: high-frequency energy ratio (a fraction, already scale-free).
     if total_energy > 1e-12:
         median_ev = float(np.median(eigenvalues))
-        high_freq_energy = eigenvalues[eigenvalues > median_ev].sum()
-        hfer = float(high_freq_energy / total_energy)
+        hfer = float(eigenvalues[eigenvalues > median_ev].sum() / total_energy)
     else:
         hfer = 0.0
 
-    # Spectral entropy
-    if total_energy > 1e-12:
+    # Spectral entropy of the (sum-normalized, scale-free) eigenvalue
+    # distribution, divided by log(n) so it doesn't grow with the node count
+    # (= sampled steps ∝ T) (v3/B2).
+    if total_energy > 1e-12 and n > 1:
         normalized_ev = eigenvalues / total_energy
-        spec_entropy = float(scipy_entropy(normalized_ev + 1e-12))
+        spec_entropy = float(scipy_entropy(normalized_ev + 1e-12) / np.log(n))
     else:
         spec_entropy = 0.0
 
-    # Smoothness: use mean hidden state as graph signal
-    T_total = len(data.hidden_states)
-    if T_total > 0:
-        # Gather hidden states at sampled steps for this layer
+    # Smoothness: Rayleigh quotient on the symmetric NORMALIZED Laplacian (bounded
+    # [0,2], so it doesn't scale with n) of a meaningful graph signal — the
+    # positionally-corrected hidden-state NORM per step (v3/C2). Old signal was
+    # hidden_state.mean() = scalar mean of a ~4096-dim RMSNorm residual ≈ noise.
+    deg = A.sum(axis=1)
+    d_inv_sqrt = 1.0 / np.sqrt(np.maximum(deg, 1e-12))
+    L_sym = np.eye(n) - (d_inv_sqrt[:, None] * A * d_inv_sqrt[None, :])
+    if len(data.hidden_states) > 0:
         h_signal = np.array([
-            data.hidden_states[t][layer_idx + 1].mean()  # scalar per step
+            np.linalg.norm(
+                _correct_hidden_state(
+                    data.hidden_states[t][layer_idx + 1], layer_idx + 1,
+                    data.prompt_length + t, data.positional_means,
+                ).astype(np.float64)
+            )
             for t in sampled_steps
         ], dtype=np.float64)
-        xtLx = h_signal @ L @ h_signal
+        xtLx = h_signal @ L_sym @ h_signal
         xtx = h_signal @ h_signal
         smoothness = float(xtLx / max(xtx, 1e-12))
     else:
@@ -557,7 +636,7 @@ def extract_tier2_5(
 
     # Feature names for cache attention profiles (must match actual extraction order)
     _cache_profile_names = [
-        "recency_bias", "anchor_strength", "cache_coverage", "lookback_ratio",
+        "recency_bias", "sink_mass", "cache_coverage", "lookback_ratio",
         "attn_decay_rate",
         "recency_traj0", "recency_traj1", "recency_traj2", "recency_traj3",
     ]
@@ -579,10 +658,6 @@ def extract_tier2_5(
             for name in _key_geom_names:
                 features.append(0.0)
                 names.append(f"kv_{name}_L{l_idx}")
-        # Cross-layer agreement (3 features)
-        for name in ["cross_layer_early_late_agreement", "cross_layer_adjacent_agreement", "cross_layer_overall_coherence"]:
-            features.append(0.0)
-            names.append(name)
         # Epoch detection (9 features)
         for base in ["epoch_n_transitions", "epoch_max_transition", "epoch_regularity"]:
             for suffix in ["_mean", "_max", "_std"]:
@@ -602,9 +677,10 @@ def extract_tier2_5(
             continue
 
         recency_biases = []
-        anchor_strengths = []
-        lookback_ratios = []
+        sink_masses = []
         cache_coverages = []
+        prompt_masses = []   # v3/B1: accumulate raw masses for ratio-of-means lookback
+        gen_masses = []
 
         for t in range(T):
             attn = data.attentions[t][l_idx]  # [num_heads, seq_len]
@@ -619,27 +695,35 @@ def extract_tier2_5(
             recency = float(mean_attn[cutoff:].sum() / max(mean_attn.sum(), 1e-12))
             recency_biases.append(recency)
 
-            # Anchor strength: max attention to any single position
-            anchor_strengths.append(float(mean_attn.max()))
+            # Sink mass: attention to position 0 (BOS / attention sink). On this
+            # corpus the sink dominates (argmax==0 ~100%), so this equals the old
+            # "anchor_strength" = max(attention); named honestly now (v3/C1).
+            sink_masses.append(float(mean_attn[0]))
 
             # Cache coverage: fraction of positions with > 1/N attention
             threshold = 1.0 / max(seq_len, 1)
             cache_coverages.append(float((mean_attn > threshold).sum() / seq_len))
 
-            # Lookback ratio: attention on prompt / attention on generated
-            prompt_mass = float(mean_attn[:data.prompt_length].sum())
-            gen_mass = float(mean_attn[data.prompt_length:].sum())
-            lookback_ratios.append(prompt_mass / max(gen_mass, 1e-12))
+            # Lookback: prompt vs generated attention mass. Accumulate raw masses
+            # and aggregate as a ratio-of-means below (v3/B1) — the old
+            # mean-of-ratios blew up at early steps where gen_mass≈0.
+            prompt_masses.append(float(mean_attn[:data.prompt_length].sum()))
+            gen_masses.append(float(mean_attn[data.prompt_length:].sum()))
 
         # Aggregate
         for arr, name in [
             (recency_biases, "recency_bias"),
-            (anchor_strengths, "anchor_strength"),
+            (sink_masses, "sink_mass"),
             (cache_coverages, "cache_coverage"),
-            (lookback_ratios, "lookback_ratio"),
         ]:
             features.append(float(np.mean(arr)) if arr else 0.0)
             names.append(f"cache_{name}_L{l_idx}")
+
+        # Lookback ratio: ratio-of-means Σ(prompt_mass) / Σ(gen_mass) (v3/B1).
+        total_gen = float(np.sum(gen_masses)) if gen_masses else 0.0
+        total_prompt = float(np.sum(prompt_masses)) if prompt_masses else 0.0
+        features.append(total_prompt / max(total_gen, 1e-12))
+        names.append(f"cache_lookback_ratio_L{l_idx}")
 
         # Attention decay rate: fit exponential decay to mean attention vs distance
         try:
@@ -679,21 +763,27 @@ def extract_tier2_5(
         # Stack keys: T × [num_kv_heads, head_dim] → average across heads
         key_matrix = np.stack([k.mean(axis=0) for k in keys])  # [T_keys, head_dim]
 
-        # Key spread: mean cosine distance from centroid
-        centroid = key_matrix.mean(axis=0)
-        dists = [_cosine_dist(k, centroid) for k in key_matrix]
-        features.append(float(np.mean(dists)))
+        # Key spread: mean cosine distance from centroid (vectorized)
+        centroid = key_matrix.mean(axis=0, keepdims=True).astype(np.float64)  # [1, head_dim]
+        km_f64 = key_matrix.astype(np.float64)
+        km_norms = np.linalg.norm(km_f64, axis=1, keepdims=True)
+        c_norm = np.linalg.norm(centroid, axis=1, keepdims=True)
+        sims = (km_f64 * centroid).sum(axis=1) / np.maximum(km_norms.squeeze() * c_norm.squeeze(), 1e-12)
+        spread_dists = 1.0 - sims
+        features.append(float(spread_dists.mean()))
         names.append(f"kv_key_spread_L{l_idx}")
 
         # Effective dimensionality (participation ratio of SVD singular values)
         try:
-            _, s, _ = np.linalg.svd(key_matrix.astype(np.float64), full_matrices=False)
+            s = np.linalg.svd(km_f64, compute_uv=False)
             s2 = s ** 2
             s2_sum = s2.sum()
-            if s2_sum > 1e-12:
-                eff_dim = float((s2_sum ** 2) / (s2 ** 2).sum())
-            else:
-                eff_dim = 0.0
+            eff_dim = float((s2_sum ** 2) / (s2 ** 2).sum()) if s2_sum > 1e-12 else 0.0
+            # Bound as a fraction of the max possible rank so it doesn't grow
+            # toward head_dim with generation length (v3/B4). Residual length
+            # coupling (PR still rises with T) is left to analysis-side
+            # residualization; subsampling to fixed #keys is a later option.
+            eff_dim = eff_dim / max(min(km_f64.shape[0], km_f64.shape[1]), 1)
         except Exception:
             eff_dim = 0.0
         features.append(eff_dim)
@@ -701,23 +791,28 @@ def extract_tier2_5(
 
         # Key drift: cosine distance between first-half and second-half centroids
         mid = len(key_matrix) // 2
-        centroid_first = key_matrix[:mid].mean(axis=0)
-        centroid_second = key_matrix[mid:].mean(axis=0)
-        features.append(_cosine_dist(centroid_first, centroid_second))
+        centroid_first = km_f64[:mid].mean(axis=0)
+        centroid_second = km_f64[mid:].mean(axis=0)
+        features.append(_cosine_dist(centroid_first.astype(np.float32), centroid_second.astype(np.float32)))
         names.append(f"kv_key_drift_L{l_idx}")
 
-        # Key novelty time series
-        running_centroid = key_matrix[0].copy().astype(np.float64)
-        novelties = []
-        for i in range(1, len(key_matrix)):
-            nov = _cosine_dist(key_matrix[i], running_centroid.astype(np.float32))
-            novelties.append(nov)
-            # Update running centroid
-            running_centroid = (running_centroid * i + key_matrix[i].astype(np.float64)) / (i + 1)
+        # Key novelty: vectorized via cumulative sum for running centroids
+        cumsum = np.cumsum(km_f64, axis=0)  # [T, head_dim]
+        counts = np.arange(1, len(km_f64) + 1, dtype=np.float64)[:, np.newaxis]
+        running_centroids = cumsum / counts  # [T, head_dim]
 
-        if novelties:
-            features.append(float(np.mean(novelties)))
-            features.append(float(np.std(novelties)))
+        # Cosine distance between key[i] and running_centroid[i-1]
+        keys_from_1 = km_f64[1:]   # [T-1, head_dim]
+        cents_to_Tm1 = running_centroids[:-1]  # [T-1, head_dim]
+        k_norms = np.linalg.norm(keys_from_1, axis=1)
+        c_norms = np.linalg.norm(cents_to_Tm1, axis=1)
+        dots = (keys_from_1 * cents_to_Tm1).sum(axis=1)
+        novelty_sims = dots / np.maximum(k_norms * c_norms, 1e-12)
+        novelties = (1.0 - novelty_sims).astype(np.float32)
+
+        if len(novelties) > 0:
+            features.append(float(novelties.mean()))
+            features.append(float(novelties.std()))
         else:
             features.append(0.0)
             features.append(0.0)
@@ -726,16 +821,14 @@ def extract_tier2_5(
 
         traj_idx = _trajectory_indices(len(novelties), 5)
         for i, ti in enumerate(traj_idx):
-            features.append(novelties[ti] if ti < len(novelties) else 0.0)
+            features.append(float(novelties[ti]) if ti < len(novelties) else 0.0)
             names.append(f"kv_key_novelty_traj{i}_L{l_idx}")
 
-    # ── 2.5.3 Cross-Layer Key Agreement ──
-    cross_layer_feats = _extract_cross_layer_key_agreement(data, config)
-    for name, val in cross_layer_feats:
-        features.append(val)
-        names.append(name)
-
-    # ── 2.5.4 KV Cache Epoch Detection ──
+    # ── 2.5.3 KV Cache Epoch Detection ──
+    # (v3/C3: cross-layer key agreement removed — it compared k_proj outputs from
+    #  different layers, which live in unrelated learned bases, so the cosine is not
+    #  interpretable as "agreement". _extract_cross_layer_key_agreement is retained
+    #  below, unused, for a possible within-layer-CKA replacement later.)
     epoch_feats = _extract_epoch_features(data, config)
     for name, val in epoch_feats:
         features.append(val)
@@ -762,11 +855,15 @@ def _fit_attention_decay(
     for t in sample_steps:
         attn = attentions[t][layer_idx].mean(axis=0).astype(np.float64)
         seq_len = attn.shape[0]
+        if seq_len < 2:
+            continue
         current_pos = prompt_length + t
-        distances = np.array([current_pos - i for i in range(seq_len)], dtype=np.float64)
+        # Exclude position 0 (BOS / attention sink): it carries large mass at the
+        # MAX distance, which flattens/biases the exponential-decay fit (v3/C1).
+        distances = np.array([current_pos - i for i in range(1, seq_len)], dtype=np.float64)
         distances = np.maximum(distances, 1)
         all_distances.extend(distances.tolist())
-        all_weights.extend(attn.tolist())
+        all_weights.extend(attn[1:].tolist())
 
     if len(all_distances) < 2:
         return 0.0
@@ -885,9 +982,11 @@ def _extract_epoch_features(
         bs_mean = float(bs_arr.mean())
         bs_std = float(bs_arr.std())
 
-        # Count transitions above threshold
+        # Count transitions above threshold, as a RATE (fraction of window
+        # boundaries that are transitions) so it doesn't grow with generation
+        # length (v3/B4).
         threshold = bs_mean + 1.5 * max(bs_std, 1e-6)
-        n_trans = int((bs_arr > threshold).sum())
+        n_trans = float((bs_arr > threshold).sum()) / len(bs_arr)
         all_n_transitions.append(n_trans)
         all_max_transitions.append(float(bs_arr.max()))
         all_regularities.append(bs_std)

@@ -244,7 +244,7 @@ def _gate_layer_names(
             for stat in ["mean", "std", "slope"]:
                 names.append(f"{prefix}_{ts_name}_w{wi}_{stat}")
         if include_stft:
-            for feat in ["dominant_freq", "spectral_centroid", "bandwidth",
+            for feat in ["spectral_centroid", "bandwidth",
                           "low_band_energy", "mid_band_energy", "high_band_energy"]:
                 names.append(f"{prefix}_{ts_name}_{feat}")
     return names

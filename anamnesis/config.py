@@ -232,6 +232,12 @@ class FeaturePipelineConfig(BaseModel):
         description="Extract windowed temporal decomposition of core T2/T2.5 metrics",
     )
 
+    # Per-head heterogeneity (preserve what head-averaging destroys)
+    enable_per_head: bool = Field(
+        default=False,
+        description="Extract per-head attention/key heterogeneity features",
+    )
+
     # Temporal operator settings (shared across families)
     temporal_n_windows: int = Field(
         default=4,
@@ -328,6 +334,24 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
         temperature=0.7,
         eos_token_ids=[128001, 128009],
         calibration_dir=LEGACY_DATA_ROOT / "outputs" / "calibration",
+    ),
+    "qwen-7b": ModelPreset(
+        model_id="Qwen/Qwen2.5-7B-Instruct",
+        torch_dtype="bfloat16",
+        num_layers=28,
+        hidden_dim=3584,
+        num_attention_heads=28,
+        num_kv_heads=4,
+        head_dim=128,
+        sampled_layers=[0, 7, 14, 18, 21, 24, 27],
+        pca_layers=[7, 14, 18, 21, 24],
+        trajectory_layers=[7, 14, 18, 21, 24],
+        contrastive_layers=[7, 14, 18, 21, 24],
+        early_layer_cutoff=7,
+        late_layer_cutoff=21,
+        temperature=0.7,
+        eos_token_ids=[151643, 151645],
+        calibration_dir=OUTPUTS_BASE / "calibration" / "qwen25_7b",
     ),
 }
 

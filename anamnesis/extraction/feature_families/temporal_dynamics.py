@@ -236,7 +236,7 @@ def _temporal_dynamics_names(
         # stft: 6 features
         if include_stft:
             for suffix in [
-                "dominant_freq", "spectral_centroid", "bandwidth",
+                "spectral_centroid", "bandwidth",
                 "low_band_energy", "mid_band_energy", "high_band_energy",
             ]:
                 names.append(f"{prefix}_{suffix}")
@@ -323,7 +323,7 @@ def extract_temporal_dynamics(
                     ])
                 if include_stft:
                     for suffix in [
-                        "dominant_freq", "spectral_centroid", "bandwidth",
+                        "spectral_centroid", "bandwidth",
                         "low_band_energy", "mid_band_energy", "high_band_energy",
                     ]:
                         fallback_names.append(f"{prefix}_{suffix}")

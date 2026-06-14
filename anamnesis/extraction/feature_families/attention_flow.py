@@ -151,17 +151,17 @@ def extract_attention_flow(
 
         # System prompt mass: mean, std
         features.append(float(sys_arr.mean()))
-        names.append(f"{prefix}_sysprompt_mass_mean")
+        names.append(f"{prefix}_prompt_mass_mean")
         features.append(float(sys_arr.std()))
-        names.append(f"{prefix}_sysprompt_mass_std")
+        names.append(f"{prefix}_prompt_mass_std")
 
         # System prompt decay rate (exponential fit)
         decay_rate = _fit_decay_rate(sys_arr)
         features.append(decay_rate)
-        names.append(f"{prefix}_sysprompt_decay_rate")
+        names.append(f"{prefix}_prompt_decay_rate")
 
         # Region masses: mean, std for each region
-        region_labels = ["sysprompt", "early_gen", "mid_gen", "recent"]
+        region_labels = ["prompt", "early_gen", "mid_gen", "recent"]
         for ri, label in enumerate(region_labels):
             r_arr = np.array(region_masses[ri], dtype=np.float64)
             features.append(float(r_arr.mean()))
@@ -177,14 +177,14 @@ def extract_attention_flow(
             sys_diversity = 0.0
             rec_diversity = 0.0
         features.append(sys_diversity)
-        names.append(f"{prefix}_head_diversity_sysprompt")
+        names.append(f"{prefix}_head_diversity_prompt")
         features.append(rec_diversity)
         names.append(f"{prefix}_head_diversity_recency")
 
         # ── Temporal operators ──
         op_f, op_n = apply_operators(
             sys_arr.astype(np.float32),
-            prefix=f"{prefix}_sysprompt_mass",
+            prefix=f"{prefix}_prompt_mass",
             n_windows=n_windows, include_stft=include_stft,
         )
         features.extend(op_f.tolist())
@@ -234,23 +234,23 @@ def _attention_flow_names(
     """Generate all feature names for one layer's attention flow features."""
     prefix = f"attn_flow_L{layer_idx}"
     names = [
-        f"{prefix}_sysprompt_mass_mean",
-        f"{prefix}_sysprompt_mass_std",
-        f"{prefix}_sysprompt_decay_rate",
+        f"{prefix}_prompt_mass_mean",
+        f"{prefix}_prompt_mass_std",
+        f"{prefix}_prompt_decay_rate",
     ]
-    for label in ["sysprompt", "early_gen", "mid_gen", "recent"]:
+    for label in ["prompt", "early_gen", "mid_gen", "recent"]:
         names.append(f"{prefix}_region_{label}_mean")
         names.append(f"{prefix}_region_{label}_std")
-    names.append(f"{prefix}_head_diversity_sysprompt")
+    names.append(f"{prefix}_head_diversity_prompt")
     names.append(f"{prefix}_head_diversity_recency")
 
     # Temporal operator names for two time series
-    for ts_name in ["sysprompt_mass", "recency_bias"]:
+    for ts_name in ["prompt_mass", "recency_bias"]:
         for wi in range(n_windows):
             for stat in ["mean", "std", "slope"]:
                 names.append(f"{prefix}_{ts_name}_w{wi}_{stat}")
         if include_stft:
-            for feat in ["dominant_freq", "spectral_centroid", "bandwidth",
+            for feat in ["spectral_centroid", "bandwidth",
                           "low_band_energy", "mid_band_energy", "high_band_energy"]:
                 names.append(f"{prefix}_{ts_name}_{feat}")
 

@@ -127,6 +127,8 @@ def run_single_generation(
 
     t_generate = time.time()
 
+    loaded.flush_hooks_to_cpu()
+
     # Convert outputs to numpy for state_extractor
     raw_data = _convert_outputs_to_raw(
         outputs=outputs,
