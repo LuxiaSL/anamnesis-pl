@@ -178,6 +178,7 @@ def _load_training_data(
 def train_projection(
     X: F32,
     y: NDArray,
+    groups: NDArray | None = None,
     hidden_dim: int = 256,
     bottleneck_dim: int = 32,
     n_epochs: int = 300,
@@ -195,6 +196,11 @@ def train_projection(
     ----------
     X : array [N, input_dim]
     y : array [N] — string mode labels
+    groups : array [N], optional
+        Per-sample group id (e.g. generation id). When provided, the internal
+        train/val split holds out *whole groups* (so same-generation samples —
+        different layer/time of one generation — never straddle the split). When
+        None, falls back to a by-sample split (legacy behavior).
     hidden_dim : int
         MLP hidden layer size.
     bottleneck_dim : int
@@ -233,16 +239,30 @@ def train_projection(
     rng = np.random.default_rng(seed)
     torch.manual_seed(seed)
 
-    # Train/val split (by generation, not by sample)
-    # Group samples by generation prefix (gen_XXX)
+    # Train/val split. When `groups` is given, hold out whole groups (e.g. whole
+    # generations) so the ~L*t samples of one generation never straddle train/val
+    # — a by-sample split leaks them across the split and inflates val_kNN.
     unique_labels = sorted(set(y))
     n_samples = len(X)
 
-    # Simple random split
-    perm = rng.permutation(n_samples)
-    n_val = max(1, int(n_samples * val_fraction))
-    val_idx = perm[:n_val]
-    train_idx = perm[n_val:]
+    if groups is not None:
+        groups = np.asarray(groups)
+        uniq_groups = np.unique(groups)
+        gperm = rng.permutation(len(uniq_groups))
+        n_val_groups = max(1, int(len(uniq_groups) * val_fraction))
+        val_groups = set(uniq_groups[gperm[:n_val_groups]].tolist())
+        is_val = np.array([g in val_groups for g in groups])
+        val_idx = np.flatnonzero(is_val)
+        train_idx = np.flatnonzero(~is_val)
+        if len(train_idx) == 0 or len(val_idx) == 0:  # degenerate fallback
+            perm = rng.permutation(n_samples)
+            n_val = max(1, int(n_samples * val_fraction))
+            val_idx, train_idx = perm[:n_val], perm[n_val:]
+    else:
+        perm = rng.permutation(n_samples)
+        n_val = max(1, int(n_samples * val_fraction))
+        val_idx = perm[:n_val]
+        train_idx = perm[n_val:]
 
     # Optional standardization
     scaler_mean: F32 | None = None
