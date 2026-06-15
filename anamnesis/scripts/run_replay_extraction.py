@@ -66,6 +66,8 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--gen-ids", type=int, nargs="+", default=None, help="Subset of gen ids (default: all in manifest)")
     parser.add_argument("--raw-subdir", default="raw_tensors_v3")
+    parser.add_argument("--raw-dir", type=Path, default=None,
+                        help="Absolute raw output dir (overrides run-dir/raw-subdir; e.g. /dev/shm scratch)")
     parser.add_argument("--sig-subdir", default="signatures_v3")
     parser.add_argument("--no-raw", action="store_true", help="Skip raw banking (signatures only)")
     parser.add_argument("--no-tier3", action="store_true")
@@ -140,7 +142,7 @@ def main() -> None:
         gens = md["generations"] if isinstance(md, dict) and "generations" in md else md
         src_meta = {int(g["generation_id"]): g for g in gens}
 
-    raw_dir = args.run_dir / args.raw_subdir
+    raw_dir = args.raw_dir if args.raw_dir is not None else (args.run_dir / args.raw_subdir)
     sig_dir = args.run_dir / args.sig_subdir
     sig_dir.mkdir(parents=True, exist_ok=True)
     if not args.no_raw:

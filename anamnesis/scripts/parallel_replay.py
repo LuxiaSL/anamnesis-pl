@@ -44,6 +44,8 @@ def main() -> None:
     parser.add_argument("--gpus", type=str, default="0,1,2,3,4,5,6,7")
     parser.add_argument("--workers-per-gpu", type=int, default=3)
     parser.add_argument("--sig-subdir", default="signatures_v3")
+    parser.add_argument("--raw-dir", type=Path, default=None,
+                        help="Absolute raw output dir passed to workers (e.g. /dev/shm scratch)")
     parser.add_argument("--no-raw", action="store_true")
     parser.add_argument("--no-tier3", action="store_true")
     parser.add_argument("--no-resume", action="store_true")
@@ -103,6 +105,8 @@ def main() -> None:
         ]
         if args.no_raw:
             cmd.append("--no-raw")
+        if args.raw_dir:
+            cmd += ["--raw-dir", str(args.raw_dir)]
         if args.no_tier3:
             cmd.append("--no-tier3")
         # workers always resume internally too (idempotent); --no-resume only affects launch filter
