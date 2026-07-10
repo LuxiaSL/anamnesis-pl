@@ -238,6 +238,24 @@ class FeaturePipelineConfig(BaseModel):
         description="Extract per-head attention/key heterogeneity features",
     )
 
+    # v_proj value-vector geometry (OV-circuit storage surface; never featurized before)
+    enable_value_geometry: bool = Field(
+        default=False,
+        description="Extract v_proj value-vector geometry (spread/eff_dim/drift/novelty + basis-free stats)",
+    )
+
+    # Query / QK-space content geometry (pre-RoPE query trajectory + q·k content alignment)
+    enable_qk_geometry: bool = Field(
+        default=False,
+        description="Extract pre-RoPE query geometry + q·k content alignment (RoPE-invariant self-align)",
+    )
+
+    # Cross-layer KV-cache CKA (basis-invariant key/value structure agreement across depth; replaces C4)
+    enable_kv_cka: bool = Field(
+        default=False,
+        description="Extract cross-layer linear CKA for keys and values (basis-invariant)",
+    )
+
     # Temporal operator settings (shared across families)
     temporal_n_windows: int = Field(
         default=4,

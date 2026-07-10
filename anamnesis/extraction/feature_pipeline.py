@@ -241,6 +241,46 @@ def compute_features_v2_from_data(
             all_names.extend(result.feature_names)
             offset += len(result)
 
+    if family_config.enable_value_geometry:
+        from anamnesis.extraction.feature_families.value_geometry import extract_value_geometry
+        result = extract_value_geometry(
+            raw_data,
+            sampled_layers=config.sampled_layers,
+            n_windows=family_config.temporal_n_windows,
+            include_stft=family_config.enable_stft,
+        )
+        if len(result) > 0:
+            all_slices[result.family_name] = (offset, offset + len(result))
+            all_features.append(result.features)
+            all_names.extend(result.feature_names)
+            offset += len(result)
+
+    if family_config.enable_qk_geometry:
+        from anamnesis.extraction.feature_families.qk_geometry import extract_qk_geometry
+        result = extract_qk_geometry(
+            raw_data,
+            sampled_layers=config.sampled_layers,
+            n_windows=family_config.temporal_n_windows,
+            include_stft=family_config.enable_stft,
+        )
+        if len(result) > 0:
+            all_slices[result.family_name] = (offset, offset + len(result))
+            all_features.append(result.features)
+            all_names.extend(result.feature_names)
+            offset += len(result)
+
+    if family_config.enable_kv_cka:
+        from anamnesis.extraction.feature_families.key_cka import extract_key_cka
+        result = extract_key_cka(
+            raw_data,
+            sampled_layers=config.sampled_layers,
+        )
+        if len(result) > 0:
+            all_slices[result.family_name] = (offset, offset + len(result))
+            all_features.append(result.features)
+            all_names.extend(result.feature_names)
+            offset += len(result)
+
     # Concatenate
     if all_features:
         combined = np.concatenate(all_features)
