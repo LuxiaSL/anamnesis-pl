@@ -223,28 +223,32 @@ def load_run4(
     # Sort by (mode_idx, topic_idx) for consistent ordering
     all_meta.sort(key=lambda x: (x[1]["mode_idx"], x[1]["topic_idx"]))
 
-    # ── Discover available tiers from first npz file ──
-    first_data = np.load(all_meta[0][0], allow_pickle=True)
-    available_npz_keys = set(first_data.files)
+    # Second pass: load features. Tier discovery happens on the first file of
+    # this loop (previously a separate np.load of the same file — a redundant
+    # open/decompress of the first npz before the loop re-loaded it).
     present_tiers: dict[str, str] = {}
-    for tier_name, npz_key in TIER_KEYS.items():
-        if npz_key in available_npz_keys:
-            present_tiers[tier_name] = npz_key
-
-    logger.info(
-        f"Discovered {len(present_tiers)} tiers: {list(present_tiers.keys())}"
-    )
-    missing = set(TIER_KEYS) - set(present_tiers)
-    if missing:
-        logger.info(f"  Missing (skipped): {sorted(missing)}")
-
-    # Second pass: load features
-    tier_arrays: dict[str, list[NDArray]] = {k: [] for k in present_tiers}
+    tiers_discovered = False
+    tier_arrays: dict[str, list[NDArray]] = {}
     samples: list[SampleMeta] = []
     all_feature_names: dict[str, NDArray] | None = None
 
     for npz_path, meta in all_meta:
         data = np.load(npz_path, allow_pickle=True)
+
+        if not tiers_discovered:
+            tiers_discovered = True
+            # ── Discover available tiers from the first npz file ──
+            available_npz_keys = set(data.files)
+            for tier_name, npz_key in TIER_KEYS.items():
+                if npz_key in available_npz_keys:
+                    present_tiers[tier_name] = npz_key
+            tier_arrays = {k: [] for k in present_tiers}
+            logger.info(
+                f"Discovered {len(present_tiers)} tiers: {list(present_tiers.keys())}"
+            )
+            missing = set(TIER_KEYS) - set(present_tiers)
+            if missing:
+                logger.info(f"  Missing (skipped): {sorted(missing)}")
 
         for tier_name, npz_key in present_tiers.items():
             tier_arrays[tier_name].append(data[npz_key])

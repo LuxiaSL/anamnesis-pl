@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -42,21 +44,74 @@ from .results_schema import (
 logger = logging.getLogger(__name__)
 
 
+def _embed_cache_dir() -> Path:
+    """Disk cache for corpus embeddings (recomputing SBERT/TF-IDF on an unchanged
+    corpus dominated repeat semantic runs). Override via ANAMNESIS_EMBED_CACHE."""
+    return Path(os.environ.get(
+        "ANAMNESIS_EMBED_CACHE",
+        str(Path.home() / ".cache" / "anamnesis" / "embeddings"),
+    ))
+
+
+def _corpus_cache_key(texts: list[str], tag: str) -> str:
+    """Content hash of (method+params, corpus) — any text change invalidates."""
+    h = hashlib.sha256(tag.encode("utf-8"))
+    for t in texts:
+        h.update(b"\x00")
+        h.update(t.encode("utf-8", errors="replace"))
+    return h.hexdigest()
+
+
+def _cached_embedding_load(key: str) -> NDArray | None:
+    """Best-effort cache read; any failure means recompute."""
+    path = _embed_cache_dir() / f"{key}.npz"
+    try:
+        if path.exists():
+            return np.load(path)["embedding"].astype(np.float32)
+    except Exception as e:  # noqa: BLE001 — cache must never break the analysis
+        logger.warning(f"Embedding cache read failed ({path.name}): {e}")
+    return None
+
+
+def _cached_embedding_save(key: str, embedding: NDArray) -> None:
+    """Best-effort cache write (atomic rename; failures logged, not raised)."""
+    cache_dir = _embed_cache_dir()
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        tmp = cache_dir / f".{key}.tmp.npz"
+        np.savez_compressed(tmp, embedding=embedding)
+        tmp.replace(cache_dir / f"{key}.npz")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Embedding cache write failed ({key[:12]}…): {e}")
+
+
 def _embed_texts_tfidf(texts: list[str], n_components: int = 100) -> NDArray:
-    """TF-IDF + SVD embedding of texts."""
+    """TF-IDF + SVD embedding of texts (disk-cached by corpus hash)."""
+    key = _corpus_cache_key(texts, f"tfidf:max_features=5000:svd={n_components}:seed=42")
+    cached = _cached_embedding_load(key)
+    if cached is not None:
+        return cached
     tfidf = TfidfVectorizer(max_features=5000, stop_words="english")
     X_tfidf = tfidf.fit_transform(texts)
     svd = TruncatedSVD(n_components=min(n_components, X_tfidf.shape[1] - 1), random_state=42)
-    return svd.fit_transform(X_tfidf).astype(np.float32)
+    out = svd.fit_transform(X_tfidf).astype(np.float32)
+    _cached_embedding_save(key, out)
+    return out
 
 
 def _embed_texts_sbert(texts: list[str]) -> NDArray | None:
-    """Sentence-BERT embedding (optional dependency)."""
+    """Sentence-BERT embedding (optional dependency; disk-cached by corpus hash)."""
+    key = _corpus_cache_key(texts, "sbert:all-MiniLM-L6-v2")
+    cached = _cached_embedding_load(key)
+    if cached is not None:
+        return cached
     try:
         from sentence_transformers import SentenceTransformer
         model = SentenceTransformer("all-MiniLM-L6-v2")
         embeddings = model.encode(texts, show_progress_bar=False)
-        return np.array(embeddings, dtype=np.float32)
+        out = np.array(embeddings, dtype=np.float32)
+        _cached_embedding_save(key, out)
+        return out
     except ImportError:
         return None
     except Exception:
