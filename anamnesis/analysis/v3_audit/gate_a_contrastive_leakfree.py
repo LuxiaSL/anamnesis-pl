@@ -81,7 +81,9 @@ def _load_init(pm_path: str) -> None:
 def _load_one(task: tuple) -> dict | None:
     gid, raw_dir, layers, mode, topic, plen, glen = task
     try:
-        data = load_raw_tensors(gid, Path(raw_dir))
+        # Lean load: this script reads only the sampled-hidden residual slice —
+        # skip attention/gate/logits reconstruction entirely (~6x faster on v3 banks).
+        data = load_raw_tensors(gid, Path(raw_dir), surfaces=("hidden",))
     except Exception as e:  # noqa: BLE001
         return {"_err": f"gen {gid}: {e}"}
     T = len(data.hidden_states)

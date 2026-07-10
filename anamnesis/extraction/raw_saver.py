@@ -24,6 +24,7 @@ Disk format (per generation):
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -349,9 +350,18 @@ def save_raw_tensors_v3(
     return npz_path
 
 
+#: Surface names accepted by load_raw_tensors(surfaces=...).
+VALID_SURFACES: frozenset[str] = frozenset(
+    {"hidden", "attention", "keys", "values", "queries", "gate", "logits"}
+)
+
+
 def load_raw_tensors(
     gen_id: int,
     raw_dir: Path,
+    *,
+    surfaces: Sequence[str] | None = None,
+    attn_layers: Sequence[int] | None = None,
 ) -> RawGenerationData:
     """Load saved raw tensors back into RawGenerationData.
 
@@ -365,11 +375,43 @@ def load_raw_tensors(
         Generation ID to load.
     raw_dir : Path
         Directory containing raw tensor npz files.
+    surfaces : sequence of str, optional (keyword-only)
+        Which surfaces to materialize. None (default) loads everything the npz
+        holds — the exact historical behavior. Valid names (see VALID_SURFACES):
+        "hidden", "attention", "keys", "values", "queries", "gate", "logits".
+        Surfaces not requested are left empty ([] / {} / None) and — crucially —
+        their npz members are never decompressed, so a hidden-only load skips
+        the (large) attention/gate/logits work entirely. positional_means is
+        loaded whenever present and "hidden" is requested (or surfaces is None),
+        since it is a hidden-space correction.
+    attn_layers : sequence of int, optional (keyword-only)
+        If given (and "attention" is loaded), only these transformer layers are
+        filled in the per-timestep attention arrays; the layer AXIS keeps its
+        full [num_layers] extent (zeros elsewhere), so absolute-layer indexing
+        in state_extractor and the feature families is unchanged. Layers not
+        present in the npz are ignored. For v3 all-layer banks, passing
+        config.sampled_layers avoids rebuilding ~25 layers nothing reads.
+        None (default) fills every saved layer — the exact historical behavior.
 
     Returns
     -------
     RawGenerationData reconstructed from saved tensors.
+
+    Raises
+    ------
+    FileNotFoundError if the npz is missing; ValueError on unknown surface names.
     """
+    if surfaces is not None:
+        want = frozenset(surfaces)
+        unknown = want - VALID_SURFACES
+        if unknown:
+            raise ValueError(
+                f"Unknown surface name(s) {sorted(unknown)}; "
+                f"valid surfaces: {sorted(VALID_SURFACES)}"
+            )
+    else:
+        want = VALID_SURFACES
+
     npz_path = raw_dir / f"gen_{gen_id:03d}.npz"
     if not npz_path.exists():
         raise FileNotFoundError(f"Raw tensor file not found: {npz_path}")
@@ -387,125 +429,127 @@ def load_raw_tensors(
             prompt_length=0,
         )
 
-    hs_stacked = data["hidden_states"].astype(np.float32)  # [T, n_saved, hidden_dim]
-    attn_stacked = data["attentions"].astype(np.float32)    # [T, n_attn, n_heads, max_seq]
-    keys_stacked = data["pre_rope_keys"].astype(np.float32) if data["pre_rope_keys"].size > 0 else None
-    logits_values = data["logits_values"]                   # [T, k]
-    logits_indices = data["logits_indices"]                  # [T, k]
+    # ── Always-cheap metadata (npz member access decompresses lazily, per member) ──
     chosen_ids = data["chosen_ids"].astype(np.float32)      # [T]
     actual_lengths = data["actual_lengths"]                  # [T]
     prompt_length = int(data["prompt_length"])
-    saved_layers_hs = data["saved_layers_hs"]               # layer indices
-    saved_layers_attn = data["saved_layers_attn"]           # layer indices
-    kv_layer_indices = data["kv_layer_indices"] if "kv_layer_indices" in data else np.array([], dtype=np.int32)
-    values_stacked = (
-        data["v_proj_values"].astype(np.float32)
-        if ("v_proj_values" in data and data["v_proj_values"].size > 0) else None
-    )
-    value_layer_indices = data["value_layer_indices"] if "value_layer_indices" in data else np.array([], dtype=np.int32)
-    queries_stacked = (
-        data["queries"].astype(np.float32)
-        if ("queries" in data and data["queries"].size > 0) else None
-    )
-    query_layer_indices = data["query_layer_indices"] if "query_layer_indices" in data else np.array([], dtype=np.int32)
     n_total_layers = int(data["all_layers_count"])           # num_layers + 1
-
-    T = hs_stacked.shape[0]
-    hidden_dim = hs_stacked.shape[2] if hs_stacked.ndim == 3 else 0
+    T = int(actual_lengths.shape[0])
 
     # ── Reconstruct hidden_states ──
-    # Need to expand back to [num_layers+1, hidden_dim] per timestep
-    # Fill unsaved layers with zeros (features won't use them)
+    # Expand back to [num_layers+1, hidden_dim] per timestep; unsaved layers
+    # stay zero (features won't use them). Vectorized: one upcast + one
+    # fancy-indexed assignment instead of a per-(t, layer) Python loop.
     hidden_states: list[F32] = []
-    for t in range(T):
-        full_h = np.zeros((n_total_layers, hidden_dim), dtype=np.float32)
+    if "hidden" in want:
+        hs_stacked = data["hidden_states"]                   # [T, n_saved, hidden_dim] f16
+        saved_layers_hs = data["saved_layers_hs"]            # layer indices (-1 = embedding)
+        hidden_dim = hs_stacked.shape[2] if hs_stacked.ndim == 3 else 0
+        src_pos: list[int] = []
+        dst_idx: list[int] = []
         for i, layer_label in enumerate(saved_layers_hs):
             layer_label = int(layer_label)
-            if layer_label == -1:
-                arr_idx = 0  # embedding
-            else:
-                arr_idx = layer_label + 1  # transformer layer offset
+            arr_idx = 0 if layer_label == -1 else layer_label + 1  # transformer layer offset
             if arr_idx < n_total_layers:
-                full_h[arr_idx] = hs_stacked[t, i]
-        hidden_states.append(full_h)
+                src_pos.append(i)
+                dst_idx.append(arr_idx)
+        full_hs = np.zeros((T, n_total_layers, hidden_dim), dtype=np.float32)
+        if src_pos:
+            full_hs[:, dst_idx] = hs_stacked[:, src_pos].astype(np.float32)
+        hidden_states = list(full_hs)  # per-t views, [num_layers+1, hidden_dim]
 
     # ── Reconstruct attentions ──
-    # Expand to [num_layers_no_embed, num_heads, seq_len_t] per timestep
-    n_layers_no_embed = n_total_layers - 1  # exclude embedding
-    n_heads = attn_stacked.shape[2] if attn_stacked.ndim == 4 else 0
+    # Expand to [num_layers_no_embed, num_heads, seq_len_t] per timestep.
+    # Only the requested layers are filled (full layer axis preserved); the
+    # f16→f32 upcast happens implicitly on assignment, never on the full bank.
     attentions: list[F32] = []
-    for t in range(T):
-        seq_len_t = int(actual_lengths[t])
-        full_a = np.zeros((n_layers_no_embed, n_heads, seq_len_t), dtype=np.float32)
+    if "attention" in want:
+        attn_stacked = data["attentions"]                    # [T, n_attn, n_heads, max_seq] f16
+        saved_layers_attn = data["saved_layers_attn"]        # layer indices
+        n_layers_no_embed = n_total_layers - 1               # exclude embedding
+        n_heads = attn_stacked.shape[2] if attn_stacked.ndim == 4 else 0
+        wanted_attn = None if attn_layers is None else {int(l) for l in attn_layers}
+        attn_src_pos: list[int] = []
+        attn_dst_idx: list[int] = []
         for i, layer_idx in enumerate(saved_layers_attn):
             layer_idx = int(layer_idx)
-            if layer_idx < n_layers_no_embed:
-                full_a[layer_idx, :, :seq_len_t] = attn_stacked[t, i, :, :seq_len_t]
-        attentions.append(full_a)
+            if layer_idx >= n_layers_no_embed:
+                continue
+            if wanted_attn is not None and layer_idx not in wanted_attn:
+                continue
+            attn_src_pos.append(i)
+            attn_dst_idx.append(layer_idx)
+        for t in range(T):
+            seq_len_t = int(actual_lengths[t])
+            full_a = np.zeros((n_layers_no_embed, n_heads, seq_len_t), dtype=np.float32)
+            if attn_src_pos:
+                full_a[attn_dst_idx, :, :seq_len_t] = attn_stacked[t, attn_src_pos, :, :seq_len_t]
+            attentions.append(full_a)
 
     # ── Reconstruct logits ──
-    # We only have top-k, not full vocab. Create a partial representation.
-    # Pre-computed entropy is stored separately for accurate Tier 1 features.
-    logits_entropy_saved = data.get("logits_entropy")  # [T] float32 — exact entropy from full dist
+    # We only have top-k, not full vocab. Create a partial representation
+    # (dense [vocab_size] with -1e9 sentinels — ~0.5MB per timestep). Skip the
+    # "logits" surface if you only need the exact entropy: it is pre-computed
+    # at save time and available via np.load(...)["logits_entropy"].
     logits: list[F32] = []
-    if logits_values.size > 0:
-        # Determine vocab size from max index
-        vocab_size = int(logits_indices.max()) + 1 if logits_indices.size > 0 else 128256
-        for t in range(T):
-            # Create full logit vector with very negative values for unobserved positions
-            full_logits = np.full(vocab_size, -1e9, dtype=np.float32)
-            valid_mask = logits_indices[t] >= 0
-            if np.any(valid_mask):
-                full_logits[logits_indices[t][valid_mask]] = logits_values[t][valid_mask]
-            logits.append(full_logits)
-    # Note: logits_entropy_saved is available via data["logits_entropy"] for callers
-    # that need exact entropy without recomputing from the partial logit vector.
+    if "logits" in want:
+        logits_values = data["logits_values"]                # [T, k]
+        logits_indices = data["logits_indices"]              # [T, k]
+        if logits_values.size > 0:
+            # Determine vocab size from max index
+            vocab_size = int(logits_indices.max()) + 1 if logits_indices.size > 0 else 128256
+            for t in range(T):
+                # Create full logit vector with very negative values for unobserved positions
+                full_logits = np.full(vocab_size, -1e9, dtype=np.float32)
+                valid_mask = logits_indices[t] >= 0
+                if np.any(valid_mask):
+                    full_logits[logits_indices[t][valid_mask]] = logits_values[t][valid_mask]
+                logits.append(full_logits)
 
     # ── Reconstruct pre-RoPE keys ──
     pre_rope_keys: dict[int, list[F32]] = {}
-    if keys_stacked is not None and keys_stacked.size > 0:
+    if "keys" in want and data["pre_rope_keys"].size > 0:
+        keys_stacked = data["pre_rope_keys"].astype(np.float32)
+        kv_layer_indices = data["kv_layer_indices"] if "kv_layer_indices" in data else np.array([], dtype=np.int32)
         for i, layer_idx in enumerate(kv_layer_indices):
-            layer_idx = int(layer_idx)
-            key_list: list[F32] = []
-            for t in range(T):
-                key_list.append(keys_stacked[t, i])
-            pre_rope_keys[layer_idx] = key_list
+            pre_rope_keys[int(layer_idx)] = [keys_stacked[t, i] for t in range(T)]
 
     # ── Reconstruct v_proj values + pre-RoPE queries (v3 surface; absent in v2 npz) ──
     v_proj_values: dict[int, list[F32]] | None = None
-    if values_stacked is not None and values_stacked.size > 0:
+    if "values" in want and "v_proj_values" in data and data["v_proj_values"].size > 0:
+        values_stacked = data["v_proj_values"].astype(np.float32)
+        value_layer_indices = data["value_layer_indices"] if "value_layer_indices" in data else np.array([], dtype=np.int32)
         v_proj_values = {}
         for i, layer_idx in enumerate(value_layer_indices):
             v_proj_values[int(layer_idx)] = [values_stacked[t, i] for t in range(T)]
 
     queries: dict[int, list[F32]] | None = None
-    if queries_stacked is not None and queries_stacked.size > 0:
+    if "queries" in want and "queries" in data and data["queries"].size > 0:
+        queries_stacked = data["queries"].astype(np.float32)
+        query_layer_indices = data["query_layer_indices"] if "query_layer_indices" in data else np.array([], dtype=np.int32)
         queries = {}
         for i, layer_idx in enumerate(query_layer_indices):
             queries[int(layer_idx)] = [queries_stacked[t, i] for t in range(T)]
 
     # ── Reconstruct gate activations ──
     gate_activations: dict[int, list[F32]] | None = None
-    gate_layer_indices_arr = data.get("gate_layer_indices")
-    gates_stacked_arr = data.get("gate_activations")
-    if (
-        gate_layer_indices_arr is not None
-        and gates_stacked_arr is not None
-        and gates_stacked_arr.size > 0
-        and gate_layer_indices_arr.size > 0
-    ):
-        gates_stacked_f32 = gates_stacked_arr.astype(np.float32)
-        gate_activations = {}
-        for i, layer_idx in enumerate(gate_layer_indices_arr):
-            layer_idx = int(layer_idx)
-            gate_list: list[F32] = []
-            for t in range(T):
-                gate_list.append(gates_stacked_f32[t, i])
-            gate_activations[layer_idx] = gate_list
+    if "gate" in want:
+        gate_layer_indices_arr = data.get("gate_layer_indices")
+        gates_stacked_arr = data.get("gate_activations")
+        if (
+            gate_layer_indices_arr is not None
+            and gates_stacked_arr is not None
+            and gates_stacked_arr.size > 0
+            and gate_layer_indices_arr.size > 0
+        ):
+            gates_stacked_f32 = gates_stacked_arr.astype(np.float32)
+            gate_activations = {}
+            for i, layer_idx in enumerate(gate_layer_indices_arr):
+                gate_activations[int(layer_idx)] = [gates_stacked_f32[t, i] for t in range(T)]
 
-    # ── Positional means ──
+    # ── Positional means (hidden-space correction; rides with "hidden") ──
     positional_means: F32 | None = None
-    if "positional_means" in data:
+    if "hidden" in want and "positional_means" in data:
         positional_means = data["positional_means"].astype(np.float32)
 
     return RawGenerationData(

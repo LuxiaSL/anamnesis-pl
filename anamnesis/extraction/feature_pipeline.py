@@ -23,6 +23,7 @@ import json
 import logging
 import pickle
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
@@ -52,6 +53,9 @@ def compute_features_from_raw(
     pca_components: F32 | None = None,
     pca_mean: F32 | None = None,
     positional_means: F32 | None = None,
+    *,
+    surfaces: Sequence[str] | None = None,
+    attn_layers: Sequence[int] | None = None,
 ) -> ExtractionResult:
     """Load raw tensors for one generation and compute features.
 
@@ -68,12 +72,19 @@ def compute_features_from_raw(
     positional_means : array, optional
         Injected only if the loaded raw_data has none (v3 deduped raw stores
         positional_means once in the calibration dir, not per-gen).
+    surfaces, attn_layers : optional (keyword-only)
+        Lean-load passthrough to load_raw_tensors. Defaults (None) load
+        everything — the exact historical behavior. CAUTION: the baseline
+        Tier 2 attention features (attn_entropy/head_agreement) read ALL
+        attention layers present, so restricting attn_layers changes those
+        features on v3 all-layer banks. Only restrict when every enabled
+        consumer reads sampled layers only.
 
     Returns
     -------
     ExtractionResult with features, names, tier slices.
     """
-    raw_data = load_raw_tensors(gen_id, raw_dir)
+    raw_data = load_raw_tensors(gen_id, raw_dir, surfaces=surfaces, attn_layers=attn_layers)
     if raw_data.positional_means is None and positional_means is not None:
         raw_data.positional_means = positional_means
     return extract_all_features(raw_data, config, pca_components, pca_mean)
@@ -87,6 +98,9 @@ def compute_features_v2(
     pca_components: F32 | None = None,
     pca_mean: F32 | None = None,
     positional_means: F32 | None = None,
+    *,
+    surfaces: Sequence[str] | None = None,
+    attn_layers: Sequence[int] | None = None,
 ) -> ExtractionResult:
     """Load raw tensors for one generation and compute v2 features.
 
@@ -104,8 +118,11 @@ def compute_features_v2(
         See compute_features_v2_from_data.
     positional_means : array, optional
         Injected only if the loaded raw_data has none (v3 deduped raw).
+    surfaces, attn_layers : optional (keyword-only)
+        Lean-load passthrough to load_raw_tensors (see compute_features_from_raw
+        for the Tier 2 all-layer caveat). Defaults preserve exact behavior.
     """
-    raw_data = load_raw_tensors(gen_id, raw_dir)
+    raw_data = load_raw_tensors(gen_id, raw_dir, surfaces=surfaces, attn_layers=attn_layers)
     if raw_data.positional_means is None and positional_means is not None:
         raw_data.positional_means = positional_means
     return compute_features_v2_from_data(

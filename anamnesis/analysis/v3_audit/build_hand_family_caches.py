@@ -67,7 +67,8 @@ def _process_gen(task: tuple):
     run, raw_dir, gid, mode, topic, plen, glen, sampled_layers = task
     uid = f"{run}:{gid}"
     try:
-        raw_data = load_raw_tensors(gid, Path(raw_dir))
+        # Lean load: the 3 families read only k/v/q — skip hidden/attention/gate/logits.
+        raw_data = load_raw_tensors(gid, Path(raw_dir), surfaces=("keys", "values", "queries"))
         ext_cfg = ExtractionConfig(sampled_layers=list(sampled_layers))
         res = compute_features_v2_from_data(raw_data, ext_cfg, _family_config())
         feats = np.asarray(res.features, dtype=np.float32)

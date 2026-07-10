@@ -120,7 +120,9 @@ def _load_training_data(
 
         # Load raw tensors
         try:
-            data = load_raw_tensors(gen_id, raw_dir)
+            # Lean load: training reads only hidden states (+ prompt_length) —
+            # skip attention/gate/logits reconstruction.
+            data = load_raw_tensors(gen_id, raw_dir, surfaces=("hidden",))
         except Exception as e:
             logger.warning(f"Failed to load gen_{gen_id:03d}: {e}")
             skipped += 1
