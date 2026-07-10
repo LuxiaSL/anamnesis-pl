@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import pickle
 import time
 from collections.abc import Sequence
@@ -410,6 +411,34 @@ def _process_one_sample(args: tuple) -> tuple[int, int | None, str | None]:
         return (gen_id, None, str(e))
 
 
+def _default_n_workers() -> int:
+    """Sensible parallel default for recompute_all_features.
+
+    Leaves 2 cores for the OS/caller and caps at 32 (each worker holds one
+    loaded sample: ~300 MB for v2 banks, more for v3 all-layer banks).
+    """
+    cpus = os.cpu_count() or 1
+    return max(1, min(32, cpus - 2))
+
+
+def _pin_blas_single_thread() -> None:
+    """Pool-worker initializer: pin BLAS to 1 thread per worker.
+
+    Unpinned pools oversubscribe cores (node1 convention: OMP/OPENBLAS/MKL
+    _NUM_THREADS=1 per worker). Env vars cover spawn-started workers;
+    threadpoolctl (when installed) also covers fork-started workers, whose
+    BLAS pools were already initialized before the fork.
+    """
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ[var] = "1"
+    try:
+        import threadpoolctl
+
+        threadpoolctl.threadpool_limits(1)
+    except Exception:  # noqa: BLE001 — best-effort; env vars remain in effect
+        pass
+
+
 def recompute_all_features(
     raw_dir: Path,
     output_dir: Path,
@@ -418,7 +447,7 @@ def recompute_all_features(
     pca_mean: F32 | None = None,
     metadata_dir: Path | None = None,
     family_config: FeaturePipelineConfig | None = None,
-    n_workers: int = 1,
+    n_workers: int | None = None,
     positional_means: F32 | None = None,
 ) -> list[int]:
     """Recompute features for all raw tensor files in a directory.
@@ -442,14 +471,19 @@ def recompute_all_features(
     family_config : FeaturePipelineConfig, optional
         When provided, uses compute_features_v2() with pluggable families.
         When None, uses baseline-only compute_features_from_raw().
-    n_workers : int
-        Number of parallel workers. 1 = sequential (default).
+    n_workers : int, optional
+        Number of parallel workers. None (default) resolves to a cpu-based
+        count (cpu_count - 2, capped at 32); pass 1 to force sequential.
         Each worker loads one sample (~280 MB), so memory ≈ n_workers × 300 MB.
+        Pool workers pin BLAS to 1 thread (node1 shared-box convention).
 
     Returns
     -------
     List of generation IDs that were successfully processed.
     """
+    if n_workers is None:
+        n_workers = _default_n_workers()
+
     gen_ids = list_raw_tensor_ids(raw_dir)
     if not gen_ids:
         logger.warning(f"No raw tensor files found in {raw_dir}")
@@ -516,7 +550,9 @@ def recompute_all_features(
         from concurrent.futures import ProcessPoolExecutor, as_completed
 
         done_count = 0
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        with ProcessPoolExecutor(
+            max_workers=n_workers, initializer=_pin_blas_single_thread,
+        ) as executor:
             futures = {
                 executor.submit(_process_one_sample, args): args[0]
                 for args in work_args
@@ -653,9 +689,10 @@ def main() -> None:
              "Enables contrastive projection features when provided (v2 only).",
     )
     parser.add_argument(
-        "--workers", type=int, default=1,
-        help="Number of parallel workers (default: 1 = sequential). "
-             "Each worker uses ~300 MB RAM for loading raw tensors.",
+        "--workers", type=int, default=None,
+        help="Number of parallel workers (default: cpu_count - 2, capped at 32; "
+             "pass 1 to force sequential). Each worker uses ~300 MB RAM for "
+             "loading raw tensors; BLAS is pinned to 1 thread per worker.",
     )
 
     args = parser.parse_args()
