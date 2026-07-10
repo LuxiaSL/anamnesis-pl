@@ -256,6 +256,12 @@ class FeaturePipelineConfig(BaseModel):
         description="Extract cross-layer linear CKA for keys and values (basis-invariant)",
     )
 
+    # AttnRes routing (kotodama Block Attention Residuals; kotodama-only — needs attn_res_* capture fields)
+    enable_attn_res: bool = Field(
+        default=False,
+        description="Extract AttnRes cross-block routing features (anchor-vs-recency, concentration, committed geom)",
+    )
+
     # Temporal operator settings (shared across families)
     temporal_n_windows: int = Field(
         default=4,

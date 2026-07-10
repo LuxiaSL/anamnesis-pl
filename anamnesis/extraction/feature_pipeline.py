@@ -281,6 +281,20 @@ def compute_features_v2_from_data(
             all_names.extend(result.feature_names)
             offset += len(result)
 
+    # AttnRes routing (kotodama-only; needs attn_res_* capture fields — Llama leaves them None → skipped)
+    if family_config.enable_attn_res and raw_data.attn_res_routing is not None:
+        from anamnesis.extraction.feature_families.attn_res import extract_attn_res
+        result = extract_attn_res(
+            raw_data.attn_res_routing,
+            committed=raw_data.attn_res_committed,
+            sampled_layers=config.sampled_layers,
+        )
+        if len(result) > 0:
+            all_slices[result.family_name] = (offset, offset + len(result))
+            all_features.append(result.features)
+            all_names.extend(result.feature_names)
+            offset += len(result)
+
     # Concatenate
     if all_features:
         combined = np.concatenate(all_features)
