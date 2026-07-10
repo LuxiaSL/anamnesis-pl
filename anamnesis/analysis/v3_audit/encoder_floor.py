@@ -35,11 +35,14 @@ warnings.filterwarnings("ignore")
 
 import numpy as np
 import torch
-import torch.nn as nn
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import HARD, residualize, subsample_topics, train_eval
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import HARD, residualize, subsample_topics, train_eval
+
 ROOT = os.environ.get("ANAMNESIS_PL", ".")
 K = 32                      # bottleneck (sized from intrinsic dim ~28-30)
 SEEDS = 3
@@ -63,67 +66,6 @@ def load_cache(model):
     return X, mode[hard], topic[hard], np.column_stack([plen[hard], glen[hard]])
 
 
-def residualize(Ftr, Fte, Ctr, Cte):
-    A = np.hstack([Ctr, np.ones((len(Ctr), 1))]); B = np.hstack([Cte, np.ones((len(Cte), 1))])
-    coef, *_ = np.linalg.lstsq(A, Ftr, rcond=None)
-    return Ftr - A @ coef, Fte - B @ coef
-
-
-class Encoder(nn.Module):
-    def __init__(self, P, arch, nclass=5, p_drop=0.4):
-        super().__init__()
-        if arch == "logit":                                # pure linear floor (trained with LBFGS)
-            self.net = nn.Linear(P, nclass)
-        elif arch == "deep":                               # nonlinear encoder, K-bottleneck (AdamW)
-            self.net = nn.Sequential(
-                nn.Linear(P, 256), nn.ReLU(), nn.Dropout(p_drop),
-                nn.Linear(256, K), nn.ReLU(), nn.Linear(K, nclass))
-        else:
-            raise ValueError(arch)
-
-    def forward(self, x):
-        return self.net(x)
-
-
-def train_eval(Xtr, ytr, Xte, yte, arch, seed, device):
-    """Train on the FULL (sub)fold. logit->LBFGS (convex; AdamW under-converges it), deep->AdamW."""
-    torch.manual_seed(seed)
-    Xt = torch.tensor(Xtr, dtype=torch.float32, device=device)
-    yt = torch.tensor(ytr, dtype=torch.long, device=device)
-    Xe = torch.tensor(Xte, dtype=torch.float32, device=device)
-    net = Encoder(Xtr.shape[1], arch).to(device)
-    ce = nn.CrossEntropyLoss()
-    if arch == "logit":
-        opt = torch.optim.LBFGS(net.parameters(), max_iter=200, line_search_fn="strong_wolfe")
-
-        def closure():
-            opt.zero_grad()
-            loss = ce(net(Xt), yt) + LBFGS_L2 * sum((p ** 2).sum() for p in net.parameters())
-            loss.backward()
-            return loss
-
-        opt.step(closure)
-    else:
-        opt = torch.optim.AdamW(net.parameters(), lr=5e-3, weight_decay=1e-2)
-        for _ in range(DEEP_EPOCHS):
-            net.train()
-            opt.zero_grad()
-            ce(net(Xt), yt).backward()
-            opt.step()
-    net.eval()
-    with torch.no_grad():
-        return float((net(Xe).argmax(1).cpu().numpy() == yte).mean())
-
-
-def subsample_topics(tr, topic, frac, seed):
-    if frac >= 1.0:
-        return tr
-    utop = np.unique(topic[tr])
-    rng = np.random.default_rng(1000 + seed)
-    keep = set(rng.choice(utop, max(2, int(round(frac * len(utop)))), replace=False).tolist())
-    return tr[np.array([topic[i] in keep for i in tr])]
-
-
 def cv(X, yi, topic, C, arch, frac, resid, device):
     accs = []
     for seed in range(SEEDS):
@@ -134,7 +76,10 @@ def cv(X, yi, topic, C, arch, frac, resid, device):
                 Xtr, Xte = residualize(Xtr, Xte, C[tr2], C[te])
             sc = StandardScaler().fit(Xtr)
             Xtr, Xte = sc.transform(Xtr), sc.transform(Xte)
-            accs.append(train_eval(Xtr, yi[tr2], Xte, yi[te], arch, seed, device))
+            accs.append(train_eval(
+                Xtr, yi[tr2], Xte, yi[te], arch, seed, device,
+                deep_epochs=DEEP_EPOCHS, lbfgs_l2=LBFGS_L2, k=K,
+            )[0])
     return float(np.mean(accs)), float(np.std(accs))
 
 

@@ -39,14 +39,17 @@ single process barely loads the node (~1.2). Pin BLAS to 1 thread/worker (shared
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
 
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import HARD, gen_metadata_by_id
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import HARD, gen_metadata_by_id
+
 RUNS = Path(os.environ.get("ANAMNESIS_RUNS", "/models/anamnesis-extract/runs"))
 OUT = Path(os.environ.get("SURFACE_CACHE_DIR", "/dev/shm/anamnesis_surface_caches"))
 GROUPS: dict[str, list[str]] = {"3b": ["3b_fat_01", "3b_fat_ext"], "8b": ["8b_fat_01", "8b_fat_ext"]}
@@ -76,9 +79,7 @@ def load_metadata(run_dir: Path) -> dict[int, dict]:
     meta_path = run_dir / "metadata.json"
     if not meta_path.exists():
         return {}
-    meta = json.loads(meta_path.read_text())
-    gens = meta["generations"] if isinstance(meta, dict) and "generations" in meta else meta
-    return {int(g["generation_id"]): g for g in gens}
+    return gen_metadata_by_id(meta_path)
 
 
 def _resample_rows(X: np.ndarray, B: int) -> np.ndarray:

@@ -8,7 +8,6 @@ survive length control in this rich space (kNN + RF, raw vs length-residualized)
 5-way hard modes, GroupKFold by topic. Run from anamnesis_exps:
     OMP_NUM_THREADS=1 python3 research/notes/gate_a_contrastive.py
 """
-import json
 import os
 import warnings
 from pathlib import Path
@@ -22,14 +21,16 @@ from sklearn.preprocessing import StandardScaler
 
 warnings.filterwarnings("ignore")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import HARD, gen_metadata_by_id
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import HARD, gen_metadata_by_id
+
 
 
 def load(run: str):
     rd = Path("outputs/runs") / run
-    meta = json.load(open(rd / "metadata.json"))
-    gens = meta["generations"] if isinstance(meta, dict) and "generations" in meta else meta
-    md = {int(g["generation_id"]): g for g in gens}
+    md = gen_metadata_by_id(rd / "metadata.json")
     sd = rd / "signatures_v2_contrastive"
     ids = sorted(int(p.stem.split("_")[1]) for p in sd.glob("gen_*.npz"))
     ids = [g for g in ids if g in md and md[g]["mode"] in HARD]

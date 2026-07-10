@@ -20,7 +20,6 @@ BLAS per worker — shared node). Needs the anamnesis package importable (PYTHON
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -35,7 +34,11 @@ from anamnesis.config import ExtractionConfig, FeaturePipelineConfig, MODEL_PRES
 from anamnesis.extraction.feature_pipeline import compute_features_v2_from_data
 from anamnesis.extraction.raw_saver import load_raw_tensors
 
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import HARD, gen_metadata_by_id
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import HARD, gen_metadata_by_id
+
 RUNS = Path(os.environ.get("ANAMNESIS_RUNS", "/models/anamnesis-extract/runs"))
 OUT = Path(os.environ.get("HAND_CACHE_DIR", "."))
 GROUPS: dict[str, list[str]] = {"3b": ["3b_fat_01", "3b_fat_ext"], "8b": ["8b_fat_01", "8b_fat_ext"]}
@@ -46,9 +49,7 @@ def load_metadata(run_dir: Path) -> dict[int, dict]:
     meta_path = run_dir / "metadata.json"
     if not meta_path.exists():
         return {}
-    meta = json.loads(meta_path.read_text())
-    gens = meta["generations"] if isinstance(meta, dict) and "generations" in meta else meta
-    return {int(g["generation_id"]): g for g in gens}
+    return gen_metadata_by_id(meta_path)
 
 
 def _family_config() -> FeaturePipelineConfig:

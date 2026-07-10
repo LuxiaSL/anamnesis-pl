@@ -39,7 +39,11 @@ from sklearn.metrics import normalized_mutual_info_score as NMI
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import load_signature_matrix
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import load_signature_matrix
+
 RUNS = Path(os.environ.get("ANAMNESIS_RUNS", "/models/anamnesis-extract/runs"))
 ROOT = os.environ.get("ANAMNESIS_PL", ".")
 GROUPS = [("3b", ["3b_fat_01", "3b_fat_ext"]), ("8b", ["8b_fat_01", "8b_fat_ext"])]
@@ -47,26 +51,8 @@ SEED = 0
 
 
 def load_sig(runs):
-    names = None; rows, y, topic, C = [], [], [], []
-    for run in runs:
-        rd = RUNS / run; sd = rd / "signatures_v3"
-        if not (rd / "metadata.json").exists() or not sd.exists():
-            continue
-        meta = json.load(open(rd / "metadata.json"))
-        gens = meta["generations"] if isinstance(meta, dict) and "generations" in meta else meta
-        md = {int(g["generation_id"]): g for g in gens}
-        for p in sorted(sd.glob("gen_*.npz"), key=lambda x: int(x.stem.split("_")[1])):
-            g = int(p.stem.split("_")[1])
-            if g not in md or md[g]["mode"] not in HARD:
-                continue
-            z = np.load(p, allow_pickle=True)
-            nm = [str(x) for x in z["feature_names"]]
-            if names is None:
-                names = nm
-            d = {n: float(v) for n, v in zip(nm, z["features"])}
-            rows.append([d.get(n, 0.0) for n in names]); y.append(md[g]["mode"])
-            topic.append(md[g]["topic_idx"]); C.append([md[g]["prompt_length"], md[g]["num_generated_tokens"]])
-    return np.nan_to_num(np.array(rows, float)), np.array(y), np.array(topic), np.array(C, float)
+    m = load_signature_matrix(runs, RUNS)
+    return m.X, m.y, m.topic, m.C
 
 
 def topic_center(X, topic):

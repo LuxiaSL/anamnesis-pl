@@ -60,7 +60,11 @@ from anamnesis.scripts.train_contrastive_projection import train_projection
 
 warnings.filterwarnings("ignore")
 
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import HARD, gen_metadata_by_id
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import HARD, gen_metadata_by_id
+
 PCA_LAYERS = {"3b": [7, 14, 18, 21, 24], "8b": [8, 16, 20, 24, 28]}
 T_SAMPLES = 5
 REF = {"3b": {"rf_raw_floor": 81, "length_only": 65},
@@ -117,9 +121,7 @@ def load_recs(run: str, model: str, root: Path, workers: int, rebuild: bool) -> 
 
     rd = root / "runs" / run
     raw_dir = str(rd / "raw_tensors_v3")
-    meta = json.load(open(rd / "metadata.json"))
-    gens = meta["generations"] if isinstance(meta, dict) and "generations" in meta else meta
-    md = {int(g["generation_id"]): g for g in gens}
+    md = gen_metadata_by_id(rd / "metadata.json")
     pm_path = str(root / "calibration" / model / "positional_means.npz")
 
     tasks = []

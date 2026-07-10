@@ -38,6 +38,11 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import residualize
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import residualize
+
 CACHE = Path(os.environ.get("SURFACE_CACHE_DIR", "/dev/shm/anamnesis_surface_caches"))
 HAND = Path(os.environ.get("HAND_CACHE_DIR", "."))
 FLOORS = Path(os.environ.get("SURFACE_FLOOR_DIR", "."))
@@ -46,12 +51,6 @@ TOPK = 12
 FRACS = [1.0, 0.5, 0.25]
 SURFACE_OF = {"value_geometry": "values", "qk_geometry": "queries", "kv_cka": "keys"}
 SECONDARY = {"qk_geometry": "keys", "kv_cka": "values"}      # families that also touch a 2nd surface
-
-
-def residualize(Ftr, Fte, Ctr, Cte):
-    A = np.hstack([Ctr, np.ones((len(Ctr), 1))]); B = np.hstack([Cte, np.ones((len(Cte), 1))])
-    coef, *_ = np.linalg.lstsq(A, Ftr, rcond=None)
-    return Ftr - A @ coef, Fte - B @ coef
 
 
 def lda_curve(F, yi, topic, C, frac, seed=0):

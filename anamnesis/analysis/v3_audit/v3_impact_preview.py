@@ -36,7 +36,11 @@ def log(m: str) -> None:
 ROOT = Path(".")
 RUN = ROOT / "outputs/runs/3b_fat_01"
 CAL = ROOT / "phase_0/outputs/calibration"
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import HARD
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import HARD
+
 PRESET = MODEL_PRESETS["3b"]
 
 # Lazy per-process cache (robust under fork or spawn).

@@ -32,35 +32,19 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import HARD, load_signature_matrix
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import HARD, load_signature_matrix
+
 ROOT = Path("/models/anamnesis-extract")
 GROUPS = [("3b", ["3b_fat_01", "3b_fat_ext"]), ("8b", ["8b_fat_01", "8b_fat_ext"])]
 
 
 def load_sig_space(runs):
     """Merged hard-mode signatures -> (X[N,Dfeat], y, topic)."""
-    names = None
-    rows, y, topic = [], [], []
-    for run in runs:
-        rd = ROOT / "runs" / run
-        sd = rd / "signatures_v3"
-        if not (rd / "metadata.json").exists() or not sd.exists():
-            continue
-        meta = json.load(open(rd / "metadata.json"))
-        gens = meta["generations"] if isinstance(meta, dict) and "generations" in meta else meta
-        md = {int(g["generation_id"]): g for g in gens}
-        for p in sorted(sd.glob("gen_*.npz"), key=lambda x: int(x.stem.split("_")[1])):
-            g = int(p.stem.split("_")[1])
-            if g not in md or md[g]["mode"] not in HARD:
-                continue
-            z = np.load(p, allow_pickle=True)
-            nm = [str(x) for x in z["feature_names"]]
-            if names is None:
-                names = nm
-            d = {n: float(v) for n, v in zip(nm, z["features"])}
-            rows.append([d.get(n, 0.0) for n in names])
-            y.append(md[g]["mode"]); topic.append(md[g]["topic_idx"])
-    return np.nan_to_num(np.array(rows, float)), np.array(y), np.array(topic)
+    m = load_signature_matrix(runs, ROOT / "runs")
+    return m.X, m.y, m.topic
 
 
 def load_raw_space(model):

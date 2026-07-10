@@ -36,7 +36,11 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import load_signature_matrix, residualize
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import load_signature_matrix, residualize
+
 RUNS = Path(os.environ.get("ANAMNESIS_RUNS", "/models/anamnesis-extract/runs"))
 GROUPS = [("3b", ["3b_fat_01", "3b_fat_ext"], 28), ("8b", ["8b_fat_01", "8b_fat_ext"], 32)]
 SOURCES = ["output", "attention", "keys", "residual", "gate"]
@@ -85,36 +89,9 @@ def layer_band(n: str, nlayers: int):
     return "late"
 
 
-def residualize(Ftr, Fte, Ctr, Cte):
-    A = np.hstack([Ctr, np.ones((len(Ctr), 1))]); B = np.hstack([Cte, np.ones((len(Cte), 1))])
-    coef, *_ = np.linalg.lstsq(A, Ftr, rcond=None)
-    return Ftr - A @ coef, Fte - B @ coef
-
-
 def load_sig(runs):
-    names = None
-    rows, y, topic, C = [], [], [], []
-    for run in runs:
-        rd = RUNS / run; sd = rd / "signatures_v3"
-        if not (rd / "metadata.json").exists() or not sd.exists():
-            continue
-        meta = json.load(open(rd / "metadata.json"))
-        gens = meta["generations"] if isinstance(meta, dict) and "generations" in meta else meta
-        md = {int(g["generation_id"]): g for g in gens}
-        for p in sorted(sd.glob("gen_*.npz"), key=lambda x: int(x.stem.split("_")[1])):
-            g = int(p.stem.split("_")[1])
-            if g not in md or md[g]["mode"] not in HARD:
-                continue
-            z = np.load(p, allow_pickle=True)
-            nm = [str(x) for x in z["feature_names"]]
-            if names is None:
-                names = nm
-            d = {n: float(v) for n, v in zip(nm, z["features"])}
-            rows.append([d.get(n, 0.0) for n in names]); y.append(md[g]["mode"])
-            topic.append(md[g]["topic_idx"])
-            C.append([md[g]["prompt_length"], md[g]["num_generated_tokens"]])
-    return (np.nan_to_num(np.array(rows, float)), np.array(y),
-            np.array(topic), np.array(C, float), np.array(names))
+    m = load_signature_matrix(runs, RUNS)
+    return m.X, m.y, m.topic, m.C, np.array([str(n) for n in m.names])
 
 
 def lda_acc(F, yi, topic, C):

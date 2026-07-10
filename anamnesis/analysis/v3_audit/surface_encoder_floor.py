@@ -26,7 +26,6 @@ os.environ.setdefault("OMP_NUM_THREADS", "8")
 
 import numpy as np
 import torch
-import torch.nn as nn
 from sklearn.model_selection import GroupKFold
 
 CACHE = os.environ.get("SURFACE_CACHE_DIR", "/dev/shm/anamnesis_surface_caches")
@@ -37,6 +36,11 @@ FRACS = [0.25, 0.5, 1.0]
 ARCHS = ["logit", "deep"]
 DEEP_EPOCHS = 800       # converges fast on the well-conditioned ~720-dim reduced input (was 2500 for raw-wide)
 LBFGS_L2 = 1e-3
+
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import subsample_topics, train_eval
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import subsample_topics, train_eval
 ALL_SURFACES = ["residual", "keys", "values", "queries", "gate", "attention"]
 
 # hand-feature comparison bars (source-marginal LDA, n≈900, 5-way, resid; from source-method-reframe).
@@ -90,61 +94,6 @@ def preprocess_fold_gpu(Xtr_np, Xte_np, Ctr, Cte, resid, device, eps=1e-8):
     return (Ztr / g).cpu().numpy(), (Zte / g).cpu().numpy()
 
 
-class Encoder(nn.Module):
-    def __init__(self, P, arch, nclass=5, p_drop=0.4):
-        super().__init__()
-        if arch == "logit":
-            self.net = nn.Linear(P, nclass)
-        elif arch == "deep":
-            self.net = nn.Sequential(
-                nn.Linear(P, 256), nn.ReLU(), nn.Dropout(p_drop),
-                nn.Linear(256, K), nn.ReLU(), nn.Linear(K, nclass))
-        else:
-            raise ValueError(arch)
-
-    def forward(self, x):
-        return self.net(x)
-
-
-def train_eval(Xtr, ytr, Xte, yte, arch, seed, device):
-    """logit -> LBFGS (convex; AdamW under-converges it), deep -> AdamW. Trained on the full (sub)fold."""
-    torch.manual_seed(seed)
-    Xt = torch.tensor(Xtr, dtype=torch.float32, device=device)
-    yt = torch.tensor(ytr, dtype=torch.long, device=device)
-    Xe = torch.tensor(Xte, dtype=torch.float32, device=device)
-    net = Encoder(Xtr.shape[1], arch).to(device)
-    ce = nn.CrossEntropyLoss()
-    if arch == "logit":
-        opt = torch.optim.LBFGS(net.parameters(), max_iter=200, line_search_fn="strong_wolfe")
-
-        def closure():
-            opt.zero_grad()
-            loss = ce(net(Xt), yt) + LBFGS_L2 * sum((p ** 2).sum() for p in net.parameters())
-            loss.backward()
-            return loss
-
-        opt.step(closure)
-    else:
-        opt = torch.optim.AdamW(net.parameters(), lr=5e-3, weight_decay=1e-2)
-        for _ in range(DEEP_EPOCHS):
-            net.train(); opt.zero_grad()
-            ce(net(Xt), yt).backward(); opt.step()
-    net.eval()
-    with torch.no_grad():
-        test_acc = float((net(Xe).argmax(1).cpu().numpy() == yte).mean())
-        train_acc = float((net(Xt).argmax(1).cpu().numpy() == ytr).mean())
-    return test_acc, train_acc
-
-
-def subsample_topics(tr, topic, frac, seed):
-    if frac >= 1.0:
-        return tr
-    utop = np.unique(topic[tr])
-    rng = np.random.default_rng(1000 + seed)
-    keep = set(rng.choice(utop, max(2, int(round(frac * len(utop)))), replace=False).tolist())
-    return tr[np.array([topic[i] in keep for i in tr])]
-
-
 def cv_both(X, yi, topic, C, frac, resid, device):
     """Per (frac): preprocess each fold ONCE on the GPU (shared), then run BOTH archs on it — dedupes the
     wide preprocessing that was the floor's latency bottleneck. Returns {arch: (test_mean, test_std, train_mean)}."""
@@ -154,7 +103,10 @@ def cv_both(X, yi, topic, C, frac, resid, device):
             tr2 = subsample_topics(tr, topic, frac, seed)
             Ztr, Zte = preprocess_fold_gpu(X[tr2], X[te], C[tr2], C[te], resid, device)
             for arch in ARCHS:
-                ta, tra = train_eval(Ztr, yi[tr2], Zte, yi[te], arch, seed, device)
+                ta, tra = train_eval(
+                    Ztr, yi[tr2], Zte, yi[te], arch, seed, device,
+                    deep_epochs=DEEP_EPOCHS, lbfgs_l2=LBFGS_L2, k=K,
+                )
                 acc[arch][0].append(ta); acc[arch][1].append(tra)
     return {a: (float(np.mean(acc[a][0])), float(np.std(acc[a][0])), float(np.mean(acc[a][1]))) for a in ARCHS}
 

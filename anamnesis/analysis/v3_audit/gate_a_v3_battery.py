@@ -39,7 +39,11 @@ def _est(clf: str):
         )
     return RandomForestClassifier(300, random_state=0, n_jobs=1)
 
-HARD = {"linear", "socratic", "contrastive", "dialectical", "analogical"}
+try:  # direct script run (sys.path[0] = this dir) — node1 self-contained convention
+    from _common import HARD, gen_metadata_by_id
+except ImportError:  # imported as a package module
+    from anamnesis.analysis.v3_audit._common import HARD, gen_metadata_by_id
+
 # Runs root: local default "outputs/runs"; on node set ANAMNESIS_RUNS=/models/anamnesis-extract/runs
 RUNS = Path(os.environ.get("ANAMNESIS_RUNS", "outputs/runs"))
 
@@ -88,9 +92,7 @@ def _load_one(run: str, names_ref):
     sig_dir = rd / SIG_SUBDIR
     if not (rd / "metadata.json").exists() or not sig_dir.exists():
         return None
-    meta = json.load(open(rd / "metadata.json"))
-    gens = meta["generations"] if isinstance(meta, dict) and "generations" in meta else meta
-    md = {int(g["generation_id"]): g for g in gens}
+    md = gen_metadata_by_id(rd / "metadata.json")
     ids = sorted(int(p.stem.split("_")[1]) for p in sig_dir.glob("gen_*.npz"))
     ids = [g for g in ids if g in md and md[g]["mode"] in HARD]
     names = names_ref
