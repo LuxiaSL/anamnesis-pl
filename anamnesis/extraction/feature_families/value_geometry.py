@@ -22,6 +22,7 @@ Self-contained family module (same contract as gate_features). Reads `data.v_pro
 from __future__ import annotations
 
 import logging
+import warnings
 
 import numpy as np
 from numpy.typing import NDArray
@@ -70,6 +71,11 @@ def _eff_dim(M: NDArray[np.float64]) -> float:
         pr = float((s2_sum ** 2) / float((s2 ** 2).sum()))
         return pr / max(min(M.shape[0], M.shape[1]), 1)
     except Exception:
+        warnings.warn(
+            "value_geometry._eff_dim: SVD raised; emitting 0.0 sentinel — "
+            "audit the run if this repeats",
+            RuntimeWarning,
+        )
         return 0.0
 
 

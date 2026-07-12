@@ -1,6 +1,13 @@
-"""Gate-A in CONTRASTIVE space — the project's validated nonlinear readout.
+"""Gate-A in CONTRASTIVE space — ⚠ SUPERSEDED: results from this script are LEAKED.
 
-The 800-dim contrastive_projection features are a learned nonlinear projection of the
+DO NOT cite numbers from this script (2026-06-14 finding, v3-delta-memo §3): the banked
+contrastive projection was trained ONCE on this run's own raw across ALL topics, so the
+topic-heldout CV below holds topics out of the readout only — the projection already saw
+every topic, baking in mode discriminability (~100% kNN → 47–54% when done properly).
+Use `gate_a_contrastive_leakfree.py` (retrains the projection inside each fold) for any
+citable number. This file is kept solely as provenance for the leak quantification.
+
+Original purpose: the 800-dim contrastive_projection features are a learned nonlinear projection of the
 residual stream; v3 didn't touch the residual stream (faithfulness r=1.0), so the banked
 signatures_v2_contrastive ARE the v3 contrastive features. Question: does the mode signal
 survive length control in this rich space (kNN + RF, raw vs length-residualized)?

@@ -14,6 +14,7 @@ Key features:
 from __future__ import annotations
 
 import logging
+import warnings
 
 import numpy as np
 from numpy.typing import NDArray
@@ -223,6 +224,11 @@ def _fit_decay_rate(time_series: NDArray) -> float:
         coeffs = np.polyfit(t_vals, log_vals, 1)
         return float(-coeffs[0])  # positive = decaying
     except Exception:
+        warnings.warn(
+            "attention_flow._fit_decay_rate: polyfit failed on a degenerate "
+            "window; emitting 0.0 sentinel — audit the run if this repeats",
+            RuntimeWarning,
+        )
         return 0.0
 
 
