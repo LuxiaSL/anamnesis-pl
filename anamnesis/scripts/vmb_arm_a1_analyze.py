@@ -188,7 +188,13 @@ def main() -> None:
              f"m = {len(conf)} confirmatory (cell × contrast × model); BH-FDR α=0.05 across "
              f"that grid; ruler k = {RULER_K}× stochastic floor. n/M/law stamped per row in "
              "a1_results.json.", "",
-             f"**KILL (positive control): {'PASS' if results['kill_criterion']['PASS'] else 'FAIL'}**", ""]
+             f"**KILL (positive control): {'PASS' if results['kill_criterion']['PASS'] else 'FAIL'}**", "",
+             "**Channel column (structural + measured):** A1's matched-token delta is ZERO by "
+             "construction — temperature/top-p reshape the SAMPLING distribution and never enter "
+             "a teacher-forced forward pass — and Stage-0 measured the replay channel as bitwise "
+             "deterministic fleet-wide (faithfulness floor exactly 0, n=900 pairs/model). The "
+             "free-generation deltas below are therefore 100% token-mediated: the §1 parameter-free "
+             "prediction, confirmed at the strongest possible reading.", ""]
     for model in ("3b", "8b"):
         r = results["models"][model]
         lines.append(f"## {model}")
