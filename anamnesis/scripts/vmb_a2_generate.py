@@ -20,6 +20,8 @@ Usage (per model):
 from __future__ import annotations
 
 import argparse
+
+from anamnesis.scripts._gpu import resolve_physical_gpus
 import json
 import logging
 import os
@@ -107,7 +109,8 @@ def main() -> None:
             logger.info(f"  {cond}: sys[:50]={s['system_prompt'][:50]!r} user[:70]={s['user_prompt'][:70]!r}")
         return
 
-    gpu_ids = [g.strip() for g in args.gpus.split(",") if g.strip()]
+    gpu_ids = resolve_physical_gpus(
+            [g.strip() for g in args.gpus.split(",") if g.strip()])
     n_workers = len(gpu_ids) * args.workers_per_gpu
 
     for cond, specs in all_specs.items():

@@ -27,6 +27,8 @@ Usage (node1):
 from __future__ import annotations
 
 import argparse
+
+from anamnesis.scripts._gpu import resolve_physical_gpus
 import json
 import logging
 import os
@@ -81,7 +83,10 @@ def main() -> None:
     # ── Synthetic manifest: replay instance gid = continuation·10 + replay_idx ──
     entries: dict[str, dict] = {}
     index: list[dict] = []
-    spread = [g.strip() for g in args.spread_gpus.split(",") if g.strip()]
+    pinned = resolve_physical_gpus([args.pinned_gpu.strip()])[0]
+    args.pinned_gpu = pinned
+    spread = resolve_physical_gpus(
+        [g.strip() for g in args.spread_gpus.split(",") if g.strip()])
     device_of: dict[int, str] = {}
     for cont_id, src in sorted(conts.items()):
         for r in range(N_REPLAYS):
