@@ -51,6 +51,34 @@ class FloorType(str, Enum):
     faithfulness_cross_device = "faithfulness_cross_device"     # operational jitter
 
 
+class ModelMeta(BaseModel):
+    """Analyzer-side metadata per onboarded model label.
+
+    `label` is what arm corpora dirs use (vmb_a1_{label}_{dose} — the preset
+    key for M3+ models); `stage0_dir` is the banked Stage-0 run name, which
+    predates the convention (qwen7b, not qwen-7b) and is never renamed.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    label: str
+    n_layers: int
+    stage0_dir: str          # outputs/battery/<stage0_dir> holds the model's floors
+    native_temperature: float
+
+
+MODEL_META: dict[str, ModelMeta] = {
+    "3b": ModelMeta(label="3b", n_layers=28, stage0_dir="vmb_stage0_3b",
+                    native_temperature=0.7),
+    "8b": ModelMeta(label="8b", n_layers=32, stage0_dir="vmb_stage0_8b",
+                    native_temperature=0.6),
+    "qwen-7b": ModelMeta(label="qwen-7b", n_layers=28, stage0_dir="vmb_stage0_qwen7b",
+                         native_temperature=0.7),
+    "olmo2-7b": ModelMeta(label="olmo2-7b", n_layers=32,
+                          stage0_dir="vmb_stage0_olmo2_7b", native_temperature=0.7),
+}
+
+
 class BatteryCell(BaseModel):
     """One (arm × model × dose × channel) cell of the visibility map."""
 

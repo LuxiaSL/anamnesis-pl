@@ -38,6 +38,7 @@ from anamnesis.analysis.battery.deltas import (
     within_condition_deltas,
 )
 from anamnesis.analysis.battery.floors import load_signature_matrix
+from anamnesis.analysis.battery.manifest import MODEL_META
 from anamnesis.analysis.battery.stats import bh_fdr
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -51,7 +52,7 @@ REPLAY_VISIBILITY = 0.1   # addendum 2026-07-12b: fraction of seed-floor median
 
 
 def analyze_model(model: str, n_layers: int, root: Path) -> dict:
-    floor_dir = root / f"vmb_stage0_{model}"
+    floor_dir = root / MODEL_META[model].stage0_dir
     med, scale = load_floor_scale(floor_dir / "signatures_v3")
 
     conds: dict[str, ConditionCorpus] = {}
@@ -107,7 +108,7 @@ def analyze_model(model: str, n_layers: int, root: Path) -> dict:
 
 def analyze_prefix_swap(model: str, n_layers: int, root: Path) -> dict:
     """Cell (ii): swapped-prefix replay vs native replay, in Stage-0 seed-floor units."""
-    floor_dir = root / f"vmb_stage0_{model}"
+    floor_dir = root / MODEL_META[model].stage0_dir
     med, scale = load_floor_scale(floor_dir / "signatures_v3")
     Xf, _n, _i = load_signature_matrix(floor_dir / "signatures_v3")
 
@@ -162,8 +163,8 @@ def main() -> None:
                     help="Comma list; result of record = both-model run (FDR spans full grid)")
     args = ap.parse_args()
 
-    model_layers = {"3b": 28, "8b": 32}
-    selected = [(m.strip(), model_layers[m.strip()]) for m in args.models.split(",") if m.strip()]
+    selected = [(m.strip(), MODEL_META[m.strip()].n_layers)
+                for m in args.models.split(",") if m.strip()]
 
     results = {"arm": "A2_instruction_vs_execution",
                "prereg": "prereg-vmb-v1 §2c A2 + addenda a/b (4x law; replay ruler 0.1x)",

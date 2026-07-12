@@ -43,6 +43,7 @@ from anamnesis.analysis.battery.deltas import (
     location_dispersion,
     within_condition_deltas,
 )
+from anamnesis.analysis.battery.manifest import MODEL_META
 from anamnesis.analysis.battery.stats import bh_fdr
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -54,12 +55,12 @@ CONTRASTS = [("t03", "native"), ("native", "t09"), ("t09", "t12"),
              ("t03", "t09"), ("p07", "native"), ("native", "p10")]
 KILL_CONTRAST = ("t03", "t09")
 RULER_K = 2.0
-NATIVE_T = {"3b": 0.7, "8b": 0.6}
+NATIVE_T = {m: meta.native_temperature for m, meta in MODEL_META.items()}
 DOSE_T = {"t03": 0.3, "t09": 0.9, "t12": 1.2}        # top-p doses excluded from the T ladder
 
 
 def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
-    floor_dir = battery_root / f"vmb_stage0_{model}"
+    floor_dir = battery_root / MODEL_META[model].stage0_dir
     med, scale = load_floor_scale(floor_dir / "signatures_v3")
 
     conds: dict[str, ConditionCorpus] = {
@@ -207,8 +208,8 @@ def main() -> None:
                          "RECORD is the both-model run — FDR spans the full grid)")
     args = ap.parse_args()
 
-    model_layers = {"3b": 28, "8b": 32}
-    selected = [(m.strip(), model_layers[m.strip()]) for m in args.models.split(",") if m.strip()]
+    selected = [(m.strip(), MODEL_META[m.strip()].n_layers)
+                for m in args.models.split(",") if m.strip()]
 
     results = {"arm": "A1_sampling", "prereg": "prereg-vmb-v1 §2c A1 + addenda a/b",
                "models": {}, "models_included": [m for m, _ in selected]}
