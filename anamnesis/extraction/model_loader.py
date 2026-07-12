@@ -133,6 +133,28 @@ class HookState:
         return all_gates[1:]
 
 
+def decoder_layers(model):
+    """Decoder layer list across architectures.
+
+    Llama/Qwen/OLMo-2: `model.model.layers`. Gemma-3 (vmb M5) ships as
+    Gemma3ForConditionalGeneration — a multimodal wrapper whose text decoder
+    nests under `language_model`; hook paths must resolve through it.
+    (M5 onboarding audit 2026-07-12; GPU validation pending — journal W10.)
+    """
+    inner = getattr(model, "model", model)
+    if hasattr(inner, "layers"):
+        return inner.layers
+    lm = getattr(inner, "language_model", None) or getattr(model, "language_model", None)
+    if lm is not None:
+        lm_inner = getattr(lm, "model", lm)
+        if hasattr(lm_inner, "layers"):
+            return lm_inner.layers
+    raise AttributeError(
+        f"cannot locate decoder layers on {type(model).__name__} — extend "
+        "decoder_layers() for this architecture"
+    )
+
+
 def _make_k_proj_hook(
     layer_idx: int,
     hook_state: HookState,
@@ -389,7 +411,7 @@ class LoadedModel:
                 f"expected hidden_dim={self.config.hidden_dim}"
             )
         enabled_flag = {"enabled": True}
-        layer = self.model.model.layers[spec.layer_idx]
+        layer = decoder_layers(self.model)[spec.layer_idx]
         handle = layer.register_forward_pre_hook(
             _make_residual_write_pre_hook(spec, enabled_flag), with_kwargs=True
         )
@@ -485,7 +507,7 @@ def load_model(
 
     # Pre-RoPE keys (k_proj)
     for layer_idx in key_layers:
-        k_proj = model.model.layers[layer_idx].self_attn.k_proj
+        k_proj = decoder_layers(model)[layer_idx].self_attn.k_proj
         handle = k_proj.register_forward_hook(_make_k_proj_hook(
             layer_idx=layer_idx, hook_state=hook_state,
             num_kv_heads=config.num_kv_heads, head_dim=config.head_dim,
@@ -494,7 +516,7 @@ def load_model(
 
     # Values (v_proj) — OV-circuit surface
     for layer_idx in value_layers:
-        v_proj = model.model.layers[layer_idx].self_attn.v_proj
+        v_proj = decoder_layers(model)[layer_idx].self_attn.v_proj
         handle = v_proj.register_forward_hook(_make_v_proj_hook(
             layer_idx=layer_idx, hook_state=hook_state,
             num_kv_heads=config.num_kv_heads, head_dim=config.head_dim,
@@ -503,7 +525,7 @@ def load_model(
 
     # Pre-RoPE queries (q_proj) — for offline QK-space geometry
     for layer_idx in query_layers:
-        q_proj = model.model.layers[layer_idx].self_attn.q_proj
+        q_proj = decoder_layers(model)[layer_idx].self_attn.q_proj
         handle = q_proj.register_forward_hook(_make_q_proj_hook(
             layer_idx=layer_idx, hook_state=hook_state,
             num_attention_heads=config.num_attention_heads, head_dim=config.head_dim,
@@ -512,7 +534,7 @@ def load_model(
 
     # Attention output (o_proj) — attention-output surface (vmb Stage A)
     for layer_idx in attn_output_layers:
-        o_proj = model.model.layers[layer_idx].self_attn.o_proj
+        o_proj = decoder_layers(model)[layer_idx].self_attn.o_proj
         handle = o_proj.register_forward_hook(_make_o_proj_hook(
             layer_idx=layer_idx, hook_state=hook_state,
         ))
@@ -522,7 +544,7 @@ def load_model(
     gate_hook_count = 0
     if register_gate_hooks:
         for layer_idx in _valid(list(sampled_layers)):
-            gate_proj = model.model.layers[layer_idx].mlp.gate_proj
+            gate_proj = decoder_layers(model)[layer_idx].mlp.gate_proj
             handle = gate_proj.register_forward_hook(_make_gate_proj_hook(
                 layer_idx=layer_idx, hook_state=hook_state,
             ))

@@ -98,11 +98,15 @@ def a3_rows(arms_root: Path) -> list[dict]:
             lik = float(h["likelihood_surprise"]["per_mode_recall"][mode])
             internals = float(h["internals_rf"]["per_mode_recall"][mode])
             jr = judge.get(mode, {}).get("judge_recall")
-            # The judge IS a content-class detector (12c: "token-KL, TF-IDF,
-            # judge hooks"). The content rung = max over available content-class
-            # detectors — otherwise a mode that is merely hard for TF-IDF but
-            # trivially judge-visible (linear: TF-IDF .44, judge .99) would be
-            # a spurious "member". First census run caught exactly that.
+            # RATIFIED as addendum 2026-07-12g §1: content rung = max over the
+            # DECLARED detector set D (trained TF-IDF; judge). Codicil (a):
+            # judge FAILURES defend membership only at the hardened (2AFC)
+            # reading — implemented via the hardening annotation below, which
+            # voids judge-gap quotes when 2AFC shows discrimination. Judge
+            # SUCCESSES defeat directly (blind k-way success is a lower bound
+            # on hardened discrimination; the linear-3b catch, codicil (c)).
+            # Codicil (b): extensions to D only RAISE the rung — membership is
+            # monotone-conservative ("not yet defeated by any detector in D").
             content = max(tfidf, jr) if jr is not None else tfidf
             gap = internals - max(content, lik)
             judge_gap = (internals - jr) if jr is not None else None

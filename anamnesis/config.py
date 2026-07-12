@@ -320,6 +320,14 @@ class ModelPreset(BaseModel):
     temperature: float
     eos_token_ids: list[int]
     calibration_dir: Path
+    # Per-sampled-layer attention type for interleaved-attention architectures
+    # (Gemma-3 class: 5 local sliding-window : 1 global). None = all-global
+    # (Llama/Qwen/OLMo full-context attention at every layer). PRE-COMMITTED
+    # (outer-agent ruling 2026-07-12, before M5 floors): local-window layers are
+    # structurally recency-dominated, so CROSS-MODEL attention-source
+    # comparisons — the source-ordering L-rung test in particular — use GLOBAL
+    # layers primarily; local-layer attention cells are per-model exploratory.
+    attention_layer_types: dict[int, str] | None = None
 
 
 MODEL_PRESETS: dict[str, ModelPreset] = {
@@ -384,6 +392,36 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
         temperature=0.7,
         eos_token_ids=[100257],
         calibration_dir=OUTPUTS_BASE / "calibration" / "olmo2_7b",
+    ),
+    "gemma3-27b": ModelPreset(
+        # vmb M5 (prereg roster): scale rung + THIRD architecture family.
+        # Gemma3ForConditionalGeneration (multimodal wrapper) — decoder layers
+        # resolve via extraction.model_loader.decoder_layers(); GPU validation
+        # of the load path PENDING (staged 2026-07-12 while node1 is lent out).
+        # 5:1 local:global attention interleave (sliding_window=1024; global at
+        # (i+1) % 6 == 0): sampled layers prefer GLOBAL (only layer 0 is local,
+        # kept for the early-band anchor point). Native sampling per the model
+        # card: temperature 1.0 (Stage-0 chain should pass --override-top-p
+        # 0.95 to match; pipeline default is 0.9).
+        model_id="google/gemma-3-27b-it",
+        torch_dtype="bfloat16",
+        num_layers=62,
+        hidden_dim=5376,
+        num_attention_heads=32,
+        num_kv_heads=16,
+        head_dim=128,
+        sampled_layers=[0, 11, 23, 35, 41, 53, 59],
+        pca_layers=[11, 23, 35, 41, 53],
+        trajectory_layers=[11, 23, 35, 41, 53],
+        contrastive_layers=[11, 23, 35, 41, 53],
+        early_layer_cutoff=15,
+        late_layer_cutoff=46,
+        temperature=1.0,
+        eos_token_ids=[1, 106],
+        calibration_dir=OUTPUTS_BASE / "calibration" / "gemma3_27b",
+        attention_layer_types={0: "local", 11: "global", 23: "global",
+                               35: "global", 41: "global", 53: "global",
+                               59: "global"},
     ),
     "qwen-7b": ModelPreset(
         model_id="Qwen/Qwen2.5-7B-Instruct",
