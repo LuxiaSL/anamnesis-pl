@@ -122,7 +122,12 @@ def main() -> None:
         register_gate_hooks=True,
         key_layers=all_layers,        # all-layer keys
         value_layers=all_layers,      # all-layer values (v_proj)
-        query_layers=preset.sampled_layers,  # sampled pre-RoPE queries (QK geometry)
+        # vmb battery capture surface (prereg addendum 2026-07-12a §4): queries and
+        # attention outputs banked at ALL layers. Feature families still consume
+        # explicit sampled_layers lists, so the v3 feature vector is unchanged —
+        # the extra layers are banked raw only (depth = a measured axis later).
+        query_layers=all_layers,
+        attn_output_layers=all_layers,
     )
 
     positional_means, pca_components, pca_mean = _load_calibration(

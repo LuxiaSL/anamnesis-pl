@@ -74,6 +74,9 @@ class RawGenerationData:
     # v_proj_values are attention values (post-projection); the OV-circuit surface.
     queries: dict[int, list[F32]] | None = None  # layer_idx → T × [num_attention_heads, head_dim]
     # queries are PRE-RoPE q_proj outputs; re-apply RoPE offline for post-RoPE QK geometry.
+    attn_outputs: dict[int, list[F32]] | None = None  # layer_idx → T × [hidden_dim]
+    # attn_outputs are o_proj outputs: the attention sublayer's additive residual contribution
+    # (pre residual-add). With block-boundary hidden states, mlp_out = resid_{l+1} − resid_l − attn_out.
     # ── AttnRes (kotodama Block Attention Residuals) — optional, kotodama-only; Llama leaves None ──
     attn_res_routing: list | None = None
     # list of (tag:str, layer:int, weights[n_pos, n_src]) — per-producing-position cross-block routing softmax;

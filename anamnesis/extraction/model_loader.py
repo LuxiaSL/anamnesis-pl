@@ -57,6 +57,13 @@ class HookState:
     # re-apply RoPE offline (with banked positions) for post-RoPE QK geometry.
     queries: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
 
+    # layer_idx → list of o_proj outputs (attention-block output, per-token
+    # contribution the attention sublayer ADDS to the residual stream),
+    # shape [1, seq_len, hidden_dim]. The attention-output surface (vmb Stage A):
+    # with block-boundary hidden states banked, mlp_out is derivable as
+    # resid_{l+1} − resid_l − attn_out, so this one capture closes two census cells.
+    attn_outputs: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+
     enabled: bool = True
     _on_cpu: bool = field(default=False, repr=False)
 
@@ -85,6 +92,10 @@ class HookState:
             tensors = self.queries[layer_idx]
             if tensors and tensors[0].is_cuda:
                 self.queries[layer_idx] = [t.cpu() for t in tensors]
+        for layer_idx in list(self.attn_outputs.keys()):
+            tensors = self.attn_outputs[layer_idx]
+            if tensors and tensors[0].is_cuda:
+                self.attn_outputs[layer_idx] = [t.cpu() for t in tensors]
         self._on_cpu = True
 
     def clear(self) -> None:
@@ -101,6 +112,9 @@ class HookState:
         for tensors in self.queries.values():
             del tensors[:]
         self.queries.clear()
+        for tensors in self.attn_outputs.values():
+            del tensors[:]
+        self.attn_outputs.clear()
         self._on_cpu = False
 
     def get_generation_keys(self, layer_idx: int) -> list[Tensor]:
@@ -210,6 +224,118 @@ def _make_q_proj_hook(
     return hook_fn
 
 
+def _make_o_proj_hook(
+    layer_idx: int,
+    hook_state: HookState,
+) -> Any:
+    """Create a forward hook for an o_proj linear layer (attention output).
+
+    o_proj output shape: [batch, seq_len, hidden_dim] — the attention sublayer's
+    additive contribution to the residual stream (pre residual-add). Kept on GPU;
+    call hook_state.flush_to_cpu() after the forward.
+    """
+
+    def hook_fn(module: nn.Module, args: tuple[Any, ...], output: Tensor) -> None:
+        if not hook_state.enabled:
+            return
+        hook_state.attn_outputs[layer_idx].append(output.detach())
+
+    return hook_fn
+
+
+# ── Activation-WRITE path (vmb battery arm A5 / A5-inv) ─────────────────────────
+#
+# Read hooks above OBSERVE the forward pass; the write path PERTURBS it: a
+# forward_pre_hook on a decoder layer adds alpha * unit(vector) to the residual
+# stream entering that layer, at chosen sequence positions. Used for steering
+# during replay of a fixed continuation (matched-token channel) and free-gen
+# dose ladders. alpha=0 must reproduce the unperturbed forward exactly.
+
+
+@dataclass
+class ResidualWriteSpec:
+    """One residual-stream injection: add `alpha * vector/||vector||` to the
+    hidden states entering decoder layer `layer_idx`.
+
+    start_pos/end_pos select absolute sequence positions (end exclusive;
+    None = unbounded). For replay steering over generated tokens only, set
+    start_pos = prompt_length. Positions are ABSOLUTE in the forward's seq dim —
+    correct for the single-forward replay path; for incremental generate()
+    (per-step seq_len=1 with KV cache) positional gating must instead be done
+    by enabling/disabling the hook between steps.
+    """
+
+    layer_idx: int
+    vector: Tensor              # [hidden_dim]; normalized at registration
+    alpha: float
+    start_pos: int | None = None
+    end_pos: int | None = None
+    normalize: bool = True
+
+
+def _make_residual_write_pre_hook(spec: ResidualWriteSpec, enabled_flag: dict[str, bool]) -> Any:
+    """forward_pre_hook (with_kwargs) injecting spec into the layer's input hidden states.
+
+    The decoder layer receives hidden_states as args[0] (HF Llama-class layers).
+    Returns modified (args, kwargs). Injection tensor is cast/moved lazily to the
+    input's dtype/device once, then cached on the spec closure.
+    """
+    cache: dict[str, Tensor] = {}
+
+    def pre_hook(module: nn.Module, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        if not enabled_flag["enabled"] or spec.alpha == 0.0:
+            return args, kwargs
+        if not args or not isinstance(args[0], Tensor):
+            # Defensive: some architectures pass hidden_states as a kwarg.
+            hs = kwargs.get("hidden_states")
+            if hs is None:
+                logger.warning("residual write hook: no hidden_states found; skipping injection")
+                return args, kwargs
+            kwargs = dict(kwargs)
+            kwargs["hidden_states"] = _inject(hs)
+            return args, kwargs
+        new_args = (_inject(args[0]),) + tuple(args[1:])
+        return new_args, kwargs
+
+    def _inject(hs: Tensor) -> Tensor:
+        key = f"{hs.device}_{hs.dtype}"
+        if key not in cache:
+            v = spec.vector.detach().to(device=hs.device, dtype=torch.float32)
+            if spec.normalize:
+                v = v / v.norm().clamp_min(1e-12)
+            cache[key] = (spec.alpha * v).to(dtype=hs.dtype)
+        delta = cache[key]
+        s = spec.start_pos if spec.start_pos is not None else 0
+        e = spec.end_pos if spec.end_pos is not None else hs.shape[1]
+        s = max(0, min(s, hs.shape[1]))
+        e = max(s, min(e, hs.shape[1]))
+        if s == 0 and e == hs.shape[1]:
+            return hs + delta
+        out = hs.clone()
+        out[:, s:e, :] = out[:, s:e, :] + delta
+        return out
+
+    return pre_hook
+
+
+@dataclass
+class ResidualWriteHandle:
+    """Removable handle for a registered residual write; also supports toggling."""
+
+    spec: ResidualWriteSpec
+    _handle: Any
+    _enabled_flag: dict[str, bool]
+
+    def disable(self) -> None:
+        self._enabled_flag["enabled"] = False
+
+    def enable(self) -> None:
+        self._enabled_flag["enabled"] = True
+
+    def remove(self) -> None:
+        self._handle.remove()
+
+
 @dataclass
 class LoadedModel:
     """Bundle of model, tokenizer, hooks, and their state."""
@@ -243,6 +369,36 @@ class LoadedModel:
         """Re-enable hook capture."""
         self.hook_state.enabled = True
 
+    def add_residual_write(self, spec: ResidualWriteSpec) -> ResidualWriteHandle:
+        """Register an activation-WRITE injection (forward_pre_hook) on a decoder layer.
+
+        Returns a handle with enable()/disable()/remove(). The caller owns the
+        handle's lifecycle — writes are NOT tracked in hook_handles so read-hook
+        teardown (remove_hooks) can never silently leave a perturbation armed,
+        and vice versa. alpha=0 (or a disabled handle) must reproduce the
+        unperturbed forward bit-for-bit (no-op path returns args unchanged).
+        """
+        if not 0 <= spec.layer_idx < self.config.num_layers:
+            raise ValueError(
+                f"residual write layer_idx {spec.layer_idx} out of range "
+                f"(model has {self.config.num_layers} layers)"
+            )
+        if spec.vector.numel() != self.config.hidden_dim:
+            raise ValueError(
+                f"residual write vector has {spec.vector.numel()} elements, "
+                f"expected hidden_dim={self.config.hidden_dim}"
+            )
+        enabled_flag = {"enabled": True}
+        layer = self.model.model.layers[spec.layer_idx]
+        handle = layer.register_forward_pre_hook(
+            _make_residual_write_pre_hook(spec, enabled_flag), with_kwargs=True
+        )
+        logger.info(
+            f"Residual write registered: layer {spec.layer_idx}, alpha={spec.alpha}, "
+            f"pos=[{spec.start_pos},{spec.end_pos})"
+        )
+        return ResidualWriteHandle(spec=spec, _handle=handle, _enabled_flag=enabled_flag)
+
 
 def load_model(
     config: ModelConfig | None = None,
@@ -251,6 +407,7 @@ def load_model(
     key_layers: list[int] | None = None,
     value_layers: list[int] | None = None,
     query_layers: list[int] | None = None,
+    attn_output_layers: list[int] | None = None,
 ) -> LoadedModel:
     """Load model, tokenizer, and register hooks.
 
@@ -269,6 +426,9 @@ def load_model(
             capture. Pass all layers to bank the OV-circuit value surface.
         query_layers: Layers for q_proj (pre-RoPE query) hooks. Default None =
             no query capture. Pass sampled layers for offline QK-space geometry.
+        attn_output_layers: Layers for o_proj (attention-output) hooks. Default
+            None = no capture. Pass all layers for the vmb battery capture
+            surface (attention-output cell; mlp_out derivable with hidden states).
 
     Returns:
         LoadedModel with everything wired up.
@@ -318,6 +478,7 @@ def load_model(
     key_layers = _valid(key_layers)
     value_layers = _valid(value_layers or [])
     query_layers = _valid(query_layers or [])
+    attn_output_layers = _valid(attn_output_layers or [])
 
     hook_state = HookState()
     hook_handles: list[torch.utils.hooks.RemovableHook] = []
@@ -349,6 +510,14 @@ def load_model(
         ))
         hook_handles.append(handle)
 
+    # Attention output (o_proj) — attention-output surface (vmb Stage A)
+    for layer_idx in attn_output_layers:
+        o_proj = model.model.layers[layer_idx].self_attn.o_proj
+        handle = o_proj.register_forward_hook(_make_o_proj_hook(
+            layer_idx=layer_idx, hook_state=hook_state,
+        ))
+        hook_handles.append(handle)
+
     # Optionally register gate_proj hooks for SwiGLU gate features (sampled layers)
     gate_hook_count = 0
     if register_gate_hooks:
@@ -362,7 +531,8 @@ def load_model(
 
     logger.info(
         f"Model loaded. Hooks — k_proj×{len(key_layers)}, v_proj×{len(value_layers)}, "
-        f"q_proj×{len(query_layers)}, gate_proj×{gate_hook_count}"
+        f"q_proj×{len(query_layers)}, o_proj×{len(attn_output_layers)}, "
+        f"gate_proj×{gate_hook_count}"
     )
 
     return LoadedModel(

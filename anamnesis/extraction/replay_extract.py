@@ -137,6 +137,18 @@ def replay_extract(
     v_proj_values = _slice_head_hook(loaded.hook_state.v_proj_values)
     queries = _slice_head_hook(loaded.hook_state.queries)
 
+    # ── Attention outputs (o_proj): [1, L, hidden] captures → {layer: T × [hidden]} ──
+    attn_outputs: dict[int, list[F32]] | None = None
+    if loaded.hook_state.attn_outputs:
+        attn_outputs = {}
+        for layer_idx, tensors in loaded.hook_state.attn_outputs.items():
+            if not tensors:
+                continue
+            full = tensors[0]  # [1, L, hidden]
+            rows = full[0, P:P + T, :].float().cpu().numpy()  # [T, hidden]
+            attn_outputs[int(layer_idx)] = [rows[i] for i in range(T)]
+        attn_outputs = attn_outputs or None
+
     # ── Gate activations: [1, L, intermediate] captures → {layer: T × [intermediate]} ──
     gate_activations: dict[int, list[F32]] | None = None
     if loaded.hook_state.gate_activations:
@@ -166,4 +178,5 @@ def replay_extract(
         gate_activations=gate_activations,
         v_proj_values=v_proj_values,
         queries=queries,
+        attn_outputs=attn_outputs,
     )

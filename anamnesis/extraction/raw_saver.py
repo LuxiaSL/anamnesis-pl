@@ -236,7 +236,10 @@ def save_raw_tensors_v3(
     Differences from save_raw_tensors (the v2 generate-path saver):
       - hidden_states + attentions banked for **all layers** (not sampled∪pca / sampled)
       - pre_rope_keys + **v_proj_values** banked for all layers
-      - **queries** (pre-RoPE) banked for whatever layers raw_data.queries holds (sampled)
+      - **queries** (pre-RoPE) banked for whatever layers raw_data.queries holds
+        (sampled pre-vmb; all layers from the vmb battery capture surface on)
+      - **attn_outputs** (o_proj) banked for whatever layers raw_data.attn_outputs holds
+        (vmb battery surface; absent in pre-vmb saves — loaders tolerate absence)
       - gate_activations banked for whatever layers raw_data.gate_activations holds (sampled)
       - positional_means is **NOT** banked per-gen (deduped — it is identical across all
         gens; lives once in the run's calibration dir, injected at feature-compute time)
@@ -293,6 +296,7 @@ def save_raw_tensors_v3(
     values_stacked, value_layer_indices = _stack_layer_dict(raw_data.v_proj_values)
     queries_stacked, query_layer_indices = _stack_layer_dict(raw_data.queries)
     gates_stacked, gate_layer_indices = _stack_layer_dict(raw_data.gate_activations)
+    attn_out_stacked, attn_out_layer_indices = _stack_layer_dict(raw_data.attn_outputs)
 
     # ── Top-k logits + precomputed exact entropy (full vocab discarded) ──
     if raw_data.logits and len(raw_data.logits) > 0:
@@ -336,6 +340,8 @@ def save_raw_tensors_v3(
         "value_layer_indices": value_layer_indices,
         "query_layer_indices": query_layer_indices,
         "gate_layer_indices": gate_layer_indices,
+        "attn_outputs": attn_out_stacked,
+        "attn_output_layer_indices": attn_out_layer_indices,
         "all_layers_count": np.array(n_total_layers_plus_one, dtype=np.int32),
         "extraction_version": np.array(3, dtype=np.int32),
     }
@@ -352,7 +358,7 @@ def save_raw_tensors_v3(
 
 #: Surface names accepted by load_raw_tensors(surfaces=...).
 VALID_SURFACES: frozenset[str] = frozenset(
-    {"hidden", "attention", "keys", "values", "queries", "gate", "logits"}
+    {"hidden", "attention", "keys", "values", "queries", "gate", "logits", "attn_out"}
 )
 
 
@@ -531,6 +537,19 @@ def load_raw_tensors(
         for i, layer_idx in enumerate(query_layer_indices):
             queries[int(layer_idx)] = [queries_stacked[t, i] for t in range(T)]
 
+    # ── Reconstruct attention outputs (o_proj; vmb surface, absent in pre-vmb npz) ──
+    attn_outputs: dict[int, list[F32]] | None = None
+    if "attn_out" in want and "attn_outputs" in data and data["attn_outputs"].size > 0:
+        attn_out_stacked = data["attn_outputs"].astype(np.float32)
+        attn_out_layer_indices = (
+            data["attn_output_layer_indices"]
+            if "attn_output_layer_indices" in data
+            else np.array([], dtype=np.int32)
+        )
+        attn_outputs = {}
+        for i, layer_idx in enumerate(attn_out_layer_indices):
+            attn_outputs[int(layer_idx)] = [attn_out_stacked[t, i] for t in range(T)]
+
     # ── Reconstruct gate activations ──
     gate_activations: dict[int, list[F32]] | None = None
     if "gate" in want:
@@ -563,6 +582,7 @@ def load_raw_tensors(
         gate_activations=gate_activations,
         v_proj_values=v_proj_values,
         queries=queries,
+        attn_outputs=attn_outputs,
     )
 
 
