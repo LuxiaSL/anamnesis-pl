@@ -50,6 +50,9 @@ class Source(str, Enum):
     values = "values"          # v_proj (future — banked, not yet featurized)
     qk = "qk"                  # post-RoPE QK geometry (future)
     routing = "routing"        # AttnRes block-routing weights (kotodama-native; future)
+    expert_routing = "expert_routing"  # MoE router: expert-allocation reads (vmb arm A7, M6-class
+                               # models; NEW source — deliberately distinct from `routing`, which is
+                               # ALREADY TAKEN by kotodama AttnRes block-routing. Prereg A7 note.)
     unknown = "unknown"        # flagged: classifier did not match (audit these)
 
 
@@ -102,6 +105,8 @@ def _source(n: str) -> Source:
     # AttnRes (kotodama-native) FIRST — its routing names contain "entropy"/"top" which would else mis-hit output.
     if n.startswith("attnres_committed"): return Source.residual   # committed residual-block snapshots (geometry)
     if n.startswith("attnres_"): return Source.routing             # AttnRes block-routing softmax = cross-block allocation
+    # MoE expert routing (vmb arm A7) — before output rules: router names will contain entropy/top-k.
+    if n.startswith(("xrt_", "expert_routing_")): return Source.expert_routing  # reserved prefix for A7 router features
     # v3 hand-suite (checked first; these prefixes are specific). value_* incl value↔key corr = a value prop.
     if n.startswith("value_"): return Source.values            # v_proj value-vector geometry
     if n.startswith(("qk_", "q_")): return Source.qk           # query / q·k content geometry
