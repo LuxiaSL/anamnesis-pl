@@ -107,6 +107,7 @@ def analyze_prefix_swap(model: str, n_layers: int, root: Path) -> dict:
     ps_dir = root / f"vmb_a2_{model}_prefix_swap"
     index = json.loads((ps_dir / "prefix_swap_index.json").read_text())
     Xs, names, gids = load_signature_matrix(ps_dir / "signatures_v3")
+    Zswap = (Xs - med) / scale          # SAME z space as the natives below
     row_of = {g: r for r, g in enumerate(gids)}
     cells = build_cells(names, n_layers)
 
@@ -122,10 +123,12 @@ def analyze_prefix_swap(model: str, n_layers: int, root: Path) -> dict:
         if gid not in row_of:
             logger.warning(f"{e['sig']} missing — skipped")
             continue
-        native = np.load(Path(e["native_sig_dir"]) / f"{e['native_sig']}.npz",
-                         allow_pickle=True)
+        # native_sig_dir in the index is the GENERATING host's absolute path;
+        # resolve against the local battery root via the source condition instead.
+        native_dir = root / f"vmb_a2_{model}_{e['source_condition']}" / "signatures_v3"
+        native = np.load(native_dir / f"{e['native_sig']}.npz", allow_pickle=True)
         zn = (np.asarray(native["features"], dtype=np.float32) - med) / scale
-        dz = np.abs(Xs[row_of[gid]] - zn)
+        dz = np.abs(Zswap[row_of[gid]] - zn)
         bucket = by_swap.setdefault(e["swap"], {c: [] for c in cells})
         for cname, mask in cells.items():
             bucket[cname].append(float(dz[mask].mean()) / floor_med[cname])
@@ -148,13 +151,18 @@ def main() -> None:
     ap.add_argument("--battery-root", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--skip-prefix-swap", action="store_true")
+    ap.add_argument("--models", default="3b,8b",
+                    help="Comma list; result of record = both-model run (FDR spans full grid)")
     args = ap.parse_args()
+
+    model_layers = {"3b": 28, "8b": 32}
+    selected = [(m.strip(), model_layers[m.strip()]) for m in args.models.split(",") if m.strip()]
 
     results = {"arm": "A2_instruction_vs_execution",
                "prereg": "prereg-vmb-v1 §2c A2 + addenda a/b (4x law; replay ruler 0.1x)",
-               "models": {}}
+               "models": {}, "models_included": [m for m, _ in selected]}
     all_rows = []
-    for model, n_layers in (("3b", 28), ("8b", 32)):
+    for model, n_layers in selected:
         logger.info(f"=== A2 {model} cell (i) ===")
         r = analyze_model(model, n_layers, args.battery_root)
         if not args.skip_prefix_swap:
@@ -183,7 +191,7 @@ def main() -> None:
              "ratio = median cross-condition Δ / pooled within-condition floor (matched",
              "history INCLUDES each condition's system prompt). Cell (ii) in Stage-0",
              "seed-floor units, visibility bar 0.1× (addendum 2026-07-12b).", ""]
-    for model in ("3b", "8b"):
+    for model in results["models_included"]:
         lines.append(f"## {model} — cell (i) free-gen swap")
         lines.append("")
         lines.append("| swap | cell | r(swap↔exec) | r(swap↔system) | dir p(BH) | outcome |")
