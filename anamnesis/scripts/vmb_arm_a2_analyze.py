@@ -59,8 +59,15 @@ def analyze_model(model: str, n_layers: int, root: Path) -> dict:
                     {f"swap_{lbl}" for lbl, _, _ in SWAPS})
     for cond in needed:
         d = root / f"vmb_a2_{model}_{cond}"
-        conds[cond] = ConditionCorpus(d / "signatures_v3", d / "metadata.json",
-                                      med, scale, f"{model}-{cond}")
+        cc = ConditionCorpus(d / "signatures_v3", d / "metadata.json",
+                             med, scale, f"{model}-{cond}")
+        # A2 conditions carry distinct mode strings; cross-condition pairing is by
+        # TOPIC (the matched-history axis) — re-key (topic_idx, mode) → (topic_idx, "t").
+        rekeyed: dict[tuple[int, str], list[int]] = {}
+        for (tidx, _mode), rows_ in cc.rows_by_class.items():
+            rekeyed.setdefault((tidx, "t"), []).extend(rows_)
+        cc.rows_by_class = rekeyed
+        conds[cond] = cc
     names = next(iter(conds.values())).feature_names
     cells = build_cells(names, n_layers)
     within = {c: within_condition_deltas(conds[c], cells) for c in conds}
