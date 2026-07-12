@@ -56,8 +56,11 @@ def load_stage0_protocol(prompts_path: Path) -> tuple[list[str], list[dict], int
     return topics, strata, int(proto["seeds_per_class"])
 
 
-def build_specs(model: str, topics: list[str], strata: list[dict], seeds_per_class: int) -> list[dict]:
-    tag = f"VMB0-{model.upper()}"
+def build_specs(model: str, topics: list[str], strata: list[dict], seeds_per_class: int,
+                tag: str | None = None) -> list[dict]:
+    """tag overrides the seed namespace (arm runs use e.g. VMBA1-3B-T03 so their
+    SHA-derived seeds are disjoint from the floor corpus and from other doses)."""
+    tag = tag or f"VMB0-{model.upper()}"
     n_topics = len(topics)
     specs: list[dict] = []
     for stratum_idx, stratum in enumerate(strata):
@@ -117,15 +120,31 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None, help="Cap spec count (sanity pass)")
     ap.add_argument("--assemble-only", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    # ── Arm-dose overrides (A1 sampling ladder etc.; floors use pure defaults) ──
+    ap.add_argument("--override-temperature", type=float, default=None,
+                    help="Dose temperature (default: model-native preset)")
+    ap.add_argument("--override-top-p", type=float, default=None,
+                    help="Dose top-p (default: 0.9)")
+    ap.add_argument("--seeds-per-class", type=int, default=None,
+                    help="Override seeds/class (arm runs use fewer than the floor's 10)")
+    ap.add_argument("--seed-namespace", default=None,
+                    help="Seed namespace tag (e.g. VMBA1-3B-T03) — MUST be unique per "
+                         "(model × arm × dose) so seeds are disjoint from floors and doses")
     args = ap.parse_args()
 
     preset = MODEL_PRESETS[args.model]
     topics, strata, seeds_per_class = load_stage0_protocol(args.prompts)
+    if args.seeds_per_class:
+        seeds_per_class = args.seeds_per_class
+    temperature = args.override_temperature if args.override_temperature is not None else preset.temperature
+    top_p = args.override_top_p if args.override_top_p is not None else 0.9
+    namespace = args.seed_namespace or f"VMB0-{args.model.upper()}"
     if len(topics) != 20:
         raise ValueError(f"Stage-0 protocol expects the Phase-0 20 topics, got {len(topics)}")
-    specs = build_specs(args.model, topics, strata, seeds_per_class)
+    specs = build_specs(args.model, topics, strata, seeds_per_class, tag=namespace)
     logger.info(f"{len(topics)} topics × {len(strata)} strata × {seeds_per_class} seeds "
-                f"= {len(specs)} specs; temp={preset.temperature} top_p=0.9 eos={preset.eos_token_ids}")
+                f"= {len(specs)} specs; temp={temperature} top_p={top_p} "
+                f"ns={namespace} eos={preset.eos_token_ids}")
     if args.limit:
         specs = specs[: args.limit]
 
@@ -133,11 +152,11 @@ def main() -> None:
         "model": {"model_id": preset.model_id, "torch_dtype": preset.torch_dtype,
                   "num_layers": preset.num_layers, "hidden_dim": preset.hidden_dim},
         "generation_config": {"max_new_tokens": args.max_new_tokens,
-                              "temperature": preset.temperature, "top_p": 0.9,
+                              "temperature": temperature, "top_p": top_p,
                               "do_sample": True, "eos_token_ids": preset.eos_token_ids},
         "vmb_stage0": {"prereg": "prereg-vmb-v1", "addendum": "2026-07-12a",
                        "floor_type": "stochastic", "bare_system_prompt": True,
-                       "seed_namespace": f"VMB0-{args.model.upper()}",
+                       "seed_namespace": namespace,
                        "template_date_string": VMB_CANONICAL_DATE},
     }
 
@@ -179,8 +198,8 @@ def main() -> None:
             cmd = [python, "-m", "anamnesis.scripts.run_gen_tokens",
                    "--model", args.model, "--model-path", args.model_path,
                    "--spec-file", str(spec_file), "--out-dir", str(rec_dir),
-                   "--temperature", str(preset.temperature),
-                   "--top-p", "0.9",
+                   "--temperature", str(temperature),
+                   "--top-p", str(top_p),
                    "--max-new-tokens", str(args.max_new_tokens),
                    "--eos-ids", *[str(e) for e in preset.eos_token_ids],
                    "--attn", "eager", "--date-string", VMB_CANONICAL_DATE,

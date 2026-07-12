@@ -29,7 +29,7 @@ from tqdm import tqdm
 # Ensure project root is on path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from anamnesis.config import ExperimentConfig
+from anamnesis.config import MODEL_PRESETS, ExperimentConfig, ModelConfig
 from anamnesis.extraction.model_loader import load_model
 
 logging.basicConfig(
@@ -94,15 +94,43 @@ CALIBRATION_PROMPTS = [
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run 8B calibration")
+    parser = argparse.ArgumentParser(description="Run positional/PCA calibration")
     parser.add_argument("--dry-run", action="store_true", help="Print config and exit")
     parser.add_argument(
         "--num-prompts", type=int, default=None,
         help="Override number of calibration prompts (for quick testing)",
     )
+    # ── Model parameterization (vmb M3+ onboarding, 2026-07-12): default preserves
+    # the historical 8B behavior; --model builds everything from MODEL_PRESETS. ──
+    parser.add_argument("--model", default=None, choices=[None, *MODEL_PRESETS.keys()],
+                        help="Preset key (e.g. qwen-7b). Default: legacy 8B config.")
+    parser.add_argument("--model-path", default=None,
+                        help="Local model dir (overrides the preset's HF id)")
+    parser.add_argument("--out-dir", type=Path, default=None,
+                        help="Calibration output dir (default: the preset's calibration_dir)")
     args = parser.parse_args()
 
     config = ExperimentConfig()
+    if args.model is not None:
+        preset = MODEL_PRESETS[args.model]
+        config.model = ModelConfig(
+            model_id=args.model_path or preset.model_id,
+            torch_dtype=preset.torch_dtype,
+            num_layers=preset.num_layers,
+            hidden_dim=preset.hidden_dim,
+            num_attention_heads=preset.num_attention_heads,
+            num_kv_heads=preset.num_kv_heads,
+            head_dim=preset.head_dim,
+        )
+        config.generation.temperature = preset.temperature
+        config.generation.eos_token_ids = preset.eos_token_ids
+        config.extraction.sampled_layers = preset.sampled_layers
+        config.extraction.pca_layers = preset.pca_layers
+        out_dir = args.out_dir or preset.calibration_dir
+        config.calibration.positional_means_path = out_dir / "positional_means.npz"
+        config.calibration.pca_model_path = out_dir / "pca_model.pkl"
+    elif args.model_path or args.out_dir:
+        parser.error("--model-path/--out-dir require --model")
     config.ensure_dirs()
 
     if args.dry_run:
