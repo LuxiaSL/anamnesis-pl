@@ -89,8 +89,8 @@ def main() -> None:
 
     def replay_features():
         raw = replay_extract(loaded, ids, plen, positional_means=positional_means)
-        feats, names = compute_features_v2_from_data(raw, extraction_config, family_config)
-        return raw, np.asarray(feats, dtype=np.float64), names
+        res = compute_features_v2_from_data(raw, extraction_config, family_config)
+        return raw, np.asarray(res.features, dtype=np.float64), list(res.feature_names)
 
     results: dict[str, object] = {}
 
