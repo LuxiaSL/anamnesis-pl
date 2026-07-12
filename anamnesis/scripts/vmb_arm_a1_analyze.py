@@ -132,7 +132,44 @@ def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
         a = np.array([x[idx] for x in s03]); b = np.array([x[idx] for x in s09])
         u = mannwhitneyu(a, b).statistic
         return float(max(u, len(a) * len(b) - u) / (len(a) * len(b)))
+
+    # TF-IDF text classifier, GroupKFold by topic (leak discipline) — the real
+    # token-space readout; per-gen length is ceiling-ed by truncation clustering
+    # (addendum 2026-07-12b item 5) so the cheap stats under-read.
+    def _texts(cond: str) -> tuple[list[str], list[int]]:
+        md = json.loads((battery_root / f"vmb_a1_{model}_{cond}" / "metadata.json").read_text())
+        return ([g["generated_text"] for g in md["generations"]],
+                [int(g["topic_idx"]) for g in md["generations"]])
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.model_selection import GroupKFold
+    from sklearn.metrics import roc_auc_score
+    ta, ga = _texts("t03"); tb, gb = _texts("t09")
+    texts, y = ta + tb, np.r_[np.zeros(len(ta)), np.ones(len(tb))]
+    groups = np.array(ga + gb)
+    aucs = []
+    for tr, te in GroupKFold(n_splits=5).split(texts, y, groups):
+        vec = TfidfVectorizer(max_features=5000, ngram_range=(1, 2))
+        Xtr = vec.fit_transform([texts[i] for i in tr])
+        Xte = vec.transform([texts[i] for i in te])
+        clf = LogisticRegression(max_iter=2000).fit(Xtr, y[tr])
+        aucs.append(roc_auc_score(y[te], clf.predict_proba(Xte)[:, 1]))
+
+    # Signature-side AUC under the SAME folds (apples-to-apples dissociation row):
+    # z-scored source:output features, logistic, GroupKFold by topic. Row order in
+    # ConditionCorpus matches metadata gen order (both sorted by gen id).
+    Zs = np.vstack([conds["t03"].Z[:, cells["source:output"]],
+                    conds["t09"].Z[:, cells["source:output"]]])
+    sig_aucs = []
+    for tr, te in GroupKFold(n_splits=5).split(Zs, y, groups):
+        clf = LogisticRegression(max_iter=2000).fit(Zs[tr], y[tr])
+        sig_aucs.append(roc_auc_score(y[te], clf.predict_proba(Zs[te])[:, 1]))
+
     dissoc = {"len_auc_t03_vs_t09": _auc(0), "ttr_auc_t03_vs_t09": _auc(1),
+              "tfidf_groupkfold_auc_t03_vs_t09": float(np.mean(aucs)),
+              "tfidf_auc_folds": [float(a) for a in aucs],
+              "signature_output_groupkfold_auc": float(np.mean(sig_aucs)),
+              "signature_auc_folds": [float(a) for a in sig_aucs],
               "n": [len(s03), len(s09)]}
 
     return {"rows": rows, "variance_flags": variance_flags,
@@ -146,12 +183,18 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--battery-root", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--models", default="3b,8b",
+                    help="Comma list (early sanity passes may run one model; the RESULT OF "
+                         "RECORD is the both-model run — FDR spans the full grid)")
     args = ap.parse_args()
 
+    model_layers = {"3b": 28, "8b": 32}
+    selected = [(m.strip(), model_layers[m.strip()]) for m in args.models.split(",") if m.strip()]
+
     results = {"arm": "A1_sampling", "prereg": "prereg-vmb-v1 §2c A1 + addenda a/b",
-               "models": {}}
+               "models": {}, "models_included": [m for m, _ in selected]}
     all_rows = []
-    for model, n_layers in (("3b", 28), ("8b", 32)):
+    for model, n_layers in selected:
         logger.info(f"=== A1 {model} ===")
         r = analyze_model(model, n_layers, args.battery_root)
         results["models"][model] = r
@@ -171,13 +214,24 @@ def main() -> None:
     # kill criterion (positive control): source:output on (t03,t09), both models
     kills = [r for r in conf if r["cell"] == "source:output"
              and r["contrast"] == "t03|t09"]
+    # Frozen §2c wording: "output-source cells fail to SEPARATE T=0.3 vs 0.9 ABOVE FLOOR
+    # at 2x-law n => instrument breakage". Separation above floor = FDR-significant
+    # detection (the delta distribution sits above the floor distribution), NOT the k=2
+    # magnitude ruler — the ruler is the VISIBILITY bar for effect claims. (First
+    # implementation conflated the two; corrected against the frozen text before the
+    # result of record — see journal 2026-07-12 day session. The pairwise-delta ratio is
+    # structurally compressed for location shifts: cross-condition deltas are floored by
+    # within-cloud seed noise, so detection and magnitude must not be conflated.)
     results["kill_criterion"] = {
         "definition": "source:output separates T=0.3 vs 0.9 above floor at 2x-law n "
-                      "(instrument positive control; hard kill on failure)",
-        "per_model": {r["model"]: {"verdict": r["verdict"],
+                      "(FDR-significant detection; instrument positive control; hard kill "
+                      "on failure). Magnitude verdicts (k=2 ruler) reported separately.",
+        "per_model": {r["model"]: {"detected": bool(r["bh_reject"]),
+                                   "verdict_magnitude": r["verdict"],
                                    "ratio": r["effect_ratio_vs_floor"],
-                                   "p_bh": r["p_bh_adjusted"]} for r in kills},
-        "PASS": all(r["verdict"] == "CARRIES" for r in kills),
+                                   "p_bh": r["p_bh_adjusted"],
+                                   "n": r["n_cross"]} for r in kills},
+        "PASS": all(r["bh_reject"] for r in kills),
     }
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -195,7 +249,7 @@ def main() -> None:
              "deterministic fleet-wide (faithfulness floor exactly 0, n=900 pairs/model). The "
              "free-generation deltas below are therefore 100% token-mediated: the §1 parameter-free "
              "prediction, confirmed at the strongest possible reading.", ""]
-    for model in ("3b", "8b"):
+    for model in results["models_included"]:
         r = results["models"][model]
         lines.append(f"## {model}")
         lines.append("")
@@ -213,10 +267,14 @@ def main() -> None:
         lines.append(f"Dose-monotonicity (source:output, T ladder): ratios vs native "
                      f"{ {k: round(v,2) for k,v in dm['ratios_vs_native'].items()} }, "
                      f"Spearman(|ΔT|, ratio) ρ={dm['spearman_rho']:.2f} (p={dm['spearman_p']:.3f}, n=3 doses)")
-        lines.append(f"Dissociation (t03 vs t09 token-space): length AUC "
-                     f"{r['dissociation']['len_auc_t03_vs_t09']:.3f}, TTR AUC "
-                     f"{r['dissociation']['ttr_auc_t03_vs_t09']:.3f} "
-                     f"(n={r['dissociation']['n']}) — predicted visible-to-both.")
+        lines.append(f"Dissociation (t03 vs t09, GroupKFold-by-topic, same folds): "
+                     f"signature(source:output) AUC "
+                     f"**{r['dissociation']['signature_output_groupkfold_auc']:.3f}** vs "
+                     f"TF-IDF text AUC **{r['dissociation']['tfidf_groupkfold_auc_t03_vs_t09']:.3f}** "
+                     f"(cheap stats: length {r['dissociation']['len_auc_t03_vs_t09']:.3f} "
+                     f"ceiling-ed by truncation clustering, TTR "
+                     f"{r['dissociation']['ttr_auc_t03_vs_t09']:.3f}; "
+                     f"n={r['dissociation']['n']}). Prereg predicted visible-to-both.")
         if r["variance_flags"]:
             lines.append(f"⚠ arm-variance flags (>1.5× floor): {r['variance_flags']}")
         else:
