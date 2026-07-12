@@ -131,7 +131,12 @@ def main() -> None:
         config.calibration.pca_model_path = out_dir / "pca_model.pkl"
     elif args.model_path or args.out_dir:
         parser.error("--model-path/--out-dir require --model")
-    config.ensure_dirs()
+    # Calibration only writes the two calibration artifacts — their parents are
+    # created below at save time. config.ensure_dirs() also mkdirs the RUN output
+    # tree, which trips over the package's outputs symlink on deploy targets where
+    # its destination doesn't exist; skip it entirely.
+    config.calibration.positional_means_path.parent.mkdir(parents=True, exist_ok=True)
+    config.calibration.pca_model_path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.dry_run:
         print(f"Model: {config.model.model_id}")
