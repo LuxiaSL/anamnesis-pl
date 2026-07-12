@@ -83,16 +83,23 @@ def analyze_model(model: str, n_layers: int, root: Path) -> dict:
             re_ = float(np.median(d_exec[cell]) / fm)
             rs = float(np.median(d_sys[cell]) / fm)
             p_exec = float(mannwhitneyu(d_exec[cell], pooled_floor, alternative="greater").pvalue)
-            p_dir = float(mannwhitneyu(d_sys[cell], d_exec[cell], alternative="greater").pvalue)
-            outcome = ("execution_based" if rs > re_ else "system_prompt_based")
+            # Addendum 2026-07-12d: OWN-TAIL tests for each outcome class. The first
+            # implementation classified by point direction alone and let system rows
+            # inherit the execution tail's p — the third softer-than-the-discipline
+            # analyzer rule caught today. Outcome is assigned in main() AFTER BH,
+            # significance-gated per class; ungated point direction never ships.
+            p_tail_exec = float(mannwhitneyu(d_sys[cell], d_exec[cell], alternative="greater").pvalue)
+            p_tail_system = float(mannwhitneyu(d_exec[cell], d_sys[cell], alternative="greater").pvalue)
             rows.append({
                 "model": model, "swap": lbl, "cell": cell,
                 "confirmatory": cell in CONFIRMATORY_CELLS,
                 "ratio_swap_vs_exec": re_, "ratio_swap_vs_system": rs,
-                "p_exec_above_floor": p_exec, "p_direction_sys_gt_exec": p_dir,
-                "outcome_class": outcome,
+                "p_exec_above_floor": p_exec,
+                "p_tail_execution_based": p_tail_exec,   # swap nearer exec than system
+                "p_tail_system_based": p_tail_system,    # swap nearer system than exec
+                "point_direction": ("execution_based" if rs > re_ else "system_prompt_based"),
                 "stamp": {"n": int(len(d_exec[cell])), "M": model,
-                          "law": "A2@4x-law; pooled within-condition floor",
+                          "law": "A2@4x-law; pooled within-condition floor; outcome gated per 12d",
                           "floor_type": "stochastic(within-condition)"},
             })
     return {"rows": rows}
@@ -172,16 +179,28 @@ def main() -> None:
         all_rows.extend(r["rows"])
 
     conf = [r for r in all_rows if r["confirmatory"]]
-    # Two families of confirmatory tests, FDR'd together across models
-    pvals = [r["p_exec_above_floor"] for r in conf] + [r["p_direction_sys_gt_exec"] for r in conf]
+    # Three families of confirmatory tests, FDR'd together across models (12d):
+    # above-floor, execution-tail, system-tail. Outcome class requires OWN-TAIL
+    # BH significance; neither tail significant => INDETERMINATE.
+    pvals = ([r["p_exec_above_floor"] for r in conf]
+             + [r["p_tail_execution_based"] for r in conf]
+             + [r["p_tail_system_based"] for r in conf])
     reject, adj = bh_fdr(pvals, alpha=0.05)
     n = len(conf)
     for i, r in enumerate(conf):
         r["bh_exec_above_floor"] = bool(reject[i])
-        r["bh_direction"] = bool(reject[n + i])
-        r["p_bh_exec"] = float(adj[i])
-        r["p_bh_direction"] = float(adj[n + i])
-    results["m_confirmatory"] = 2 * n
+        r["p_bh_exec_above_floor"] = float(adj[i])
+        r["bh_tail_execution"] = bool(reject[n + i])
+        r["p_bh_tail_execution"] = float(adj[n + i])
+        r["bh_tail_system"] = bool(reject[2 * n + i])
+        r["p_bh_tail_system"] = float(adj[2 * n + i])
+        if r["bh_tail_execution"] and not r["bh_tail_system"]:
+            r["outcome_class"] = "execution_based"
+        elif r["bh_tail_system"] and not r["bh_tail_execution"]:
+            r["outcome_class"] = "system_prompt_based"
+        else:
+            r["outcome_class"] = "indeterminate"
+    results["m_confirmatory"] = 3 * n
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "a2_results.json").write_text(json.dumps(results, indent=1))
@@ -194,14 +213,15 @@ def main() -> None:
     for model in results["models_included"]:
         lines.append(f"## {model} — cell (i) free-gen swap")
         lines.append("")
-        lines.append("| swap | cell | r(swap↔exec) | r(swap↔system) | dir p(BH) | outcome |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| swap | cell | r(swap↔exec) | r(swap↔system) | p(BH) exec-tail | "
+                     "p(BH) sys-tail | outcome (12d-gated) |")
+        lines.append("|---|---|---|---|---|---|---|")
         for r in conf:
             if r["model"] != model:
                 continue
             lines.append(f"| {r['swap']} | {r['cell']} | {r['ratio_swap_vs_exec']:.2f} | "
-                         f"{r['ratio_swap_vs_system']:.2f} | {r['p_bh_direction']:.2e} | "
-                         f"{r['outcome_class']} |")
+                         f"{r['ratio_swap_vs_system']:.2f} | {r['p_bh_tail_execution']:.2e} | "
+                         f"{r['p_bh_tail_system']:.2e} | {r['outcome_class']} |")
         pf = results["models"][model].get("prefix_swap")
         if pf:
             lines.append("")
