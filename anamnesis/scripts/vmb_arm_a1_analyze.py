@@ -118,13 +118,20 @@ def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
     rr = [ratios_vs_native[d] for d in DOSE_T]
     rho, rho_p = spearmanr(dt, rr)
 
-    # dissociation: token-space stats on the kill contrast (t03 vs t09)
+    # dissociation: token-space stats on the kill contrast (t03 vs t09).
+    # All text-side rows are built from the CORPUS's surviving gen_ids so they
+    # stay row-aligned with Z when the modal-vector guard drops short gens
+    # (OLMo-2 instant-EOS class — anchors are unaffected, no drops there).
+    def _gen_index(cond: str) -> dict[int, dict]:
+        md = json.loads((battery_root / f"vmb_a1_{model}_{cond}" / "metadata.json").read_text())
+        return {g["generation_id"]: g for g in md["generations"]}
+
     def _text_stats(cond: str) -> list[tuple[float, float]]:
-        md = json.loads((battery_root / (f"vmb_a1_{model}_{cond}") / "metadata.json").read_text())
+        idx = _gen_index(cond)
         out = []
-        for g in md["generations"]:
-            text = g["generated_text"]
-            words = text.split()
+        for gid in conds[cond].gen_ids:
+            g = idx[gid]
+            words = g["generated_text"].split()
             ttr = len(set(words)) / max(len(words), 1)
             out.append((float(g["num_generated_tokens"]), float(ttr)))
         return out
@@ -139,9 +146,9 @@ def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
     # token-space readout; per-gen length is ceiling-ed by truncation clustering
     # (addendum 2026-07-12b item 5) so the cheap stats under-read.
     def _texts(cond: str) -> tuple[list[str], list[int]]:
-        md = json.loads((battery_root / f"vmb_a1_{model}_{cond}" / "metadata.json").read_text())
-        return ([g["generated_text"] for g in md["generations"]],
-                [int(g["topic_idx"]) for g in md["generations"]])
+        idx = _gen_index(cond)
+        return ([idx[gid]["generated_text"] for gid in conds[cond].gen_ids],
+                [int(idx[gid]["topic_idx"]) for gid in conds[cond].gen_ids])
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import GroupKFold
@@ -158,8 +165,9 @@ def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
         aucs.append(roc_auc_score(y[te], clf.predict_proba(Xte)[:, 1]))
 
     # Signature-side AUC under the SAME folds (apples-to-apples dissociation row):
-    # z-scored source:output features, logistic, GroupKFold by topic. Row order in
-    # ConditionCorpus matches metadata gen order (both sorted by gen id).
+    # z-scored source:output features, logistic, GroupKFold by topic. Row
+    # alignment is by construction now: texts above are indexed by the same
+    # corpus gen_ids that order Z.
     Zs = np.vstack([conds["t03"].Z[:, cells["source:output"]],
                     conds["t09"].Z[:, cells["source:output"]]])
     sig_aucs = []

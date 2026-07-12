@@ -48,6 +48,7 @@ class ConditionCorpus:
         self.name = name
         self.feature_names = names
         self.Z = (X - med) / scale
+        self.gen_ids = gen_ids          # row-aligned with Z (modal-vector gens only)
         labels = load_class_labels(metadata_path)
         self.rows_by_class: dict[tuple[int, str], list[int]] = {}
         for row, gid in enumerate(gen_ids):

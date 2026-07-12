@@ -43,6 +43,8 @@ def main() -> None:
     ap.add_argument("--battery-root", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--models", default="3b,8b")
+    ap.add_argument("--skip-a3", action="store_true",
+                    help="models without pure-mode corpora (A1-only rosters)")
     args = ap.parse_args()
 
     results = {"prereg": "addendum 2026-07-12e item 2 retro-read; n_perm=%d" % N_PERM,
@@ -72,6 +74,8 @@ def main() -> None:
             logger.info(f"A1 {model} native|{dose} done")
         results["A1"][model] = a1
 
+        if args.skip_a3:
+            continue
         # ── A3: all 10 mode pairs ──
         conds = {}
         for mode in MODES:
