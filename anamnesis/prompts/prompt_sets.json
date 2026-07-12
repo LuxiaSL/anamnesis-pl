@@ -3,6 +3,18 @@
   "user_prompt_template": "Write about: {topic}",
   "num_repetitions": 2,
 
+  "vmb_stage0_strata": {
+    "description": "prereg-vmb-v1 Stage-0 floor protocol (ratified 2026-07-12): Phase-0 20 topics (set_a+set_b) x 4 task strata = 80 prompt classes; 10 seeds per class per model; NO system prompt (bare floors, addendum 2026-07-12a item 2). Stratum order is FROZEN (stratum_idx feeds make_seed). The conversational template embeds the topic mid-sentence verbatim (capitalization untouched) - consistency over elegance.",
+    "strata": [
+      {"name": "expository", "template": "Write about: {topic}"},
+      {"name": "explanatory", "template": "Explain to a beginner: {topic}"},
+      {"name": "argumentative", "template": "Argue for or against: {topic}"},
+      {"name": "conversational", "template": "I've been thinking about {topic} lately — what's your take?"}
+    ],
+    "topic_sets": ["set_a", "set_b"],
+    "seeds_per_class": 10
+  },
+
   "topics": {
     "set_a": [
       "The nature of consciousness",

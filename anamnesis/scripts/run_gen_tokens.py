@@ -87,10 +87,11 @@ def main() -> None:
     for i, spec in enumerate(todo):
         try:
             gid = spec["generation_id"]
-            messages = [
-                {"role": "system", "content": spec["system_prompt"]},
-                {"role": "user", "content": spec["user_prompt"]},
-            ]
+            # Bare specs (vmb Stage-0 floors) carry an empty system_prompt → omit the
+            # system turn entirely rather than emit an empty system message.
+            messages = [{"role": "user", "content": spec["user_prompt"]}]
+            if spec.get("system_prompt"):
+                messages.insert(0, {"role": "system", "content": spec["system_prompt"]})
             result = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
             input_ids = result if isinstance(result, torch.Tensor) else result["input_ids"]
             input_ids = input_ids.to("cuda")
