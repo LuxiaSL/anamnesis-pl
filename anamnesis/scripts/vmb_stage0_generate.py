@@ -39,6 +39,11 @@ from anamnesis.extraction.generation_runner import make_seed
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# The battery's canonical chat-template date. Llama templates render "Today Date"
+# via strftime_now; a midnight rollover mid-run would change prompt tokens and
+# break matched-history pairing. Pinned to the prereg freeze date, forever.
+VMB_CANONICAL_DATE = "12 Jul 2026"
+
 
 def load_stage0_protocol(prompts_path: Path) -> tuple[list[str], list[dict], int]:
     """Return (topics, strata, seeds_per_class) from the frozen vmb_stage0_strata key."""
@@ -132,7 +137,8 @@ def main() -> None:
                               "do_sample": True, "eos_token_ids": preset.eos_token_ids},
         "vmb_stage0": {"prereg": "prereg-vmb-v1", "addendum": "2026-07-12a",
                        "floor_type": "stochastic", "bare_system_prompt": True,
-                       "seed_namespace": f"VMB0-{args.model.upper()}"},
+                       "seed_namespace": f"VMB0-{args.model.upper()}",
+                       "template_date_string": VMB_CANONICAL_DATE},
     }
 
     out_run_dir = args.out_run_dir
@@ -177,7 +183,8 @@ def main() -> None:
                    "--top-p", "0.9",
                    "--max-new-tokens", str(args.max_new_tokens),
                    "--eos-ids", *[str(e) for e in preset.eos_token_ids],
-                   "--attn", "eager", "--label", f"w{w}g{gpu}"]
+                   "--attn", "eager", "--date-string", VMB_CANONICAL_DATE,
+                   "--label", f"w{w}g{gpu}"]
             env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
                    "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
                    "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",

@@ -60,6 +60,11 @@ def main() -> None:
     ap.add_argument("--attn", default="eager", choices=["eager", "sdpa"],
                     help="Attention impl for generation (eager matches fat_01; phase-2 replay is "
                          "eager regardless, so this only affects which tokens get sampled)")
+    ap.add_argument("--date-string", default=None,
+                    help="Pin the chat template's Today Date (Llama templates render it via "
+                         "strftime_now, so a midnight rollover mid-run would silently change "
+                         "prompt tokens and break matched-history pairing). vmb battery "
+                         "canonical date: '12 Jul 2026'. Default None = template default (today).")
     ap.add_argument("--label", default="w")
     args = ap.parse_args()
 
@@ -92,7 +97,10 @@ def main() -> None:
             messages = [{"role": "user", "content": spec["user_prompt"]}]
             if spec.get("system_prompt"):
                 messages.insert(0, {"role": "system", "content": spec["system_prompt"]})
-            result = tok.apply_chat_template(messages, add_generation_prompt=True, return_tensors="pt")
+            template_kwargs = {"date_string": args.date_string} if args.date_string else {}
+            result = tok.apply_chat_template(
+                messages, add_generation_prompt=True, return_tensors="pt", **template_kwargs
+            )
             input_ids = result if isinstance(result, torch.Tensor) else result["input_ids"]
             input_ids = input_ids.to("cuda")
             attention_mask = torch.ones_like(input_ids)
