@@ -76,20 +76,27 @@ def a1_rows(arms_root: Path) -> list[dict]:
 
 def load_2afc(arms_root: Path) -> dict:
     """12f hardening (a) results, if banked: model -> 2AFC accuracy."""
-    p = arms_root / "A3" / "judge" / "socratic_2afc_fable.json"
-    if not p.exists():
-        return {}
-    r = json.loads(p.read_text())
-    return {m: v["acc_2afc"] for m, v in r["models"].items()}
+    out = {}
+    for p in sorted((arms_root / "A3" / "judge").glob("socratic_2afc_fable*.json")):
+        r = json.loads(p.read_text())
+        out.update({m: v["acc_2afc"] for m, v in r["models"].items()})
+    return out
 
 
 def a3_rows(arms_root: Path) -> list[dict]:
-    p = arms_root / "A3" / "a3_results.json"
-    if not p.exists():
-        return []
-    r = json.loads(p.read_text())
     afc = load_2afc(arms_root)
     rows = []
+    records = []
+    for rec_dir in ("A3", "A3_m3"):
+        p = arms_root / rec_dir / "a3_results.json"
+        if p.exists():
+            records.append((rec_dir, json.loads(p.read_text())))
+    for rec_dir, r in records:
+        _a3_model_rows(r, afc, rows, rec_dir)
+    return rows
+
+
+def _a3_model_rows(r: dict, afc: dict, rows: list, rec_dir: str) -> None:
     for model, m in r["models"].items():
         h = m["hierarchy"]
         judge = m.get("judge", {}).get("per_mode", {})
@@ -131,9 +138,8 @@ def a3_rows(arms_root: Path) -> list[dict]:
                     if judge_gap is not None and judge_gap >= MEMBER_BAR
                     else "n/a (judge-gap below member bar or no judge)"),
                 "n": 160,
-                "source_record": "arms/A3/a3_results.json",
+                "source_record": f"arms/{rec_dir}/a3_results.json",
             })
-    return rows
 
 
 PENDING_AND_APPENDIX = [

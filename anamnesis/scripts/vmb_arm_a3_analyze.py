@@ -471,9 +471,12 @@ def main() -> None:
             "relations": [{k: t[k] for k in
                            ("relation", "acc_hi", "acc_lo", "point_holds",
                             "p_bh_adjusted", "bh_significant")} for t in ts],
-            "rung": ("L2(anchor-replication)" if (att_rel["bh_significant"]
-                                                  and att_rel["point_holds"])
-                     else "L3(per-model; attention-dominance not significance-gated)"),
+            "rung": ((("L2(anchor-replication)" if model in ("3b", "8b")
+                       else "cross-family: attention-dominance GATED"
+                            + ("" if point_all else "; tail ordering per-model "
+                               "(point-reversed relation present)"))
+                      if (att_rel["bh_significant"] and att_rel["point_holds"])
+                      else "L3(per-model; attention-dominance not significance-gated)")),
         }
 
     if args.judge_key and args.judge_results_dir:
