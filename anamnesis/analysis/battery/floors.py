@@ -117,24 +117,34 @@ def load_signature_matrix(sig_dir: Path) -> tuple[F32, list[str], list[int]]:
     paths = sorted(sig_dir.glob("gen_*.npz"), key=lambda p: int(p.stem.split("_")[1]))
     if not paths:
         raise FileNotFoundError(f"no gen_*.npz under {sig_dir}")
-    rows: list[F32] = []
-    gen_ids: list[int] = []
-    names: Optional[list[str]] = None
+    loaded: list[tuple[int, F32, tuple[str, ...]]] = []
     for p in paths:
         z = np.load(p, allow_pickle=True)
         if "features" not in z:
             logger.warning(f"{p.name}: no features key — skipped")
             continue
         f = np.asarray(z["features"], dtype=np.float32)
-        if names is None:
-            names = [str(x) for x in z["feature_names"]]
-        elif len(f) != len(names):
-            raise ValueError(f"{p.name}: feature length {len(f)} != {len(names)}")
-        rows.append(f)
-        gen_ids.append(int(p.stem.split("_")[1]))
-    if names is None:
+        loaded.append((int(p.stem.split("_")[1]),
+                       f, tuple(str(x) for x in z["feature_names"])))
+    if not loaded:
         raise ValueError(f"no usable signatures under {sig_dir}")
-    return np.stack(rows), names, gen_ids
+    # The model's STANDARD vector = the modal feature-name set. Generations too
+    # short to emit it (e.g. 2-token instant-EOS gens dropping gate-drift/STFT
+    # and CKA families — observed on OLMo-2 base, 2026-07-12) are EXCLUDED,
+    # loudly: a truncated vector is not the same measurement.
+    name_counts: dict[tuple[str, ...], int] = {}
+    for _, _, nm in loaded:
+        name_counts[nm] = name_counts.get(nm, 0) + 1
+    modal = max(name_counts, key=lambda k: name_counts[k])
+    dropped = [gid for gid, _, nm in loaded if nm != modal]
+    if dropped:
+        logger.warning(
+            f"{sig_dir}: {len(dropped)}/{len(loaded)} signatures excluded — "
+            f"non-standard feature vector (short gens); gen_ids={dropped}"
+        )
+    rows = [f for _, f, nm in loaded if nm == modal]
+    gen_ids = [gid for gid, _, nm in loaded if nm == modal]
+    return np.stack(rows), list(modal), gen_ids
 
 
 def load_class_labels(metadata_path: Path) -> dict[int, tuple[int, str]]:
