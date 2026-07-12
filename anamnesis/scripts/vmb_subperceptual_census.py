@@ -74,11 +74,21 @@ def a1_rows(arms_root: Path) -> list[dict]:
     return rows
 
 
+def load_2afc(arms_root: Path) -> dict:
+    """12f hardening (a) results, if banked: model -> 2AFC accuracy."""
+    p = arms_root / "A3" / "judge" / "socratic_2afc_fable.json"
+    if not p.exists():
+        return {}
+    r = json.loads(p.read_text())
+    return {m: v["acc_2afc"] for m, v in r["models"].items()}
+
+
 def a3_rows(arms_root: Path) -> list[dict]:
     p = arms_root / "A3" / "a3_results.json"
     if not p.exists():
         return []
     r = json.loads(p.read_text())
+    afc = load_2afc(arms_root)
     rows = []
     for model, m in r["models"].items():
         h = m["hierarchy"]
@@ -104,10 +114,18 @@ def a3_rows(arms_root: Path) -> list[dict]:
                 "judge": jr,
                 "gap": round(gap, 4), "status": classify(gap),
                 "judge_gap": round(judge_gap, 4) if judge_gap is not None else None,
-                "hardening": ("PENDING 2AFC + second judge family (12f) — required "
-                              "before any JUDGE-GAP quote as class evidence"
-                              if judge_gap is not None and judge_gap >= MEMBER_BAR
-                              else "n/a (judge-gap below member bar or no judge)"),
+                "hardening": (
+                    (f"FAILED hardening (a): 2AFC {afc[model]:.3f} ≫ chance — the "
+                     "blind-k-way judge-gap is a contrast artifact; judge-gap NOT "
+                     "quotable as class evidence (membership rests on the "
+                     "trained-detector rung only)"
+                     if mode == "socratic" and model in afc and afc[model] >= 0.65
+                     else "SURVIVES 2AFC (a); second-family (b) pending"
+                     if mode == "socratic" and model in afc
+                     else "PENDING 2AFC + second judge family (12f) — required "
+                          "before any JUDGE-GAP quote as class evidence")
+                    if judge_gap is not None and judge_gap >= MEMBER_BAR
+                    else "n/a (judge-gap below member bar or no judge)"),
                 "n": 160,
                 "source_record": "arms/A3/a3_results.json",
             })
