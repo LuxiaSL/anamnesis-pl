@@ -54,6 +54,11 @@ def law_table_md(reports, model: str) -> str:
                      " | n_min_rob@0.05 | PLAN n@0.05 |")
         lines.append("|" + "---|" * (9 + len(rep.law.alpha_grid)))
         for c in sorted(rep.cells, key=lambda c: c.cell):
+            if c.exact_zero:
+                blank = " | ".join("—" for _ in rep.law.alpha_grid)
+                lines.append(f"| {c.cell} | {c.n_features} | 0 (EXACT) | 0 | 0 | ∞ | ∞ | "
+                             f"{blank} | — | EXACT* |")
+                continue
             ns = " | ".join(str(c.n_min_by_alpha[str(a)]) for a in rep.law.alpha_grid)
             plan = max(c.n_min_by_alpha["0.05"], c.n_min_by_alpha_robust["0.05"])
             lines.append(f"| {c.cell} | {c.n_features} | {c.median:.4f} | {c.std:.4f} | "
@@ -62,6 +67,12 @@ def law_table_md(reports, model: str) -> str:
         lines.append("")
         lines.append("PLAN column = max(σ-based, MAD-based) n_min at α=0.05 — conservative "
                      "under heavy tails; battery n = 2× PLAN (A2 4×).")
+        lines.append("")
+        lines.append("*EXACT = the floor distribution is bitwise ZERO (replay-deterministic "
+                     "hardware, measured 2026-07-12: identical SHA1 signatures across all "
+                     "devices/repeats). Any nonzero matched-token delta exceeds floor; cell n "
+                     "is set by the effect side (dose-ladder resolution), and A1's "
+                     "matched-token prediction sharpens to literal bitwise equality.")
         lines.append("")
     return "\n".join(lines)
 

@@ -85,6 +85,10 @@ class FloorCell(BaseModel):
     n_min_by_alpha_robust: dict[str, int]  # σ_robust = MAD(deltas)·1.4826 (heavy-tail resistant)
     effect_d: float                # (k−1)·median / σ_floor
     effect_d_robust: float         # (k−1)·median / σ_robust — planning uses max(n_min, n_min_robust)
+    exact_zero: bool = False       # floor distribution is EXACTLY zero (bitwise-deterministic
+                                   # replay, measured 2026-07-12 on the B200 fleet): any nonzero
+                                   # delta exceeds floor; n is set by effect-side estimation only,
+                                   # and the k×-floor ruler degenerates to "nonzero at all".
     law: LawParams
 
 
@@ -234,6 +238,7 @@ def floor_cell_from_deltas(
     med = float(np.median(deltas))
     mad = float(np.median(np.abs(deltas - med)) * 1.4826)
     std = float(deltas.std(ddof=1)) if len(deltas) > 1 else 0.0
+    exact_zero = bool(np.all(deltas == 0.0))
     effect = ((law.k - 1.0) * med / std) if std > 1e-12 else 0.0
     effect_robust = ((law.k - 1.0) * med / mad) if mad > 1e-12 else 0.0
     n_by_a = {str(a): n_min_for(effect, a, law.power) for a in law.alpha_grid}
@@ -246,7 +251,8 @@ def floor_cell_from_deltas(
         q10=float(np.quantile(deltas, 0.10)), q90=float(np.quantile(deltas, 0.90)),
         n_min_by_alpha=n_by_a, n_min_by_alpha_rank=n_by_a_rank,
         n_min_by_alpha_robust=n_by_a_robust,
-        effect_d=float(effect), effect_d_robust=float(effect_robust), law=law,
+        effect_d=float(effect), effect_d_robust=float(effect_robust),
+        exact_zero=exact_zero, law=law,
     )
 
 
