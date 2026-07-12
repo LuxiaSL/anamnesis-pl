@@ -174,10 +174,15 @@ def main() -> None:
     pca_samples: list[np.ndarray] = []
 
     for prompt_idx, prompt_text in enumerate(tqdm(prompts, desc="Calibration")):
-        messages = [{"role": "user", "content": prompt_text}]
-        result = loaded.tokenizer.apply_chat_template(
-            messages, add_generation_prompt=True, return_tensors="pt",
-        )
+        if loaded.tokenizer.chat_template is None:
+            # BASE models (vmb M4 OLMo-2 class): no chat template — raw prompt,
+            # matching run_gen_tokens' bare-prompt path.
+            result = loaded.tokenizer(prompt_text, return_tensors="pt")["input_ids"]
+        else:
+            messages = [{"role": "user", "content": prompt_text}]
+            result = loaded.tokenizer.apply_chat_template(
+                messages, add_generation_prompt=True, return_tensors="pt",
+            )
         if isinstance(result, torch.Tensor):
             input_ids = result
         else:

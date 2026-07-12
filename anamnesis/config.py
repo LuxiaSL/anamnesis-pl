@@ -359,6 +359,32 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
         eos_token_ids=[128001, 128009],
         calibration_dir=LEGACY_DATA_ROOT / "outputs" / "calibration",
     ),
+    "olmo2-7b": ModelPreset(
+        # vmb M4 (prereg §2c model roster): RLHF-free machinery isolation.
+        # BASE model — no chat template (bare prompts only; run_gen_tokens
+        # refuses system prompts for template-less models). Full MHA
+        # (num_kv_heads == num_heads): the GQA indexing caveat does not apply.
+        # OLMo-2 applies q/k RMSNorm between the projections and RoPE, so
+        # k_proj hooks capture PRE-NORM pre-RoPE keys (position-free holds;
+        # substrate differs from Llama's post-proj keys — onboarding audit
+        # 2026-07-12, journal wave1-continuation W4).
+        model_id="allenai/OLMo-2-1124-7B",
+        torch_dtype="bfloat16",
+        num_layers=32,
+        hidden_dim=4096,
+        num_attention_heads=32,
+        num_kv_heads=32,
+        head_dim=128,
+        sampled_layers=[0, 8, 16, 20, 24, 28, 31],
+        pca_layers=[8, 16, 20, 24, 28],
+        trajectory_layers=[8, 16, 20, 24, 28],
+        contrastive_layers=[8, 16, 20, 24, 28],
+        early_layer_cutoff=8,
+        late_layer_cutoff=24,
+        temperature=0.7,
+        eos_token_ids=[100257],
+        calibration_dir=OUTPUTS_BASE / "calibration" / "olmo2_7b",
+    ),
     "qwen-7b": ModelPreset(
         model_id="Qwen/Qwen2.5-7B-Instruct",
         torch_dtype="bfloat16",

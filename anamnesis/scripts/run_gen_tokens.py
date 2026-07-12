@@ -97,10 +97,21 @@ def main() -> None:
             messages = [{"role": "user", "content": spec["user_prompt"]}]
             if spec.get("system_prompt"):
                 messages.insert(0, {"role": "system", "content": spec["system_prompt"]})
-            template_kwargs = {"date_string": args.date_string} if args.date_string else {}
-            result = tok.apply_chat_template(
-                messages, add_generation_prompt=True, return_tensors="pt", **template_kwargs
-            )
+            if tok.chat_template is None:
+                # BASE models (vmb M4 OLMo-2-7B class): no chat template exists —
+                # prompt is the raw concatenation, date-free by construction. A
+                # system prompt would be silently ignored here, so refuse it.
+                if spec.get("system_prompt"):
+                    raise ValueError(
+                        f"gen {gid}: system_prompt set but model has no chat "
+                        "template — base models take bare user prompts only"
+                    )
+                result = tok(spec["user_prompt"], return_tensors="pt")["input_ids"]
+            else:
+                template_kwargs = {"date_string": args.date_string} if args.date_string else {}
+                result = tok.apply_chat_template(
+                    messages, add_generation_prompt=True, return_tensors="pt", **template_kwargs
+                )
             input_ids = result if isinstance(result, torch.Tensor) else result["input_ids"]
             input_ids = input_ids.to("cuda")
             attention_mask = torch.ones_like(input_ids)
