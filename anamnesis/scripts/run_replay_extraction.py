@@ -97,6 +97,14 @@ def main() -> None:
         enable_per_head=True,             # v3: new surface
         enable_stft=True,
         enable_contrastive_projection=False,  # contrastive is a separate addon
+        # vmb matrix completion pass 1 (prereg Stage A(ii), census 2026-07-12): the
+        # deployed 2,713-dim v3 vector carried ZERO value/qk/cka features — the
+        # families existed but were never enabled here. Floors must cover every
+        # featurized cell natively (ordering rule), so the battery vector is the
+        # v3 superset. Old fat_01 signatures remain the frozen 2,713 baseline.
+        enable_value_geometry=True,
+        enable_qk_geometry=True,
+        enable_kv_cka=True,
         trajectory_layers=preset.trajectory_layers,
         contrastive_layers=preset.contrastive_layers,
     )
