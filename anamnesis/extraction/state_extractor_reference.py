@@ -489,45 +489,57 @@ def _extract_spectral_features(
     A = 0.5 * (A + A.T)
     np.fill_diagonal(A, 0)  # no self-loops
 
-    # Graph Laplacian
+    # Unnormalized graph Laplacian L = D - A. (The symmetric normalized Laplacian
+    # collapses this near-complete attention-similarity graph to a near-constant
+    # spectrum — verified WORSE for fiedler/spectral_entropy, v3/B2 — so keep L's
+    # discriminative spectrum and make the SUMMARIES scale-free instead.)
     D = np.diag(A.sum(axis=1))
     L = D - A
-
-    # Add small epsilon for numerical stability
-    L += np.eye(n) * 1e-10
-
-    # Eigenvalues (symmetric matrix → use eigvalsh)
+    L += np.eye(n) * 1e-10  # numerical stability
     eigenvalues = la.eigvalsh(L)
-    eigenvalues = np.maximum(eigenvalues, 0)  # clamp numerical negatives
+    eigenvalues = np.maximum(eigenvalues, 0.0)  # clamp numerical negatives
 
-    # Fiedler value (second-smallest eigenvalue)
-    fiedler = float(eigenvalues[1]) if n > 1 else 0.0
-
-    # HFER: high-frequency energy ratio
     total_energy = eigenvalues.sum()
+    lam_max = float(eigenvalues[-1]) if n > 0 else 0.0
+
+    # Fiedler normalized by the spectral radius → scale-free (the raw 2nd
+    # eigenvalue scales with graph size n ∝ T) (v3/B2).
+    fiedler = float(eigenvalues[1] / lam_max) if (n > 1 and lam_max > 1e-12) else 0.0
+
+    # HFER: high-frequency energy ratio (a fraction, already scale-free).
     if total_energy > 1e-12:
         median_ev = float(np.median(eigenvalues))
-        high_freq_energy = eigenvalues[eigenvalues > median_ev].sum()
-        hfer = float(high_freq_energy / total_energy)
+        hfer = float(eigenvalues[eigenvalues > median_ev].sum() / total_energy)
     else:
         hfer = 0.0
 
-    # Spectral entropy
-    if total_energy > 1e-12:
+    # Spectral entropy of the (sum-normalized, scale-free) eigenvalue
+    # distribution, divided by log(n) so it doesn't grow with the node count
+    # (= sampled steps ∝ T) (v3/B2).
+    if total_energy > 1e-12 and n > 1:
         normalized_ev = eigenvalues / total_energy
-        spec_entropy = float(scipy_entropy(normalized_ev + 1e-12))
+        spec_entropy = float(scipy_entropy(normalized_ev + 1e-12) / np.log(n))
     else:
         spec_entropy = 0.0
 
-    # Smoothness: use mean hidden state as graph signal
-    T_total = len(data.hidden_states)
-    if T_total > 0:
-        # Gather hidden states at sampled steps for this layer
+    # Smoothness: Rayleigh quotient on the symmetric NORMALIZED Laplacian (bounded
+    # [0,2], so it doesn't scale with n) of a meaningful graph signal — the
+    # positionally-corrected hidden-state NORM per step (v3/C2). Old signal was
+    # hidden_state.mean() = scalar mean of a ~4096-dim RMSNorm residual ≈ noise.
+    deg = A.sum(axis=1)
+    d_inv_sqrt = 1.0 / np.sqrt(np.maximum(deg, 1e-12))
+    L_sym = np.eye(n) - (d_inv_sqrt[:, None] * A * d_inv_sqrt[None, :])
+    if len(data.hidden_states) > 0:
         h_signal = np.array([
-            data.hidden_states[t][layer_idx + 1].mean()  # scalar per step
+            np.linalg.norm(
+                _correct_hidden_state(
+                    data.hidden_states[t][layer_idx + 1], layer_idx + 1,
+                    data.prompt_length + t, data.positional_means,
+                ).astype(np.float64)
+            )
             for t in sampled_steps
         ], dtype=np.float64)
-        xtLx = h_signal @ L @ h_signal
+        xtLx = h_signal @ L_sym @ h_signal
         xtx = h_signal @ h_signal
         smoothness = float(xtLx / max(xtx, 1e-12))
     else:
@@ -557,7 +569,7 @@ def extract_tier2_5(
 
     # Feature names for cache attention profiles (must match actual extraction order)
     _cache_profile_names = [
-        "recency_bias", "anchor_strength", "cache_coverage", "lookback_ratio",
+        "recency_bias", "sink_mass", "cache_coverage", "lookback_ratio",
         "attn_decay_rate",
         "recency_traj0", "recency_traj1", "recency_traj2", "recency_traj3",
     ]
@@ -579,10 +591,6 @@ def extract_tier2_5(
             for name in _key_geom_names:
                 features.append(0.0)
                 names.append(f"kv_{name}_L{l_idx}")
-        # Cross-layer agreement (3 features)
-        for name in ["cross_layer_early_late_agreement", "cross_layer_adjacent_agreement", "cross_layer_overall_coherence"]:
-            features.append(0.0)
-            names.append(name)
         # Epoch detection (9 features)
         for base in ["epoch_n_transitions", "epoch_max_transition", "epoch_regularity"]:
             for suffix in ["_mean", "_max", "_std"]:
@@ -602,9 +610,10 @@ def extract_tier2_5(
             continue
 
         recency_biases = []
-        anchor_strengths = []
-        lookback_ratios = []
+        sink_masses = []
         cache_coverages = []
+        prompt_masses = []   # v3/B1: accumulate raw masses for ratio-of-means lookback
+        gen_masses = []
 
         for t in range(T):
             attn = data.attentions[t][l_idx]  # [num_heads, seq_len]
@@ -619,27 +628,35 @@ def extract_tier2_5(
             recency = float(mean_attn[cutoff:].sum() / max(mean_attn.sum(), 1e-12))
             recency_biases.append(recency)
 
-            # Anchor strength: max attention to any single position
-            anchor_strengths.append(float(mean_attn.max()))
+            # Sink mass: attention to position 0 (BOS / attention sink). On this
+            # corpus the sink dominates (argmax==0 ~100%), so this equals the old
+            # "anchor_strength" = max(attention); named honestly now (v3/C1).
+            sink_masses.append(float(mean_attn[0]))
 
             # Cache coverage: fraction of positions with > 1/N attention
             threshold = 1.0 / max(seq_len, 1)
             cache_coverages.append(float((mean_attn > threshold).sum() / seq_len))
 
-            # Lookback ratio: attention on prompt / attention on generated
-            prompt_mass = float(mean_attn[:data.prompt_length].sum())
-            gen_mass = float(mean_attn[data.prompt_length:].sum())
-            lookback_ratios.append(prompt_mass / max(gen_mass, 1e-12))
+            # Lookback: prompt vs generated attention mass. Accumulate raw masses
+            # and aggregate as a ratio-of-means below (v3/B1) — the old
+            # mean-of-ratios blew up at early steps where gen_mass≈0.
+            prompt_masses.append(float(mean_attn[:data.prompt_length].sum()))
+            gen_masses.append(float(mean_attn[data.prompt_length:].sum()))
 
         # Aggregate
         for arr, name in [
             (recency_biases, "recency_bias"),
-            (anchor_strengths, "anchor_strength"),
+            (sink_masses, "sink_mass"),
             (cache_coverages, "cache_coverage"),
-            (lookback_ratios, "lookback_ratio"),
         ]:
             features.append(float(np.mean(arr)) if arr else 0.0)
             names.append(f"cache_{name}_L{l_idx}")
+
+        # Lookback ratio: ratio-of-means Σ(prompt_mass) / Σ(gen_mass) (v3/B1).
+        total_gen = float(np.sum(gen_masses)) if gen_masses else 0.0
+        total_prompt = float(np.sum(prompt_masses)) if prompt_masses else 0.0
+        features.append(total_prompt / max(total_gen, 1e-12))
+        names.append(f"cache_lookback_ratio_L{l_idx}")
 
         # Attention decay rate: fit exponential decay to mean attention vs distance
         try:
@@ -694,6 +711,11 @@ def extract_tier2_5(
                 eff_dim = float((s2_sum ** 2) / (s2 ** 2).sum())
             else:
                 eff_dim = 0.0
+            # Bound as a fraction of the max possible rank so it doesn't grow
+            # toward head_dim with generation length (v3/B4). Residual length
+            # coupling (PR still rises with T) is left to analysis-side
+            # residualization; subsampling to fixed #keys is a later option.
+            eff_dim = eff_dim / max(min(key_matrix.shape[0], key_matrix.shape[1]), 1)
         except Exception:
             eff_dim = 0.0
         features.append(eff_dim)
@@ -729,11 +751,11 @@ def extract_tier2_5(
             features.append(novelties[ti] if ti < len(novelties) else 0.0)
             names.append(f"kv_key_novelty_traj{i}_L{l_idx}")
 
-    # ── 2.5.3 Cross-Layer Key Agreement ──
-    cross_layer_feats = _extract_cross_layer_key_agreement(data, config)
-    for name, val in cross_layer_feats:
-        features.append(val)
-        names.append(name)
+    # ── 2.5.3 Cross-Layer Key Agreement: DELETED (v3/C4) ──
+    # Raw cross-layer key cosine compared vectors in unrelated learned bases; the
+    # basis-invariant replacement is the kv_cka feature family. Removed from the
+    # reference 2026-07-12 to restore equivalence with the optimized extractor
+    # (prereg-vmb-v1 Stage A item v).
 
     # ── 2.5.4 KV Cache Epoch Detection ──
     epoch_feats = _extract_epoch_features(data, config)
@@ -762,11 +784,15 @@ def _fit_attention_decay(
     for t in sample_steps:
         attn = attentions[t][layer_idx].mean(axis=0).astype(np.float64)
         seq_len = attn.shape[0]
+        if seq_len < 2:
+            continue
         current_pos = prompt_length + t
-        distances = np.array([current_pos - i for i in range(seq_len)], dtype=np.float64)
+        # Exclude position 0 (BOS / attention sink): it carries large mass at the
+        # MAX distance, which flattens/biases the exponential-decay fit (v3/C1).
+        distances = np.array([current_pos - i for i in range(1, seq_len)], dtype=np.float64)
         distances = np.maximum(distances, 1)
         all_distances.extend(distances.tolist())
-        all_weights.extend(attn.tolist())
+        all_weights.extend(attn[1:].tolist())
 
     if len(all_distances) < 2:
         return 0.0
@@ -786,65 +812,6 @@ def _fit_attention_decay(
         return float(-coeffs[0])  # decay rate (positive = faster decay)
     except Exception:
         return 0.0
-
-
-def _extract_cross_layer_key_agreement(
-    data: RawGenerationData,
-    config: ExtractionConfig,
-) -> list[tuple[str, float]]:
-    """Cross-layer key agreement: compare key vectors at same position across layers."""
-    results: list[tuple[str, float]] = []
-    sampled_layers = config.sampled_layers
-    T = len(data.hidden_states)
-
-    if T < 2 or len(sampled_layers) < 2:
-        results.append(("cross_layer_early_late_agreement", 0.0))
-        results.append(("cross_layer_adjacent_agreement", 0.0))
-        results.append(("cross_layer_overall_coherence", 0.0))
-        return results
-
-    # Sample every 10th generation step
-    sample_steps = list(range(0, T, 10))[:30]
-
-    # Collect agreements — use config thresholds instead of hardcoded values
-    early_cutoff = getattr(config, 'early_layer_cutoff', sampled_layers[len(sampled_layers) // 4])
-    late_cutoff = getattr(config, 'late_layer_cutoff', sampled_layers[-(len(sampled_layers) // 4)])
-    early_layers = [l for l in sampled_layers if l <= early_cutoff]
-    late_layers = [l for l in sampled_layers if l >= late_cutoff]
-    all_agreements = []
-    early_late_agreements = []
-    adjacent_agreements = []
-
-    for t in sample_steps:
-        for i, l1 in enumerate(sampled_layers):
-            keys1 = data.pre_rope_keys.get(l1, [])
-            if t >= len(keys1):
-                continue
-            k1 = keys1[t].mean(axis=0)  # average across KV heads → [head_dim]
-
-            for l2 in sampled_layers[i + 1:]:
-                keys2 = data.pre_rope_keys.get(l2, [])
-                if t >= len(keys2):
-                    continue
-                k2 = keys2[t].mean(axis=0)
-                sim = _cosine_sim(k1, k2)
-                all_agreements.append(sim)
-
-                if l1 in early_layers and l2 in late_layers:
-                    early_late_agreements.append(sim)
-
-                # Check if layers are adjacent in sampled set
-                if sampled_layers.index(l2) == sampled_layers.index(l1) + 1:
-                    adjacent_agreements.append(sim)
-
-    results.append(("cross_layer_early_late_agreement",
-                     float(np.mean(early_late_agreements)) if early_late_agreements else 0.0))
-    results.append(("cross_layer_adjacent_agreement",
-                     float(np.mean(adjacent_agreements)) if adjacent_agreements else 0.0))
-    results.append(("cross_layer_overall_coherence",
-                     float(np.mean(all_agreements)) if all_agreements else 0.0))
-
-    return results
 
 
 def _extract_epoch_features(
