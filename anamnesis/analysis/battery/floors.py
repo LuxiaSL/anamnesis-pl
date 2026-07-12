@@ -166,12 +166,16 @@ def robust_scale(X: F32) -> tuple[F32, F32]:
 
 
 def build_cells(names: list[str], n_layers: int) -> dict[str, NDArray]:
-    """Cell name → boolean feature mask, at the three floor granularities."""
+    """Cell name → boolean feature mask, at four floor granularities:
+    whole_vector, legacy family, source (covers unbanded sources like output —
+    A1's primary confirmatory cell; added 2026-07-12b), source × band."""
     fm = FeatureMap(names, n_layers)
     cells: dict[str, NDArray] = {"whole_vector": np.ones(len(names), dtype=bool)}
     for i, t in enumerate(fm.tags):
         fam_key = f"family:{t.family}"
         cells.setdefault(fam_key, np.zeros(len(names), dtype=bool))[i] = True
+        src_key = f"source:{t.source.value}"
+        cells.setdefault(src_key, np.zeros(len(names), dtype=bool))[i] = True
         if t.band is not None:
             sb_key = f"source_band:{t.source.value}|{t.band.value}"
             cells.setdefault(sb_key, np.zeros(len(names), dtype=bool))[i] = True

@@ -113,10 +113,15 @@ def _source(n: str) -> Source:
     if n.startswith("kv_value"): return Source.values          # cross-layer value CKA (before the kv_→keys rule)
     if n.startswith("gate_"): return Source.gate
     if n.startswith("kv_") or n.startswith("epoch_"): return Source.keys      # key-vector geometry / key-centroid epochs
-    if n.startswith(("cache_", "attn_flow_", "attn_entropy_", "head_agreement_", "ph_")):
-        return Source.attention                                               # attention-weight reads
-    if n.startswith(("activation_norm", "res_traj", "delta_", "pca_", "spectral_")):
-        return Source.residual                                               # residual stream (spectral = graph on hidden-state)
+    if n.startswith(("cache_", "attn_flow_", "attn_entropy_", "head_agreement_", "ph_", "spectral_")):
+        return Source.attention   # attention-weight reads. spectral_* RE-TAGGED 2026-07-12
+        # (addendum 2026-07-12b): the similarity graph is built from ATTENTION distributions
+        # (_extract_spectral_features), not hidden states — the old comment sided with a stale
+        # docstring; the code's behavior says attention. smoothness is hybrid (attention graph
+        # × residual-norm signal) and rides with its graph. Pre-retag analyses counted these
+        # 66 features under residual — cross-date family-mass comparisons carry that asterisk.
+    if n.startswith(("activation_norm", "res_traj", "delta_", "pca_")):
+        return Source.residual                                               # residual stream
     # output / token-distribution stats
     if any(k in n for k in ("logit", "surpris", "entropy", "token", "chosen", "top",
                             "perplex", "ppl", "prob", "rank")):
