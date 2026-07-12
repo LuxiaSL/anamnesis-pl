@@ -49,13 +49,19 @@ def law_table_md(reports, model: str) -> str:
         lines.append(f"## {rep.floor_type.value}  (n_gens={rep.n_gens}, pairs={rep.n_pairs_total}, "
                      f"M={rep.model})")
         lines.append("")
-        lines.append("| cell | n_feat | floor median | σ | effect d | " +
-                     " | ".join(f"n_min@α={a}" for a in rep.law.alpha_grid) + " |")
-        lines.append("|" + "---|" * (5 + len(rep.law.alpha_grid)))
+        lines.append("| cell | n_feat | floor median | σ | σ_rob | d | d_rob | " +
+                     " | ".join(f"n_min@α={a}" for a in rep.law.alpha_grid) +
+                     " | n_min_rob@0.05 | PLAN n@0.05 |")
+        lines.append("|" + "---|" * (9 + len(rep.law.alpha_grid)))
         for c in sorted(rep.cells, key=lambda c: c.cell):
             ns = " | ".join(str(c.n_min_by_alpha[str(a)]) for a in rep.law.alpha_grid)
+            plan = max(c.n_min_by_alpha["0.05"], c.n_min_by_alpha_robust["0.05"])
             lines.append(f"| {c.cell} | {c.n_features} | {c.median:.4f} | {c.std:.4f} | "
-                         f"{c.effect_d:.2f} | {ns} |")
+                         f"{c.mad:.4f} | {c.effect_d:.2f} | {c.effect_d_robust:.2f} | {ns} | "
+                         f"{c.n_min_by_alpha_robust['0.05']} | {plan} |")
+        lines.append("")
+        lines.append("PLAN column = max(σ-based, MAD-based) n_min at α=0.05 — conservative "
+                     "under heavy tails; battery n = 2× PLAN (A2 4×).")
         lines.append("")
     return "\n".join(lines)
 

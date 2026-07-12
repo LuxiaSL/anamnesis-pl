@@ -80,9 +80,11 @@ class FloorCell(BaseModel):
     std: float
     q10: float
     q90: float
-    n_min_by_alpha: dict[str, int]         # α_test (str) → n_min per group (t-approx)
+    n_min_by_alpha: dict[str, int]         # α_test (str) → n_min per group (t-approx, σ-based)
     n_min_by_alpha_rank: dict[str, int]    # rank-test variant (ARE-inflated)
+    n_min_by_alpha_robust: dict[str, int]  # σ_robust = MAD(deltas)·1.4826 (heavy-tail resistant)
     effect_d: float                # (k−1)·median / σ_floor
+    effect_d_robust: float         # (k−1)·median / σ_robust — planning uses max(n_min, n_min_robust)
     law: LawParams
 
 
@@ -141,11 +143,21 @@ def load_class_labels(metadata_path: Path) -> dict[int, tuple[int, str]]:
 # ---------------------------------------------------------------------------- deltas
 
 def robust_scale(X: F32) -> tuple[F32, F32]:
-    """Per-feature (median, MAD·1.4826) over the floor corpus; degenerate MAD → std → 1."""
+    """Per-feature (median, scale) over the floor corpus.
+
+    Scale = max(MAD·1.4826, 0.05·std): MAD-primary for outlier resistance, but
+    floored at a fraction of std so NEAR-CONSTANT features (e.g. the saturated
+    spectral_spectral_entropy_*, MAD ~1e-7 vs std ~4e-4 on the 3B floor corpus)
+    cannot inflate |z| astronomically on rare deviations — that pathology put
+    σ=229 on one 28-feature cell and poisoned every aggregate containing it
+    (diagnosed 2026-07-12, Stage-0 first pass). For healthy features
+    MAD·1.4826 ≈ std, so the floor never binds. Degenerate both → 1.
+    """
     med = np.median(X, axis=0)
     mad = np.median(np.abs(X - med), axis=0) * 1.4826
     std = X.std(axis=0)
-    scale = np.where(mad > 1e-9, mad, np.where(std > 1e-9, std, 1.0))
+    scale = np.maximum(mad, 0.05 * std)
+    scale = np.where(scale > 1e-12, scale, np.where(std > 1e-12, std, 1.0))
     return med.astype(np.float32), scale.astype(np.float32)
 
 
@@ -188,13 +200,27 @@ def pair_deltas_by_class(
 
 # ---------------------------------------------------------------------------- the law
 
+def min_n_permutation(alpha: float) -> int:
+    """Smallest per-group n at which a two-sample permutation test can even REACH α:
+    C(2n, n) must exceed ~5/α so the attainable p-value floor sits comfortably below α.
+    (Power math alone returns n=2 for huge effects, but no test resolves α=0.05 with
+    C(4,2)=6 relabelings.)"""
+    need = 5.0 / alpha
+    n = 2
+    while math.comb(2 * n, n) < need:
+        n += 1
+    return n
+
+
 def n_min_for(effect_d: float, alpha: float, power: float) -> int:
-    """Two-sample normal-approximation n per group for a standardized shift d."""
+    """Two-sample n per group: normal-approximation power bound, floored at the
+    permutation-resolution minimum for this α."""
     if effect_d <= 0:
         return 10**9  # degenerate: no detectable shift definition → effectively unpowerable
     za = norm.ppf(1.0 - alpha / 2.0)
     zb = norm.ppf(power)
-    return max(2, math.ceil(2.0 * ((za + zb) / effect_d) ** 2))
+    n_power = math.ceil(2.0 * ((za + zb) / effect_d) ** 2)
+    return max(min_n_permutation(alpha), n_power)
 
 
 def floor_cell_from_deltas(
@@ -209,15 +235,18 @@ def floor_cell_from_deltas(
     mad = float(np.median(np.abs(deltas - med)) * 1.4826)
     std = float(deltas.std(ddof=1)) if len(deltas) > 1 else 0.0
     effect = ((law.k - 1.0) * med / std) if std > 1e-12 else 0.0
+    effect_robust = ((law.k - 1.0) * med / mad) if mad > 1e-12 else 0.0
     n_by_a = {str(a): n_min_for(effect, a, law.power) for a in law.alpha_grid}
     n_by_a_rank = {a: min(10**9, math.ceil(n / RANK_ARE)) for a, n in n_by_a.items()}
+    n_by_a_robust = {str(a): n_min_for(effect_robust, a, law.power) for a in law.alpha_grid}
     return FloorCell(
         cell=cell, model=model, floor_type=floor_type,
         n_pairs=len(deltas), n_features=n_features,
         median=med, mad=mad, std=std,
         q10=float(np.quantile(deltas, 0.10)), q90=float(np.quantile(deltas, 0.90)),
         n_min_by_alpha=n_by_a, n_min_by_alpha_rank=n_by_a_rank,
-        effect_d=float(effect), law=law,
+        n_min_by_alpha_robust=n_by_a_robust,
+        effect_d=float(effect), effect_d_robust=float(effect_robust), law=law,
     )
 
 
