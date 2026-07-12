@@ -40,6 +40,7 @@ from anamnesis.analysis.battery.deltas import (
     build_cells,
     cross_condition_deltas,
     load_floor_scale,
+    location_dispersion,
     within_condition_deltas,
 )
 from anamnesis.analysis.battery.stats import bh_fdr
@@ -165,18 +166,36 @@ def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
         clf = LogisticRegression(max_iter=2000).fit(Zs[tr], y[tr])
         sig_aucs.append(roc_auc_score(y[te], clf.predict_proba(Zs[te])[:, 1]))
 
+    # Likelihood rung (addendum 2026-07-12c, rung ii): mean per-token surprisal of the
+    # text under the GENERATOR — the textbook sampling-parameter detector, computable by
+    # an external observer with the same model (text + one scoring pass; here read from
+    # the banked mean_surprise feature). Single fixed statistic → direct AUC, no fitting.
+    si = names.index("mean_surprise")
+    Xa = conds["t03"].Z[:, si]
+    Xb = conds["t09"].Z[:, si]
+    u = mannwhitneyu(Xa, Xb).statistic
+    lik_auc = float(max(u, len(Xa) * len(Xb) - u) / (len(Xa) * len(Xb)))
+
     dissoc = {"len_auc_t03_vs_t09": _auc(0), "ttr_auc_t03_vs_t09": _auc(1),
               "tfidf_groupkfold_auc_t03_vs_t09": float(np.mean(aucs)),
               "tfidf_auc_folds": [float(a) for a in aucs],
+              "likelihood_mean_surprise_auc": lik_auc,
               "signature_output_groupkfold_auc": float(np.mean(sig_aucs)),
               "signature_auc_folds": [float(a) for a in sig_aucs],
               "n": [len(s03), len(s09)]}
+
+    # Location/dispersion decomposition (addendum 12c item 2): each dose vs native,
+    # confirmatory cells — movers vs spreaders.
+    conf_cells = {c: cells[c] for c in CONFIRMATORY_CELLS}
+    loc_disp = {}
+    for dose in ("t03", "t09", "t12", "p07", "p10"):
+        loc_disp[dose] = location_dispersion(conds["native"], conds[dose], conf_cells)
 
     return {"rows": rows, "variance_flags": variance_flags,
             "dose_monotonicity": {"ratios_vs_native": ratios_vs_native,
                                   "spearman_rho": float(rho), "spearman_p": float(rho_p),
                                   "abs_dT": dict(zip(DOSE_T, dt))},
-            "dissociation": dissoc}
+            "dissociation": dissoc, "location_dispersion": loc_disp}
 
 
 def main() -> None:
@@ -267,14 +286,20 @@ def main() -> None:
         lines.append(f"Dose-monotonicity (source:output, T ladder): ratios vs native "
                      f"{ {k: round(v,2) for k,v in dm['ratios_vs_native'].items()} }, "
                      f"Spearman(|ΔT|, ratio) ρ={dm['spearman_rho']:.2f} (p={dm['spearman_p']:.3f}, n=3 doses)")
-        lines.append(f"Dissociation (t03 vs t09, GroupKFold-by-topic, same folds): "
-                     f"signature(source:output) AUC "
-                     f"**{r['dissociation']['signature_output_groupkfold_auc']:.3f}** vs "
-                     f"TF-IDF text AUC **{r['dissociation']['tfidf_groupkfold_auc_t03_vs_t09']:.3f}** "
-                     f"(cheap stats: length {r['dissociation']['len_auc_t03_vs_t09']:.3f} "
-                     f"ceiling-ed by truncation clustering, TTR "
-                     f"{r['dissociation']['ttr_auc_t03_vs_t09']:.3f}; "
-                     f"n={r['dissociation']['n']}). Prereg predicted visible-to-both.")
+        d = r["dissociation"]
+        lines.append(f"Dissociation HIERARCHY (t03 vs t09; addendum 12c): "
+                     f"content-class TF-IDF AUC **{d['tfidf_groupkfold_auc_t03_vs_t09']:.3f}** → "
+                     f"likelihood-class (mean surprisal under generator) AUC "
+                     f"**{d['likelihood_mean_surprise_auc']:.3f}** → "
+                     f"internals (source:output, same folds) AUC "
+                     f"**{d['signature_output_groupkfold_auc']:.3f}** "
+                     f"(length {d['len_auc_t03_vs_t09']:.3f}, TTR {d['ttr_auc_t03_vs_t09']:.3f}; "
+                     f"n={d['n']}). Prereg predicted visible-to-both.")
+        ld = r["location_dispersion"]
+        lines.append("Location/dispersion (native → dose, source:output): " +
+                     "; ".join(f"{dose}: shift {v['source:output']['centroid_shift']:.2f}z, "
+                               f"disp ×{v['source:output']['dispersion_ratio']:.2f}"
+                               for dose, v in ld.items()))
         if r["variance_flags"]:
             lines.append(f"⚠ arm-variance flags (>1.5× floor): {r['variance_flags']}")
         else:

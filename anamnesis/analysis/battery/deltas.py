@@ -107,10 +107,40 @@ def within_condition_deltas(
     return {c: np.asarray(v, dtype=np.float32) for c, v in out.items()}
 
 
+def location_dispersion(
+    a: ConditionCorpus,
+    b: ConditionCorpus,
+    cells: dict[str, NDArray],
+) -> dict[str, dict[str, float]]:
+    """First-class effect decomposition (addendum 2026-07-12c item 2): per cell,
+    - centroid_shift: mean |Δ| of per-feature centroid difference between conditions
+      (a location statistic, in floor-z units — same scale as the pair deltas)
+    - dispersion_ratio: median within-b pair delta / median within-a pair delta
+      (>1 = b's state cloud is WIDER than a's; the mover-vs-spreader axis)
+    Convention: call with a = reference/native, b = dose/perturbed.
+    """
+    wa = within_condition_deltas(a, cells)
+    wb = within_condition_deltas(b, cells)
+    mu_a = a.Z.mean(axis=0)
+    mu_b = b.Z.mean(axis=0)
+    dmu = np.abs(mu_b - mu_a)
+    out: dict[str, dict[str, float]] = {}
+    for cname, mask in cells.items():
+        med_a = float(np.median(wa[cname])) if len(wa[cname]) else 0.0
+        med_b = float(np.median(wb[cname])) if len(wb[cname]) else 0.0
+        out[cname] = {
+            "centroid_shift": float(dmu[mask].mean()),
+            "dispersion_ratio": (med_b / med_a) if med_a > 1e-12 else float("inf"),
+            "n_a": int(a.Z.shape[0]), "n_b": int(b.Z.shape[0]),
+        }
+    return out
+
+
 __all__ = [
     "ConditionCorpus",
     "build_cells",
     "cross_condition_deltas",
     "load_floor_scale",
+    "location_dispersion",
     "within_condition_deltas",
 ]
