@@ -56,6 +56,9 @@ KIND_PAIRS = [("naive", "rotate", "PRIMARY_length_matched"),
 VISIBILITY = 0.1  # 12b
 CONFIRMATORY_CELLS = ["whole_vector", "source:keys", "source:attention",
                       "source:output", "source:gate", "source:residual", "source:qk"]
+# classifier rung only where a verdict needs it (internals rung + the kind-carrier
+# prediction); LDA at 3,358 dims is the wall-clock bottleneck
+LDA_CELLS = ["whole_vector", "source:keys"]
 N_PERM = 2000
 
 
@@ -92,7 +95,7 @@ def lda_auc(Za: F32, Zb: F32, groups: NDArray) -> float:
     g = np.r_[groups, groups]
     scores = np.zeros(len(y))
     for tr, te in GroupKFold(n_splits=5).split(X, y, g):
-        m = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto").fit(X[tr], y[tr])
+        m = LinearDiscriminantAnalysis(solver="lsqr", shrinkage=0.1).fit(X[tr], y[tr])
         scores[te] = m.decision_function(X[te])
     return float(roc_auc_score(y, scores))
 
@@ -185,6 +188,7 @@ def analyze_model(model: str, battery_root: Path, rng: np.random.Generator) -> d
             G_full = Dz[f"{a}_f{f}"] - Dz[f"{b}_f{f}"]  # [n, d] per-gen kind difference
             mean_a = Dz[f"{a}_f{f}"].mean(axis=0)
             mean_b = Dz[f"{b}_f{f}"].mean(axis=0)
+            logger.info(f"[{model}] kind contrast {a}_vs_{b} f={f}")
             for cell in CONFIRMATORY_CELLS:
                 m = cells[cell]
                 obs, p = sign_flip_test(G_full[:, m], rng)
@@ -192,7 +196,8 @@ def analyze_model(model: str, battery_root: Path, rng: np.random.Generator) -> d
                 cb = mean_b[m]
                 denom = float(np.linalg.norm(ca) * np.linalg.norm(cb))
                 cosab = float(ca @ cb / denom) if denom > 0 else float("nan")
-                auc = lda_auc(Dz[f"{a}_f{f}"][:, m], Dz[f"{b}_f{f}"][:, m], groups)
+                auc = (lda_auc(Dz[f"{a}_f{f}"][:, m], Dz[f"{b}_f{f}"][:, m], groups)
+                       if cell in LDA_CELLS else None)
                 kind_rows.append({
                     "model": model, "pair": f"{a}_vs_{b}", "pair_tag": tag,
                     "evict_frac": f, "cell": cell,

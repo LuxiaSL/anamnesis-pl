@@ -83,6 +83,8 @@ def main() -> None:
     parser.add_argument("--inject-alpha", type=float, default=None)
     parser.add_argument("--inject-alpha-frac", type=float, default=None,
                     help="Bookkeeping only; recorded in each signature's metadata")
+    parser.add_argument("--adapter-path", default=None,
+                    help="A6: PEFT adapter dir merged before hooks (checkpoint replay)")
     parser.add_argument("--inject-from-metadata", action="store_true",
                     help="Read the injection spec from run-dir/metadata.json "
                          "['a5_injection'] (written by the steered gen job) — "
@@ -162,6 +164,7 @@ def main() -> None:
         # the extra layers are banked raw only (depth = a measured axis later).
         query_layers=all_layers,
         attn_output_layers=all_layers,
+        adapter_path=args.adapter_path,
     )
 
     positional_means, pca_components, pca_mean = _load_calibration(

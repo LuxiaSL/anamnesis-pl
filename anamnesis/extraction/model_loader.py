@@ -501,8 +501,14 @@ def load_model(
     value_layers: list[int] | None = None,
     query_layers: list[int] | None = None,
     attn_output_layers: list[int] | None = None,
+    adapter_path: str | None = None,
 ) -> LoadedModel:
     """Load model, tokenizer, and register hooks.
+
+    adapter_path: optional PEFT/LoRA adapter dir — merged (merge_and_unload)
+    BEFORE any hook registration, so hooks attach to the merged modules
+    (A6 checkpoint replay; PEFT wraps target modules, so post-hook merging
+    would strand hooks on replaced modules).
 
     Args:
         config: Model configuration. Defaults to ModelConfig().
@@ -546,6 +552,14 @@ def load_model(
         attn_implementation=config.attn_implementation,
     )
     model.eval()
+
+    if adapter_path is not None:
+        from peft import PeftModel
+
+        logger.info(f"Merging PEFT adapter: {adapter_path}")
+        model = PeftModel.from_pretrained(model, adapter_path)
+        model = model.merge_and_unload()
+        model.eval()
 
     tokenizer = AutoTokenizer.from_pretrained(config.model_id)
     if tokenizer.pad_token is None:

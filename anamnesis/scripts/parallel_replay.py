@@ -61,6 +61,8 @@ def main() -> None:
     parser.add_argument("--inject-alpha-frac", type=float, default=None)
     parser.add_argument("--inject-from-metadata", action="store_true",
                         help="Workers read the spec from run-dir/metadata.json (a5_injection)")
+    parser.add_argument("--adapter-path", default=None,
+                        help="A6: PEFT adapter dir passthrough to workers")
     parser.add_argument("--gen-ids", type=int, nargs="+", default=None,
                         help="Subset of manifest gen ids (A5 matched-token cells)")
     args = parser.parse_args()
@@ -125,6 +127,8 @@ def main() -> None:
             cmd += ["--raw-dir", str(args.raw_dir)]
         if args.no_tier3:
             cmd.append("--no-tier3")
+        if args.adapter_path:
+            cmd += ["--adapter-path", str(args.adapter_path)]
         if args.inject_from_metadata:
             cmd.append("--inject-from-metadata")
         elif args.inject_npz is not None:
