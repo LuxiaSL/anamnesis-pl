@@ -336,7 +336,10 @@ def _make_residual_write_pre_hook(
         return new_args, kwargs
 
     def _inject(hs: Tensor, cache_position: Tensor | None) -> Tensor:
-        key = f"{hs.device}_{hs.dtype}_{spec.alpha}"
+        # id(spec.vector) in the key: callers may swap the vector tensor on a live
+        # spec (pilot gates iterate vectors); a swapped tensor must never reuse a
+        # stale cached delta.
+        key = f"{hs.device}_{hs.dtype}_{spec.alpha}_{id(spec.vector)}"
         if key not in cache:
             v = spec.vector.detach().to(device=hs.device, dtype=torch.float32)
             if spec.normalize:
