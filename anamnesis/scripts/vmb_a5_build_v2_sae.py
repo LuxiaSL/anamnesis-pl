@@ -50,24 +50,22 @@ SAE_HOOK_LAYERS = [4, 12, 20]           # resid_post → injection sites L5/L13/
 TOP_K_REPORT = 10
 
 
+# Pinned SAE selection (13a record): FAST data variant, 8X width (d_sae=24576),
+# jumprelu architecture — cfg confirms instruct-exact (meta-llama/Llama-3.2-3B-Instruct),
+# d_in=3072, normalize_activations=none, apply_b_dec_to_input=False.
+SAE_VARIANT = "FAST"
+SAE_DIR_TMPL = "{variant}/blocks_{layer}_hook_resid_post_8X_2048_jumprelu"
+
+
 def find_sae_weights(sae_root: Path, hook_layer: int) -> Path:
-    """Locate the safetensors for one hook layer in the snapshot (introspective —
-    fails loudly with the directory listing rather than guessing silently)."""
-    cands = [p for p in sae_root.rglob("*.safetensors")
-             if f"{hook_layer}" in p.as_posix().replace("blocks.", " ").replace(".hook", " ")]
-    # narrow: prefer paths containing the canonical SAELens hook name
-    strict = [p for p in cands if f"blocks.{hook_layer}.hook_resid_post" in p.as_posix()]
-    pick = strict or cands
-    if not pick:
-        listing = "\n".join(str(p) for p in sae_root.rglob("*.safetensors"))
-        raise FileNotFoundError(
-            f"no SAE safetensors matched hook layer {hook_layer} under {sae_root}; "
-            f"available:\n{listing}")
-    if len(pick) > 1:
-        # deterministic choice: shortest path (base variant), logged
-        pick = sorted(pick, key=lambda p: len(p.as_posix()))
-        logger.warning(f"layer {hook_layer}: {len(pick)} SAE candidates; using {pick[0]}")
-    return pick[0]
+    """Pinned variant path; fails loudly with the listing if the layout shifted."""
+    d = sae_root / SAE_DIR_TMPL.format(variant=SAE_VARIANT, layer=hook_layer)
+    p = d / "sae_weights.safetensors"
+    if not p.exists():
+        listing = "\n".join(str(x) for x in sae_root.rglob("sae_weights.safetensors"))
+        raise FileNotFoundError(f"{p} missing; available:\n{listing}")
+    logger.info(f"layer {hook_layer}: {p}")
+    return p
 
 
 def load_sae(path: Path) -> dict[str, torch.Tensor]:
@@ -84,9 +82,11 @@ def load_sae(path: Path) -> dict[str, torch.Tensor]:
 
 
 def jumprelu_encode(x: torch.Tensor, w: dict[str, torch.Tensor]) -> torch.Tensor:
-    """x [n, d_in] → acts [n, d_sae]. JumpReLU: pre * (pre > threshold); falls back
-    to ReLU when no threshold tensor ships."""
-    pre = (x - w["b_dec"].to(x)) @ w["W_enc"].to(x) + w["b_enc"].to(x)
+    """x [n, d_in] → acts [n, d_sae]. JumpReLU: pre * (pre > threshold).
+
+    NO b_dec subtraction: this repo's cfg says apply_b_dec_to_input=False —
+    subtracting it (the first draft did) would shift every pre-activation."""
+    pre = x @ w["W_enc"].to(x) + w["b_enc"].to(x)
     thr = w.get("threshold")
     if thr is not None:
         return pre * (pre > thr.to(x))
