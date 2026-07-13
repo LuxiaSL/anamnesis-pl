@@ -12,10 +12,9 @@ norm from the stamps json the vectors job banks) — nothing here hardcodes norm
 import json
 import urllib.request
 
-API = "http://HEIMDALL-HOST-REDACTED:7000/api/v1/jobs"
-BASE = ("source /home/CLUSTER-USER/luxi-files/.venv-shared/bin/activate && "
-        "cd /home/CLUSTER-USER/luxi-files/anamnesis-pl && "
-        "export PYTHONPATH=$PWD/pipeline PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1")
+from anamnesis.scripts.ops._ops_env import API, WORK_DIR, base
+
+BASE = base("HF_HUB_OFFLINE=1")
 ENV = {"HF_HUB_OFFLINE": "1"}
 
 MODEL, MPATH = "3b", "/models/llama-3.2-3b-instruct"
@@ -42,7 +41,7 @@ VECTORS = {
 
 def submit(name, command, gpus, minutes, depends_on=None):
     spec = {"job_type": "custom", "name": name, "gpus": gpus, "node": "node1",
-            "working_dir": "/home/CLUSTER-USER/luxi-files/anamnesis-pl",
+            "working_dir": WORK_DIR,
             "estimated_minutes": minutes, "env": ENV,
             "command": f"bash -c '{BASE} && {command}'"}
     if depends_on:

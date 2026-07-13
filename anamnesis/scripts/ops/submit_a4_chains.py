@@ -8,10 +8,9 @@ dependency-gated on the smoke. gen ids = seed-idx {0,1} per prompt class
 import json
 import urllib.request
 
-API = "http://HEIMDALL-HOST-REDACTED:7000/api/v1/jobs"
-BASE = ("source /home/CLUSTER-USER/luxi-files/.venv-shared/bin/activate && "
-        "cd /home/CLUSTER-USER/luxi-files/anamnesis-pl && "
-        "export PYTHONPATH=$PWD/pipeline PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1")
+from anamnesis.scripts.ops._ops_env import API, WORK_DIR, base
+
+BASE = base("HF_HUB_OFFLINE=1")
 ENV = {"HF_HUB_OFFLINE": "1"}
 
 MODELS = {
@@ -31,7 +30,7 @@ GEN_IDS = [k * 10 + s for k in range(80) for s in (0, 1)]
 def submit(name: str, command: str, gpus: int, minutes: int,
            depends_on: list[str] | None = None) -> str:
     spec = {"job_type": "custom", "name": name, "gpus": gpus, "node": "node1",
-            "working_dir": "/home/CLUSTER-USER/luxi-files/anamnesis-pl",
+            "working_dir": WORK_DIR,
             "estimated_minutes": minutes, "env": ENV,
             "command": f"bash -c '{BASE} && {command}'"}
     if depends_on:

@@ -1,16 +1,11 @@
 """Submit the M4 OLMo-2-7B Stage-0 chain to Heimdall with dependency gating."""
 import json
-import re
 import urllib.request
-from pathlib import Path
 
-API = "http://HEIMDALL-HOST-REDACTED:7000/api/v1/jobs"
-CRED = Path("/PRIVATE/credentials.md")
-HFTOK = re.search(r"hf_[A-Za-z0-9]+", CRED.read_text()).group(0)
+from anamnesis.scripts.ops._ops_env import API, WORK_DIR, base, hf_token
 
-BASE = ("source /home/CLUSTER-USER/luxi-files/.venv-shared/bin/activate && "
-        "cd /home/CLUSTER-USER/luxi-files/anamnesis-pl && "
-        "export PYTHONPATH=$PWD/pipeline PYTHONUNBUFFERED=1")
+HFTOK = hf_token()
+BASE = base()
 MPATH = "allenai/OLMo-2-1124-7B"
 OUT = "/models/anamnesis-extract/runs/vmb_stage0_olmo2_7b"
 CALIB = "/models/anamnesis-extract/calibration/olmo2_7b"
@@ -22,7 +17,7 @@ CALIB_JOB = "7f3a683cc8e9"
 def submit(name: str, command: str, gpus: int, minutes: int,
            depends_on: list[str] | None = None) -> str:
     spec = {"job_type": "custom", "name": name, "gpus": gpus, "node": "node1",
-            "working_dir": "/home/CLUSTER-USER/luxi-files/anamnesis-pl",
+            "working_dir": WORK_DIR,
             "estimated_minutes": minutes, "env": ENV,
             "command": f"bash -c '{BASE} && {command}'"}
     if depends_on:
