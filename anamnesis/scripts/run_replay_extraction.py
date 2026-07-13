@@ -73,6 +73,16 @@ def main() -> None:
     parser.add_argument("--no-tier3", action="store_true")
     parser.add_argument("--no-resume", action="store_true", help="Recompute even if a signature exists")
     parser.add_argument("--label", default="w", help="Worker label for logs")
+    parser.add_argument("--inject-npz", type=Path, default=None,
+                    help="A5: apply a residual write during replay (steered free-gen "
+                         "signature extraction + matched-token cells). Same semantics "
+                         "as run_gen_tokens: injection at absolute positions >= each "
+                         "gen's prompt_length, cache_position-gated")
+    parser.add_argument("--inject-key", default=None)
+    parser.add_argument("--inject-layer", type=int, default=None)
+    parser.add_argument("--inject-alpha", type=float, default=None)
+    parser.add_argument("--inject-alpha-frac", type=float, default=None,
+                    help="Bookkeeping only; recorded in each signature's metadata")
     args = parser.parse_args()
 
     preset = MODEL_PRESETS[args.model]
@@ -142,6 +152,35 @@ def main() -> None:
         args.calib_dir, enable_tier3=not args.no_tier3,
     )
 
+    # ── A5 injection (optional): register once, mutate start_pos per gen ──
+    write_handle = None
+    inject_meta: dict | None = None
+    if args.inject_npz is not None:
+        if args.inject_key is None or args.inject_layer is None or args.inject_alpha is None:
+            raise SystemExit("--inject-npz requires --inject-key, --inject-layer, --inject-alpha")
+        import torch as _torch
+
+        from anamnesis.extraction.model_loader import ResidualWriteSpec
+
+        vec_bank = np.load(args.inject_npz)
+        if args.inject_key not in vec_bank:
+            raise SystemExit(f"vector key {args.inject_key!r} not in {args.inject_npz} "
+                             f"(has {list(vec_bank.keys())})")
+        spec = ResidualWriteSpec(
+            layer_idx=args.inject_layer,
+            vector=_torch.from_numpy(vec_bank[args.inject_key].astype(np.float32)),
+            alpha=args.inject_alpha,
+            start_pos=None,
+            normalize=True,
+        )
+        write_handle = loaded.add_residual_write(spec)
+        inject_meta = {
+            "inject_npz": str(args.inject_npz), "inject_key": args.inject_key,
+            "inject_layer": args.inject_layer, "inject_alpha": args.inject_alpha,
+            "inject_alpha_frac": args.inject_alpha_frac,
+        }
+        logger.info(f"[{args.label}] replay injection active: {inject_meta}")
+
     # ── Manifest + source metadata ──
     with open(args.manifest) as f:
         manifest = json.load(f)
@@ -177,7 +216,22 @@ def main() -> None:
             input_ids = e["input_ids"]
             plen = int(e["prompt_length"])
 
+            if write_handle is not None:
+                write_handle.spec.start_pos = plen
+                write_handle.reset_stats()
+
             raw_data = replay_extract(loaded, input_ids, plen, positional_means=positional_means)
+
+            if write_handle is not None and args.inject_alpha != 0.0:
+                st = write_handle.stats
+                expected = len(input_ids) - plen  # every generated position, single forward
+                got = int(st.get("positions", 0))
+                if not st.get("saw_cache_position", False) or got != expected:
+                    raise RuntimeError(
+                        f"gen_{gid:03d}: replay injection gating broken "
+                        f"(saw_cache_position={st.get('saw_cache_position')}, "
+                        f"positions={got}, expected={expected})"
+                    )
 
             if not args.no_raw:
                 save_raw_tensors_v3(raw_data, gid, raw_dir, prompt_length=plen, input_ids=input_ids)
@@ -187,6 +241,8 @@ def main() -> None:
             )
 
             metadata = dict(src_meta.get(gid, {"generation_id": gid}))
+            if inject_meta is not None:
+                metadata["injection"] = dict(inject_meta)
             metadata["num_features"] = int(len(result.features))
             metadata["tier_slices"] = {k: list(v) for k, v in result.tier_slices.items()}
             metadata["extraction_version"] = 3

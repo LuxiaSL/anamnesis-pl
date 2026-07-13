@@ -53,6 +53,12 @@ def main() -> None:
     parser.add_argument("--no-resume", action="store_true")
     parser.add_argument("--log-dir", type=Path, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--inject-npz", type=Path, default=None,
+                        help="A5: passthrough to workers (with --inject-key/-layer/-alpha[/-frac])")
+    parser.add_argument("--inject-key", default=None)
+    parser.add_argument("--inject-layer", type=int, default=None)
+    parser.add_argument("--inject-alpha", type=float, default=None)
+    parser.add_argument("--inject-alpha-frac", type=float, default=None)
     args = parser.parse_args()
 
     gpu_ids = resolve_physical_gpus(
@@ -112,6 +118,13 @@ def main() -> None:
             cmd += ["--raw-dir", str(args.raw_dir)]
         if args.no_tier3:
             cmd.append("--no-tier3")
+        if args.inject_npz is not None:
+            cmd += ["--inject-npz", str(args.inject_npz),
+                    "--inject-key", str(args.inject_key),
+                    "--inject-layer", str(args.inject_layer),
+                    "--inject-alpha", str(args.inject_alpha)]
+            if args.inject_alpha_frac is not None:
+                cmd += ["--inject-alpha-frac", str(args.inject_alpha_frac)]
         # workers always resume internally too (idempotent); --no-resume only affects launch filter
         env = {
             **os.environ,

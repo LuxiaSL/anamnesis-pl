@@ -66,6 +66,16 @@ def main() -> None:
                          "prompt tokens and break matched-history pairing). vmb battery "
                          "canonical date: '12 Jul 2026'. Default None = template default (today).")
     ap.add_argument("--label", default="w")
+    ap.add_argument("--inject-npz", type=Path, default=None,
+                    help="A5 steered generation: npz of unit vectors (banked by "
+                         "vmb_a5_build_vectors); requires --inject-key/--inject-layer/--inject-alpha")
+    ap.add_argument("--inject-key", default=None, help="Vector key inside --inject-npz (e.g. V1)")
+    ap.add_argument("--inject-layer", type=int, default=None, help="Decoder layer index for injection")
+    ap.add_argument("--inject-alpha", type=float, default=None,
+                    help="ABSOLUTE injection magnitude (fraction × median residual norm, "
+                         "precomputed by the chain submitter). 0.0 = rider no-op cell")
+    ap.add_argument("--inject-alpha-frac", type=float, default=None,
+                    help="Bookkeeping only: the ladder fraction this alpha encodes (recorded per gen)")
     args = ap.parse_args()
 
     preset = MODEL_PRESETS[args.model]
@@ -79,6 +89,33 @@ def main() -> None:
         args.model_path, dtype=dtype, attn_implementation=args.attn,
     ).to("cuda").eval()
     pad_id = tok.pad_token_id if tok.pad_token_id is not None else args.eos_ids[0]
+
+    # ── A5 steered generation: register the write hook once; start_pos is mutated
+    # per gen (prompt lengths vary; the hook reads it per call, gated on the
+    # cache_position kwarg so prefill/incremental steps get identical semantics). ──
+    write_handle = None
+    inject_meta: dict | None = None
+    if args.inject_npz is not None:
+        if args.inject_key is None or args.inject_layer is None or args.inject_alpha is None:
+            raise SystemExit("--inject-npz requires --inject-key, --inject-layer, --inject-alpha")
+        from anamnesis.extraction.model_loader import ResidualWriteSpec, attach_residual_write
+
+        vec_bank = np.load(args.inject_npz)
+        if args.inject_key not in vec_bank:
+            raise SystemExit(f"vector key {args.inject_key!r} not in {args.inject_npz} "
+                             f"(has {list(vec_bank.keys())})")
+        vec = torch.from_numpy(vec_bank[args.inject_key].astype(np.float32))
+        spec = ResidualWriteSpec(
+            layer_idx=args.inject_layer, vector=vec, alpha=args.inject_alpha,
+            start_pos=None, normalize=True,
+        )
+        write_handle = attach_residual_write(model, spec)
+        inject_meta = {
+            "inject_npz": str(args.inject_npz), "inject_key": args.inject_key,
+            "inject_layer": args.inject_layer, "inject_alpha": args.inject_alpha,
+            "inject_alpha_frac": args.inject_alpha_frac,
+        }
+        logger.info(f"[{args.label}] steered generation: {inject_meta}")
 
     with open(args.spec_file) as f:
         specs = json.load(f)
@@ -121,6 +158,11 @@ def main() -> None:
             torch.cuda.manual_seed_all(spec["seed"])
             np.random.seed(spec["seed"] % (2**32))
 
+            if write_handle is not None:
+                # Inject at generated-token positions only (absolute ≥ prompt_length).
+                write_handle.spec.start_pos = prompt_length
+                write_handle.reset_stats()
+
             with torch.no_grad():
                 out = model.generate(
                     input_ids,
@@ -153,6 +195,27 @@ def main() -> None:
                 "prompt_length": prompt_length,
                 "input_ids": full_seq,  # full prompt+generation → exact replay manifest
             }
+            if inject_meta is not None:
+                st = dict(write_handle.stats)
+                # At alpha=0 the hook no-ops by design (bitwise rider); positions
+                # only accumulate for alpha>0. Expected = one injection per
+                # generated-token position processed (prefill contributes 0).
+                if args.inject_alpha != 0.0:
+                    # N sampled tokens → N-1 generated positions forwarded (the
+                    # final token is sampled but never re-entered; prefill = 0).
+                    expected = max(0, len(generated_ids) - 1)
+                    got = int(st.get("positions", 0))
+                    if not st.get("saw_cache_position", False):
+                        raise RuntimeError(
+                            f"gen {gid}: injection ran without cache_position gating — "
+                            "position semantics unverifiable; aborting cell"
+                        )
+                    if got != expected:
+                        raise RuntimeError(
+                            f"gen {gid}: injected {got} positions, expected {expected} "
+                            "(one per generated token) — position gating broken"
+                        )
+                record["injection"] = {**inject_meta, "positions_injected": int(st.get("positions", 0))}
             with open(args.out_dir / f"gen_{gid:03d}.json", "w") as f:
                 json.dump(record, f)
             n_done += 1
