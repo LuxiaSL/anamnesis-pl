@@ -482,6 +482,9 @@ def main() -> None:
     if args.judge_key and args.judge_results_dir:
         merge_judge(results, args.judge_key, args.judge_results_dir, args.battery_root)
 
+    from anamnesis.analysis.battery.gates import require_stamp
+    for row in all_rows + all_ordering:
+        require_stamp(row, context="A3")
     (args.out_dir / "a3_results.json").write_text(json.dumps(results, indent=1))
     for model in results["models_included"]:
         mdm = results["models"][model]["mode_direction_map"]

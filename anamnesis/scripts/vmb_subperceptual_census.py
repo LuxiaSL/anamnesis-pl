@@ -165,6 +165,8 @@ def main() -> None:
     args = ap.parse_args()
 
     rows = a1_rows(args.arms_root) + a3_rows(args.arms_root)
+    from anamnesis.analysis.battery.gates import reject_blind_judge_defense
+    reject_blind_judge_defense(rows)   # 12g codicil (a) — hard gate
     census = {
         "prereg": "addendum 2026-07-12f §2; bar: MEMBER >= 0.10, BORDERLINE >= 0.03 "
                   "(declared implementation ruling 2026-07-12; addendum-only changes)",

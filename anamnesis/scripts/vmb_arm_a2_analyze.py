@@ -203,6 +203,13 @@ def main() -> None:
             r["outcome_class"] = "indeterminate"
     results["m_confirmatory"] = 3 * n
 
+    from anamnesis.analysis.battery.gates import require_gated_outcome, require_stamp
+    for row in all_rows:
+        require_stamp(row, context="A2")
+        require_gated_outcome(row, "outcome_class",
+                              ("bh_tail_execution", "bh_tail_system",
+                               "p_bh_tail_execution", "p_bh_tail_system"),
+                              context="A2")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "a2_results.json").write_text(json.dumps(results, indent=1))
 

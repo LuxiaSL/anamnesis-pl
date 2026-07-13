@@ -262,6 +262,9 @@ def main() -> None:
         "PASS": all(r["bh_reject"] for r in kills),
     }
 
+    from anamnesis.analysis.battery.gates import require_stamp
+    for row in all_rows:
+        require_stamp(row, context="A1")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "a1_results.json").write_text(json.dumps(results, indent=1))
 
