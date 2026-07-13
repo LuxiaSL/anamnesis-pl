@@ -113,11 +113,12 @@ def main() -> None:
 
     prompt_ids_list = []
     for p in PROMPTS:
-        ids = tok.apply_chat_template(
+        res = tok.apply_chat_template(
             [{"role": "user", "content": p}],
             add_generation_prompt=True, return_tensors="pt", date_string=DATE_STRING,
-        ).to("cuda")
-        prompt_ids_list.append(ids)
+        )
+        ids = res if isinstance(res, torch.Tensor) else res["input_ids"]
+        prompt_ids_list.append(ids.to("cuda"))
 
     gen_kw = dict(max_new_tokens=args.max_new_tokens, eos_ids=eos_ids, pad_id=pad_id,
                   temperature=float(preset.temperature), top_p=0.9)
