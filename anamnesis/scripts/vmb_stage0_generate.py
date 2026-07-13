@@ -132,6 +132,12 @@ def main() -> None:
     ap.add_argument("--seed-namespace", default=None,
                     help="Seed namespace tag (e.g. VMBA1-3B-T03) — MUST be unique per "
                          "(model × arm × dose) so seeds are disjoint from floors and doses")
+    # ── A5 steered-generation passthrough (run_gen_tokens applies the write hook) ──
+    ap.add_argument("--inject-npz", default=None)
+    ap.add_argument("--inject-key", default=None)
+    ap.add_argument("--inject-layer", type=int, default=None)
+    ap.add_argument("--inject-alpha", type=float, default=None)
+    ap.add_argument("--inject-alpha-frac", type=float, default=None)
     args = ap.parse_args()
 
     preset = MODEL_PRESETS[args.model]
@@ -161,6 +167,12 @@ def main() -> None:
                        "seed_namespace": namespace,
                        "template_date_string": VMB_CANONICAL_DATE},
     }
+    if args.inject_npz is not None:
+        passthrough["a5_injection"] = {
+            "inject_npz": args.inject_npz, "inject_key": args.inject_key,
+            "inject_layer": args.inject_layer, "inject_alpha": args.inject_alpha,
+            "inject_alpha_frac": args.inject_alpha_frac,
+        }
 
     out_run_dir = args.out_run_dir
     rec_dir = out_run_dir / "gen_records"
@@ -207,6 +219,13 @@ def main() -> None:
                    "--eos-ids", *[str(e) for e in preset.eos_token_ids],
                    "--attn", "eager", "--date-string", VMB_CANONICAL_DATE,
                    "--label", f"w{w}g{gpu}"]
+            if args.inject_npz is not None:
+                cmd += ["--inject-npz", args.inject_npz,
+                        "--inject-key", str(args.inject_key),
+                        "--inject-layer", str(args.inject_layer),
+                        "--inject-alpha", str(args.inject_alpha)]
+                if args.inject_alpha_frac is not None:
+                    cmd += ["--inject-alpha-frac", str(args.inject_alpha_frac)]
             env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
                    "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
                    "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
