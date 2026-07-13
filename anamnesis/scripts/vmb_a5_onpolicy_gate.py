@@ -74,37 +74,48 @@ def main() -> None:
             pilots.append(e)
     logger.info(f"{len(pilots)} pilot continuations")
 
-    vec_keys = [k for k in bank.keys() if k.endswith(f"_L{MAP_SITE}") or k.startswith("R")]
-    spec = ResidualWriteSpec(layer_idx=MAP_SITE,
-                             vector=torch.zeros(int(model.config.hidden_size)),
-                             alpha=0.0, normalize=True)
-    handle = attach_residual_write(model, spec)
+    # Map-site cells: L14 keys + V2's native L13 (SAE resid_post_12 ≈ map-site
+    # neighbor; 13a ops adaptation) + site-independent randoms.
+    vec_keys = [k for k in bank.keys()
+                if k.endswith(f"_L{MAP_SITE}") or k.endswith("_L13") or k.startswith("R")]
+
+    def site_of(key: str) -> int:
+        return int(key.rsplit("_L", 1)[1]) if "_L" in key else MAP_SITE
+
+    handles = {}  # one handle per site; only the active site gets alpha > 0
+    for s in sorted({site_of(k) for k in vec_keys}):
+        spec_s = ResidualWriteSpec(layer_idx=s,
+                                   vector=torch.zeros(int(model.config.hidden_size)),
+                                   alpha=0.0, normalize=True)
+        handles[s] = attach_residual_write(model, spec_s)
 
     report = {"model": args.model, "gate_bar": GATE_BAR, "n_pilot": len(pilots),
               "site": MAP_SITE, "cells": {}}
     for key in sorted(vec_keys):
+        site = site_of(key)
         vec = torch.from_numpy(bank[key].astype(np.float32))
         for frac in MT_FRACS:
-            alpha = frac * float(norms[f"L{MAP_SITE}"])
-            spec.vector = vec
-            spec.alpha = alpha
-            # invalidate the hook's cached delta (keyed by alpha; new vector needs new key)
-            handle.spec.alpha = alpha
+            alpha = frac * float(norms[f"L{site}"])
+            for s, h in handles.items():
+                h.spec.alpha = alpha if s == site else 0.0
+                if s == site:
+                    h.spec.vector = vec
             agrees = []
             for e in pilots:
-                spec.start_pos = int(e["prompt_length"])
+                handles[site].spec.start_pos = int(e["prompt_length"])
                 agrees.append(teacher_forced_agreement(
                     model, e["input_ids"], int(e["prompt_length"])))
             mean_a = float(np.mean(agrees))
             cell = f"{key}_a{frac}"
             report["cells"][cell] = {
-                "alpha_frac": frac, "alpha_abs": alpha,
+                "alpha_frac": frac, "alpha_abs": alpha, "site": site,
                 "agreement_mean": mean_a, "agreement_min": float(np.min(agrees)),
                 "PASS": bool(mean_a >= GATE_BAR),
             }
             logger.info(f"{cell}: agreement {mean_a:.4f} (min {np.min(agrees):.4f}) "
                         f"{'PASS' if mean_a >= GATE_BAR else 'FAIL'}")
-    handle.remove()
+    for h in handles.values():
+        h.remove()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2))

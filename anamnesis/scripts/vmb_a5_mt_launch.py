@@ -44,6 +44,7 @@ def main() -> None:
             skipped += 1
             continue
         key = cell.rsplit("_a", 1)[0]
+        site = int(info.get("site", MAP_SITE))
         out_dir = args.out_root / cell
         out_dir.mkdir(parents=True, exist_ok=True)
         cmd = [sys.executable, "-u", "-m", "anamnesis.scripts.parallel_replay",
@@ -53,7 +54,7 @@ def main() -> None:
                "--gpus", args.gpus, "--workers-per-gpu", str(args.workers_per_gpu),
                "--no-raw",
                "--inject-npz", str(npz), "--inject-key", key,
-               "--inject-layer", str(MAP_SITE),
+               "--inject-layer", str(site),
                "--inject-alpha", str(info["alpha_abs"]),
                "--inject-alpha-frac", str(info["alpha_frac"]),
                "--gen-ids", *[str(g) for g in GEN_IDS]]
