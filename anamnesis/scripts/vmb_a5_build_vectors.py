@@ -76,13 +76,14 @@ def _mean_resid_at_sites(model, ids: torch.Tensor, prompt_len: int,
 
 
 def _load_topics(prompts_path: Path) -> list[str]:
-    data = json.loads(prompts_path.read_text())
-    topics = data.get("topics") or data.get("phase0_topics")
-    if topics is None:
-        # prompt_sets.json layout: {"prompt_sets": {...}} — reuse stage0 loader
-        from anamnesis.scripts.vmb_stage0_generate import load_stage0_protocol
+    # ALWAYS the Stage-0 protocol loader — prompt_sets.json's top-level "topics"
+    # is a dict (legacy layout) and iterating it silently yielded 4 keys, which
+    # built V1 from 8 pairs instead of 40 (caught 2026-07-13, first vectors run).
+    from anamnesis.scripts.vmb_stage0_generate import load_stage0_protocol
 
-        topics, _, _ = load_stage0_protocol(prompts_path)
+    topics, _, _ = load_stage0_protocol(prompts_path)
+    if len(topics) != 20:
+        raise ValueError(f"Stage-0 protocol expects 20 topics, got {len(topics)}")
     return topics
 
 
