@@ -59,6 +59,10 @@ def main() -> None:
     parser.add_argument("--inject-layer", type=int, default=None)
     parser.add_argument("--inject-alpha", type=float, default=None)
     parser.add_argument("--inject-alpha-frac", type=float, default=None)
+    parser.add_argument("--inject-from-metadata", action="store_true",
+                        help="Workers read the spec from run-dir/metadata.json (a5_injection)")
+    parser.add_argument("--gen-ids", type=int, nargs="+", default=None,
+                        help="Subset of manifest gen ids (A5 matched-token cells)")
     args = parser.parse_args()
 
     gpu_ids = resolve_physical_gpus(
@@ -68,6 +72,9 @@ def main() -> None:
     with open(args.manifest) as f:
         manifest = json.load(f)
     all_ids = sorted(int(k) for k in manifest["entries"])
+    if args.gen_ids is not None:
+        wanted = set(args.gen_ids)
+        all_ids = [g for g in all_ids if g in wanted]
 
     sig_dir = args.run_dir / args.sig_subdir
     if not args.no_resume:
@@ -118,7 +125,9 @@ def main() -> None:
             cmd += ["--raw-dir", str(args.raw_dir)]
         if args.no_tier3:
             cmd.append("--no-tier3")
-        if args.inject_npz is not None:
+        if args.inject_from_metadata:
+            cmd.append("--inject-from-metadata")
+        elif args.inject_npz is not None:
             cmd += ["--inject-npz", str(args.inject_npz),
                     "--inject-key", str(args.inject_key),
                     "--inject-layer", str(args.inject_layer),

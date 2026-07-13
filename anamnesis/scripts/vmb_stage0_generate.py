@@ -136,9 +136,23 @@ def main() -> None:
     ap.add_argument("--inject-npz", default=None)
     ap.add_argument("--inject-key", default=None)
     ap.add_argument("--inject-layer", type=int, default=None)
-    ap.add_argument("--inject-alpha", type=float, default=None)
+    ap.add_argument("--inject-alpha", type=float, default=None,
+                    help="ABSOLUTE alpha; alternatively give --inject-alpha-frac + "
+                         "--inject-norms-json and it resolves at run time")
     ap.add_argument("--inject-alpha-frac", type=float, default=None)
+    ap.add_argument("--inject-norms-json", default=None,
+                    help="a5_vectors_stamps.json (holds median_resid_norms per site); "
+                         "alpha = frac × norms['L<layer>'] resolved when the job RUNS")
     args = ap.parse_args()
+
+    if args.inject_npz is not None and args.inject_alpha is None:
+        if args.inject_alpha_frac is None or args.inject_norms_json is None:
+            raise SystemExit("--inject-npz needs --inject-alpha OR "
+                             "(--inject-alpha-frac + --inject-norms-json)")
+        norms = json.loads(Path(args.inject_norms_json).read_text())["median_resid_norms"]
+        args.inject_alpha = float(args.inject_alpha_frac) * float(norms[f"L{args.inject_layer}"])
+        logger.info(f"resolved inject_alpha = {args.inject_alpha_frac} × "
+                    f"{norms[f'L{args.inject_layer}']:.2f} = {args.inject_alpha:.3f}")
 
     preset = MODEL_PRESETS[args.model]
     topics, strata, seeds_per_class = load_stage0_protocol(args.prompts)

@@ -83,7 +83,23 @@ def main() -> None:
     parser.add_argument("--inject-alpha", type=float, default=None)
     parser.add_argument("--inject-alpha-frac", type=float, default=None,
                     help="Bookkeeping only; recorded in each signature's metadata")
+    parser.add_argument("--inject-from-metadata", action="store_true",
+                    help="Read the injection spec from run-dir/metadata.json "
+                         "['a5_injection'] (written by the steered gen job) — "
+                         "guarantees gen and replay use the identical spec")
     args = parser.parse_args()
+
+    if args.inject_from_metadata:
+        md_path = args.run_dir / "metadata.json"
+        inj = json.loads(md_path.read_text()).get("a5_injection")
+        if inj is None:
+            raise SystemExit(f"--inject-from-metadata: no a5_injection in {md_path}")
+        args.inject_npz = Path(inj["inject_npz"])
+        args.inject_key = inj["inject_key"]
+        args.inject_layer = int(inj["inject_layer"])
+        args.inject_alpha = float(inj["inject_alpha"])
+        args.inject_alpha_frac = inj.get("inject_alpha_frac")
+        logger.info(f"[{args.label}] injection from metadata: {inj}")
 
     preset = MODEL_PRESETS[args.model]
     all_layers = list(range(preset.num_layers))
