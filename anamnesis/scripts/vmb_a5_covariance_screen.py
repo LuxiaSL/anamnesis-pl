@@ -92,9 +92,13 @@ def _capture_site_output(model, layers, entries, gids, site: int,
                          inject_vec: np.ndarray | None = None,
                          inject_scale: float = 0.0) -> np.ndarray:
     """Stack layer-{site} OUTPUT rows over generated positions; optionally inject
-    inject_scale·inject_vec at the layer INPUT (pre-hook) to measure the steered output."""
+    inject_scale·inject_vec at the layer INPUT (pre-hook) to measure the steered output.
+    Injection is applied at GENERATED positions only (index >= state['P']), matching
+    production A5 injection semantics (run_replay_extraction: 'absolute positions >=
+    prompt_length'); the prompt is never steered."""
     rows: list[np.ndarray] = []
     grab: dict[str, torch.Tensor] = {}
+    state: dict[str, int] = {"P": 0}
     vt = None
     if inject_vec is not None:
         p0 = next(model.parameters())
@@ -104,7 +108,8 @@ def _capture_site_output(model, layers, entries, gids, site: int,
         if vt is None:
             return None
         hs = a[0] if a else kw.get("hidden_states")
-        hs2 = hs + inject_scale * vt
+        hs2 = hs.clone()
+        hs2[:, state["P"]:, :] += inject_scale * vt      # generated positions only
         if a:
             return (hs2,) + tuple(a[1:]), kw
         kw = dict(kw); kw["hidden_states"] = hs2
@@ -120,6 +125,7 @@ def _capture_site_output(model, layers, entries, gids, site: int,
             e = entries[str(g)]
             ids = torch.tensor([e["input_ids"]], dtype=torch.long, device="cuda")
             P = int(e["prompt_length"])
+            state["P"] = P                               # inject only at positions >= P
             with torch.no_grad():
                 model(ids, use_cache=False, return_dict=True)
             rows.append(grab["o"][0, P:, :].float().cpu().numpy())
