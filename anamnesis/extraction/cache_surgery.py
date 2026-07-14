@@ -231,3 +231,119 @@ def middle_region_keep(
     evicted = set(range(start, start + n_evict))
     keep = [i for i in range(context_len) if i not in evicted]
     return torch.tensor(keep, dtype=torch.long)
+
+
+# ── A4b dialogue eviction geometry (turn-aligned oldest-first) ───────────────────
+# Ported from kv-rotation `src/kvrot/chat.py` (turn_token_spans / oldest_turns_to_evict /
+# turn_keep_indices — exp11's dialogue substrate). ARM-A4b §Ops: turn-aligned oldest-first
+# eviction, protect system + last 2 turns + N sinks. Pure tensor/int math (CPU-testable),
+# matching this module's design constraint. kv-rotation owns the model/chat substrate; this
+# is the anamnesis-side instrument port (pointers, not shared state — cross-project rule).
+
+
+@dataclass(frozen=True)
+class TurnSpan:
+    """One rendered turn's half-open token span [start, end) in the full context."""
+
+    index: int   # position in the message list
+    role: str    # "system" | "user" | "assistant"
+    start: int
+    end: int
+
+    @property
+    def n_tokens(self) -> int:
+        return self.end - self.start
+
+
+class TemplateNotPrefixStableError(RuntimeError):
+    """The chat template rewrote earlier tokens when a turn was appended — turn spans
+    (recovered by incremental-prefix rendering) would be misaligned. Fails loudly."""
+
+
+def _render_ids(tokenizer, messages: list[dict], *, add_generation_prompt: bool) -> list[int]:
+    ids = tokenizer.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=add_generation_prompt)
+    if hasattr(ids, "keys") and "input_ids" in ids:      # transformers 5.x BatchEncoding
+        ids = ids["input_ids"]
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    if ids and isinstance(ids[0], list):                 # batched form
+        ids = ids[0]
+    return list(ids)
+
+
+def turn_token_spans(tokenizer, messages: list[dict], *,
+                     add_generation_prompt: bool = False) -> tuple[Tensor, list["TurnSpan"]]:
+    """Render messages and recover per-turn token spans → (context_ids [1,T], spans).
+
+    Span i covers everything the template emitted for message i (headers/separators
+    included). With add_generation_prompt, the trailing generation header is NOT part of
+    any span. Raises TemplateNotPrefixStableError if the template rewrites history."""
+    if not messages:
+        raise ValueError("messages must be non-empty")
+    spans: list[TurnSpan] = []
+    prev: list[int] = []
+    for i in range(1, len(messages) + 1):
+        gen = add_generation_prompt and i == len(messages)
+        cur = _render_ids(tokenizer, messages[:i], add_generation_prompt=gen)
+        boundary = len(prev)
+        if gen:
+            bare = _render_ids(tokenizer, messages[:i], add_generation_prompt=False)
+            if bare != cur[: len(bare)]:
+                raise TemplateNotPrefixStableError(
+                    "generation prompt is not a pure suffix of the rendered conversation")
+            end = len(bare)
+        else:
+            end = len(cur)
+        if prev != cur[:boundary]:
+            raise TemplateNotPrefixStableError(
+                f"rendering messages[:{i}] rewrote tokens emitted for messages[:{i - 1}]")
+        spans.append(TurnSpan(index=i - 1, role=str(messages[i - 1].get("role", "?")),
+                              start=boundary, end=end))
+        prev = cur
+    return torch.tensor([prev], dtype=torch.long), spans
+
+
+def oldest_turns_to_evict(spans: list["TurnSpan"], *, target_tokens: int,
+                          protect_roles: tuple[str, ...] = ("system",),
+                          protect_last: int = 2) -> list[int]:
+    """Whole turns to evict, oldest first, until target_tokens are freed; protect_roles
+    turns and the final protect_last turns are never evicted. May return fewer than
+    requested (protections leave nothing else) — the caller reports 'unreachable', per
+    ARM-A4b §Cells (never silently clipped)."""
+    if target_tokens <= 0:
+        return []
+    cutoff = max(0, len(spans) - max(protect_last, 0))
+    chosen: list[int] = []
+    freed = 0
+    for sp in spans:
+        if sp.index >= cutoff:
+            break
+        if sp.role in protect_roles:
+            continue
+        chosen.append(sp.index)
+        freed += sp.n_tokens
+        if freed >= target_tokens:
+            break
+    return chosen
+
+
+def turn_keep_indices(spans: list["TurnSpan"], evict_turns: list[int], seq_len: int, *,
+                      num_sink_tokens: int = 4) -> Tensor:
+    """Keep-index set for turn-aligned eviction (ascending LongTensor). Every token outside
+    the evicted turns is kept; the first num_sink_tokens are kept unconditionally (sinks);
+    trailing tokens past the last span (e.g. a generation prompt) are kept."""
+    last_end = max((sp.end for sp in spans), default=0)
+    if seq_len < last_end:
+        raise ValueError(f"seq_len {seq_len} shorter than final span end {last_end}")
+    evict = set(evict_turns)
+    unknown = evict - {sp.index for sp in spans}
+    if unknown:
+        raise ValueError(f"evict_turns reference unknown turn indices: {sorted(unknown)}")
+    keep = torch.ones(seq_len, dtype=torch.bool)
+    for sp in spans:
+        if sp.index in evict:
+            keep[sp.start: sp.end] = False
+    if num_sink_tokens > 0:
+        keep[: min(num_sink_tokens, seq_len)] = True
+    return keep.nonzero(as_tuple=False).squeeze(-1)
