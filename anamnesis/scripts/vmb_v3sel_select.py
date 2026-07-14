@@ -40,18 +40,24 @@ INDUCED_KEY_MARKERS = ("inject", "steer", "induc", "alpha_frac")
 F32 = NDArray[np.float32]
 
 
-def _assert_no_induced(md: dict, corpus: str) -> None:
-    """14a §2 hard gate: every gen must be a natural (unsteered) generation."""
+def _assert_no_induced(md: dict, corpus: str, *, require_pure_mode: bool) -> None:
+    """14a §2 hard gate: every gen must be a natural (unsteered) generation.
+
+    require_pure_mode=True for the pure-mode corpora (mode must be pure_*); False for the
+    bare Stage-0 pool (whose 'mode' field is a task stratum, not a mode prompt — the point
+    of V3sel-BARE)."""
     for g in md["generations"]:
         bad = [k for k in g if any(s in k.lower() for s in INDUCED_KEY_MARKERS)]
         if bad:
             raise AssertionError(f"{corpus} gen {g['generation_id']}: induced/injection "
                                  f"fields present {bad} — V3sel pool must be UNSTEERED (14a §2)")
         cond = str(g.get("condition", ""))
-        mode = str(g.get("mode", ""))
-        if cond != "standard" or not mode.startswith("pure_"):
+        if cond != "standard":
             raise AssertionError(f"{corpus} gen {g['generation_id']}: condition={cond!r} "
-                                 f"mode={mode!r} — not a pure/standard (unsteered) gen (14a §2)")
+                                 "— not a standard (unsteered) gen (14a §2)")
+        if require_pure_mode and not str(g.get("mode", "")).startswith("pure_"):
+            raise AssertionError(f"{corpus} gen {g['generation_id']}: mode="
+                                 f"{g.get('mode')!r} not pure_* (14a §2)")
 
 
 def _lda_axis(Za: F32, Zb: F32) -> F32:
@@ -65,6 +71,11 @@ def _lda_axis(Za: F32, Zb: F32) -> F32:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="3b", choices=list(MODEL_META.keys()))
+    ap.add_argument("--corpus", default="bare", choices=["bare", "pure"],
+                    help="pool to SELECT from. 'bare' = Stage-0 unprompted corpus "
+                         "(V3sel-BARE, addendum 14c — NO mode prompt in the loop, dir0 is the "
+                         "only labeler; the construction of record). 'pure' = pooled pure-mode "
+                         "corpora (the original ~95%-label-degenerate reading; diagnostic).")
     ap.add_argument("--out-dir", type=Path, required=True)
     args = ap.parse_args()
 
@@ -72,33 +83,53 @@ def main() -> None:
     med, scale = load_floor_scale(
         Path("outputs/battery") / meta.stage0_dir / "signatures_v3")
 
-    # load pooled pure-mode corpora + the 14a §2 no-induced gate
+    # dir0 (the MAP) is ALWAYS the analogical↔contrastive LDA unit axis from the pure-mode
+    # corpora — calibrated ONCE from labels, then applied label-free to the pool.
     corpora: dict[str, ConditionCorpus] = {}
-    rows, mode_of, gid_of, topic_of = [], [], [], []
     for m in ALL_MODES:
         d = Path("outputs/battery") / f"vmb_a2_{args.model}_pure_{m}"
-        md = json.loads((d / "metadata.json").read_text())
-        _assert_no_induced(md, d.name)                      # HARD GATE (14a §2)
-        cc = ConditionCorpus(d / "signatures_v3", d / "metadata.json", med, scale, m)
-        corpora[m] = cc
-        gid_topic = {int(g["generation_id"]): int(g["topic_idx"]) for g in md["generations"]}
-        for r, gid in enumerate(cc.gen_ids):
-            rows.append(cc.Z[r]); mode_of.append(m); gid_of.append(int(gid))
-            topic_of.append(gid_topic[int(gid)])
-    Z = np.stack(rows).astype(np.float32)
-    mode_of = np.array(mode_of); gid_of = np.array(gid_of); topic_of = np.array(topic_of)
-
-    # dir0 = analogical↔contrastive LDA unit axis (z-space); label-free projection of ALL gens
+        _assert_no_induced(json.loads((d / "metadata.json").read_text()), d.name,
+                           require_pure_mode=True)
+        corpora[m] = ConditionCorpus(d / "signatures_v3", d / "metadata.json", med, scale, m)
     dir0 = _lda_axis(corpora[DIR0_PAIR[0]].Z, corpora[DIR0_PAIR[1]].Z)
-    proj = Z @ dir0                                          # [N]
+
+    # POOL to select from (label-free) + the 14a §2 no-induced HARD GATE on the pool.
+    rows, label_of, gid_of, topic_of = [], [], [], []
+    if args.corpus == "bare":
+        d = Path("outputs/battery") / meta.stage0_dir
+        md = json.loads((d / "metadata.json").read_text())
+        _assert_no_induced(md, d.name, require_pure_mode=False)
+        for g in md["generations"]:                          # 14c: NO mode prompt in the loop
+            if str(g.get("system_prompt", "")) != "":
+                raise AssertionError(f"{d.name} gen {g['generation_id']}: non-empty "
+                                     "system_prompt — V3sel-BARE pool must be UNPROMPTED (14c)")
+        cc = ConditionCorpus(d / "signatures_v3", d / "metadata.json", med, scale, "bare")
+        gmeta = {int(g["generation_id"]): g for g in md["generations"]}
+        for r, gid in enumerate(cc.gen_ids):
+            rows.append(cc.Z[r]); gid_of.append(int(gid))
+            topic_of.append(int(gmeta[int(gid)]["topic_idx"]))
+            label_of.append(str(gmeta[int(gid)].get("mode", "?")))   # task stratum, NOT a mode prompt
+        label_name = "task_stratum"
+    else:  # pure (diagnostic — the original degenerate reading)
+        for m in ALL_MODES:
+            d = Path("outputs/battery") / f"vmb_a2_{args.model}_pure_{m}"
+            gid_topic = {int(g["generation_id"]): int(g["topic_idx"])
+                         for g in json.loads((d / "metadata.json").read_text())["generations"]}
+            for r, gid in enumerate(corpora[m].gen_ids):
+                rows.append(corpora[m].Z[r]); label_of.append(m); gid_of.append(int(gid))
+                topic_of.append(gid_topic[int(gid)])
+        label_name = "mode"
+    Z = np.stack(rows).astype(np.float32)
+    label_of = np.array(label_of); gid_of = np.array(gid_of); topic_of = np.array(topic_of)
+    proj = Z @ dir0                                          # [N] label-free projection
 
     def _members(idx) -> list[dict]:
-        return [{"model": args.model, "mode": str(mode_of[i]), "gen_id": int(gid_of[i]),
+        return [{"model": args.model, label_name: str(label_of[i]), "gen_id": int(gid_of[i]),
                  "topic_idx": int(topic_of[i]), "dir0_proj": round(float(proj[i]), 4)}
                 for i in idx]
 
     def _composition(idx) -> tuple[dict, float, int]:
-        comp = Counter(mode_of[idx].tolist())
+        comp = Counter(label_of[idx].tolist())
         purity = max(comp.values()) / len(idx)
         return dict(comp), round(float(purity), 3), len(set(topic_of[idx].tolist()))
 
@@ -123,29 +154,32 @@ def main() -> None:
     w_top_c, w_top_pur, w_top_top = _composition(wt_top)
     w_bot_c, w_bot_pur, w_bot_top = _composition(wt_bottom)
 
+    note_bare = ("V3sel-BARE (addendum 14c): select from the UNPROMPTED Stage-0 corpus "
+                 "(system_prompt empty — no mode instruction anywhere in the loop; dir0 is the "
+                 "ONLY labeler). Within-topic decile = content-controlled record. The pole "
+                 "composition is by TASK STRATUM (expository/argumentative/…), NOT a mode label "
+                 "— a mixed composition confirms the selection is not just picking a task type. "
+                 "This is the STRONGER head-to-head vs V3 (no text label in the loop at all — "
+                 "same epistemic shape as the synthetic-temperature cell). Vector build "
+                 "(mean-diff residuals over the selected poles → V3sel-bare_L*) = WINDOW item 4; "
+                 "fallback (3-non-pole-mode pool) fires only on named conditions per 14c.")
+    note_pure = ("PURE-mode pool (diagnostic, the original degenerate reading): BOTH selections "
+                 "~95% LABEL-DEGENERATE (top 100% analogical / bottom ~95% contrastive; pure "
+                 "modes cleanly dir0-separated) → V3sel≈V3. SUPERSEDED as the construction of "
+                 "record by V3sel-BARE (14c); kept as the banked option-(a) null.")
     out = {
-        "arm": "A5_V3sel_selection", "model": args.model,
-        "prereg": "13c V3sel ruled rule + WAVE2-A5-extensions §2/§88: label-free decile "
-                  "selection by signature dir0-projection over pooled pure-mode corpora; "
-                  "dir0 = analogical↔contrastive LDA unit axis (floor-z). 14a §2 no-induced "
-                  "pool HARD-asserted. Activation capture (mean-diff residuals over the "
-                  "selected sets → V3sel_L*) is WINDOW work (item 4).",
+        "arm": "A5_V3sel_selection", "model": args.model, "corpus": args.corpus,
+        "prereg": "13c V3sel ruled rule + WAVE2-A5-extensions §2/§88 + addendum 14c "
+                  "(V3sel-BARE): label-free within-topic decile selection by signature "
+                  "dir0-projection; dir0 = analogical↔contrastive LDA unit axis (floor-z, "
+                  "calibrated once from the pure-mode corpora — the MAP). 14a §2 no-induced "
+                  "pool HARD-asserted; bare pool also asserted unprompted (14c). Activation "
+                  "capture (mean-diff residuals over the selected poles → V3sel_L*) = WINDOW "
+                  "item 4.",
         "dir0_pair": list(DIR0_PAIR), "decile": DECILE, "n_pool": int(len(proj)),
-        "no_induced_asserted": True,
+        "no_induced_asserted": True, "pool_label_field": label_name,
         "SELECTION_OF_RECORD": "within_topic",
-        "selection_note": "WITHIN-TOPIC decile (record) is content-controlled (all 20 topics "
-                          "both poles). ⚠ PRE-WINDOW FLAG for the outer loop: BOTH selections "
-                          "are ~95% LABEL-DEGENERATE (top pole 100% analogical; bottom ~95% "
-                          "contrastive, only ~4-5 dialectical seed-cloud gens) — the pure modes "
-                          "are cleanly dir0-separated, so decile selection recovers the label "
-                          "sets. V3sel will therefore be ~95% identical to V3 by construction, "
-                          "so the 'map-selected vs standard contrastive' head-to-head is likely "
-                          "to stay NEAR-DEGENERATE (the embargoed 'V3-as-built ≈ standard' "
-                          "concern). Decision for the outer loop BEFORE the window vector build: "
-                          "run it as-is (a null head-to-head is still informative), widen the "
-                          "net (lower threshold / exclude the dir0-pair modes from the pool to "
-                          "force cross-mode seed-cloud), or use a different dir0. Both selections "
-                          "banked; nothing stamped.",
+        "selection_note": note_bare if args.corpus == "bare" else note_pure,
         "within_topic": {
             "n_each": int(len(wt_top)),
             "top_pole_composition": w_top_c, "top_pole_purity": w_top_pur,
@@ -171,11 +205,12 @@ def main() -> None:
                 "floor_type": "n/a (selection manifest; vector build is window-work)"},
     }
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    p = args.out_dir / f"v3sel_selection_{args.model}.json"
+    stem = "v3sel_bare_selection" if args.corpus == "bare" else "v3sel_selection"
+    p = args.out_dir / f"{stem}_{args.model}.json"
     p.write_text(json.dumps(out, indent=1))
 
-    print(f"[{args.model}] V3sel selection (dir0={DIR0_PAIR}, decile={DECILE}, "
-          f"no-induced gate PASSED); pool n={len(proj)}")
+    print(f"[{args.model}] V3sel selection corpus={args.corpus} (dir0={DIR0_PAIR}, "
+          f"decile={DECILE}, no-induced gate PASSED); pool n={len(proj)}")
     print(f"  WITHIN-TOPIC (record, content-controlled): {len(wt_top)}/pole, "
           f"{w_top_top}/{w_bot_top} topics both poles")
     print(f"    top:    {w_top_c} (purity {w_top_pur})")
