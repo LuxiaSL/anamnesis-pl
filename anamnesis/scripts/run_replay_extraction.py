@@ -70,6 +70,10 @@ def main() -> None:
                         help="Absolute raw output dir (overrides run-dir/raw-subdir; e.g. /dev/shm scratch)")
     parser.add_argument("--sig-subdir", default="signatures_v3")
     parser.add_argument("--no-raw", action="store_true", help="Skip raw banking (signatures only)")
+    parser.add_argument("--logits-top-k", type=int, default=50,
+                        help="Per-position logits retained in raw (default 50). Raise (e.g. "
+                             "2000 or vocab size) for the §1.5 token-KL / §4.3 entropy cells, "
+                             "which need enough logit mass for KL(unsteered‖steered).")
     parser.add_argument("--no-tier3", action="store_true")
     parser.add_argument("--no-resume", action="store_true", help="Recompute even if a signature exists")
     parser.add_argument("--label", default="w", help="Worker label for logs")
@@ -253,7 +257,8 @@ def main() -> None:
                     )
 
             if not args.no_raw:
-                save_raw_tensors_v3(raw_data, gid, raw_dir, prompt_length=plen, input_ids=input_ids)
+                save_raw_tensors_v3(raw_data, gid, raw_dir, prompt_length=plen,
+                                    input_ids=input_ids, top_k_logits=args.logits_top_k)
 
             result = compute_features_v2_from_data(
                 raw_data, extraction_config, family_config, pca_components, pca_mean,
