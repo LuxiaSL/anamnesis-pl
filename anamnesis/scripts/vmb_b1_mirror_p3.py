@@ -74,6 +74,7 @@ def _load_pooled(model: str) -> tuple[F32, list[str], NDArray, NDArray, dict[int
     rows: list[F32] = []
     mode_idx: list[int] = []
     topic_idx: list[int] = []
+    glen: list[int] = []                    # per-gen generated length (for the P7 length-resid rider)
     lengths: dict[int, list[int]] = {}
     names0: list[str] | None = None
     for mi, mode in enumerate(MODES):
@@ -93,10 +94,22 @@ def _load_pooled(model: str) -> tuple[F32, list[str], NDArray, NDArray, dict[int
             rows.append(Z[r])
             mode_idx.append(mi)
             topic_idx.append(int(gens[gid]["topic_idx"]))
-            lengths.setdefault(mi, []).append(int(gens[gid]["num_generated_tokens"]))
+            ln = int(gens[gid]["num_generated_tokens"])
+            glen.append(ln)
+            lengths.setdefault(mi, []).append(ln)
     Zp = np.stack(rows).astype(np.float32)
     mean_len = {mi: float(np.mean(v)) for mi, v in lengths.items()}
-    return Zp, names0, np.asarray(mode_idx), np.asarray(topic_idx), mean_len
+    return Zp, names0, np.asarray(mode_idx), np.asarray(topic_idx), mean_len, np.asarray(glen)
+
+
+def _residualize_length(Z: F32, glen: NDArray) -> F32:
+    """OLS-residualize every feature on [1, length] (P7 rider): remove the linear
+    length-explained variance in floor-z space. Conservative — this also removes the part
+    of mode signal collinear with length, so surviving alignment is length-robust."""
+    ln = (glen.astype(np.float64) - glen.mean()) / (glen.std() + 1e-12)
+    D = np.column_stack([np.ones(len(ln)), ln])           # [N, 2]
+    beta, *_ = np.linalg.lstsq(D, Z, rcond=None)          # [2, D]
+    return (Z - D @ beta).astype(np.float32)
 
 
 def _relabelings(mode_idx: NDArray, topic_idx: NDArray, n_perm: int,
@@ -151,9 +164,12 @@ def _sample_cross_topic_pairs(topic_idx: NDArray, n_pairs: int,
     return out
 
 
-def analyze_model(model: str, n_perm: int, n_pairs: int, seed: int) -> dict:
+def analyze_model(model: str, n_perm: int, n_pairs: int, seed: int,
+                  length_resid: bool = False) -> dict:
     meta = MODEL_META[model]
-    Z, names, mode_idx, topic_idx, mean_len = _load_pooled(model)
+    Z, names, mode_idx, topic_idx, mean_len, glen = _load_pooled(model)
+    if length_resid:
+        Z = _residualize_length(Z, glen)                # P7 rider: remove length-explained variance
     cells = build_cells(names, meta.n_layers)
     n_modes = len(MODES)
     N = len(mode_idx)
@@ -228,13 +244,17 @@ def analyze_model(model: str, n_perm: int, n_pairs: int, seed: int) -> dict:
                   "alt: no family aligns => slogan retires.",
         "n_gens": N, "n_modes": n_modes, "modes": MODES,
         "n_perm": n_perm, "n_cross_topic_pairs": n_pairs,
+        "length_residualized": length_resid,
         "mean_gen_len_by_mode": {MODES[k]: round(v, 1) for k, v in mean_len.items()},
         "cells": out_cells,
         "law": {"n": N, "M": model,
                 "law": "floor-z (Stage-0 stochastic scale); centroid leg = content-averaged "
                        "between-mode |Δμ| (exact, verdict), dispersion leg = cross/same "
                        "cross-topic pairwise median ratio (12e lower bound); within-topic "
-                       "mode-shuffle null n_perm=%d" % n_perm,
+                       "mode-shuffle null n_perm=%d%s" % (
+                           n_perm,
+                           "; features length-residualized on [1,len] (P7 rider)"
+                           if length_resid else ""),
                 "floor_type": "stochastic"},
     }
 
@@ -262,13 +282,17 @@ def main() -> None:
     ap.add_argument("--n-perm", type=int, default=1000)
     ap.add_argument("--n-pairs", type=int, default=40000)
     ap.add_argument("--seed", type=int, default=20260714)
+    ap.add_argument("--length-resid", action="store_true",
+                    help="P7 rider: residualize features on [1,len] before pairing "
+                         "(un-confounds Qwen, whose modes differ in length)")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
+    suffix = "_lenresid" if args.length_resid else ""
     for model in [m.strip() for m in args.models.split(",") if m.strip()]:
-        res = analyze_model(model, args.n_perm, args.n_pairs, args.seed)
+        res = analyze_model(model, args.n_perm, args.n_pairs, args.seed, args.length_resid)
         _print_table(res)
-        p = args.out_dir / f"b1_mirror_p3_{model}.json"
+        p = args.out_dir / f"b1_mirror_p3_{model}{suffix}.json"
         p.write_text(json.dumps(res, indent=1))
         print(f"  → {p}")
 
