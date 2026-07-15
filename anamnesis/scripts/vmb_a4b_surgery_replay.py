@@ -149,7 +149,7 @@ def run_worker(args) -> None:
         assert_rotation_homomorphism,
         evict,
         from_hf_cache,
-        inv_freq_from_config,
+        operative_inv_freq,
         oldest_turns_to_evict,
         reindex,
         to_hf_dynamic_cache,
@@ -188,9 +188,9 @@ def run_worker(args) -> None:
     )
     device = next(loaded.model.parameters()).device
     tokenizer = loaded.tokenizer
-    inv_freq = inv_freq_from_config(loaded.model.config).to(device)
-    assert_rotation_homomorphism(inv_freq)  # smoke 1: RoPE gate, fails loud at load
-    logger.info(f"[{args.label}] RoPE homomorphism gate PASS")
+    inv_freq = operative_inv_freq(loaded.model).to(device)  # 14e: LIVE-buffer value gate + operative
+    assert_rotation_homomorphism(inv_freq)  # smoke 1: RoPE homomorphism, fails loud at load
+    logger.info(f"[{args.label}] RoPE value+homomorphism gates PASS (14e; live buffer operative)")
 
     pm_path = args.calib_dir / "positional_means.npz"
     positional_means = None

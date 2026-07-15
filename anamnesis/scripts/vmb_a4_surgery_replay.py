@@ -86,7 +86,7 @@ def run_worker(args) -> None:
     from anamnesis.extraction.cache_surgery import (
         evict,
         from_hf_cache,
-        inv_freq_from_config,
+        operative_inv_freq,
         middle_region_keep,
         reindex,
         to_hf_dynamic_cache,
@@ -123,8 +123,8 @@ def run_worker(args) -> None:
     )
     device = next(loaded.model.parameters()).device
 
-    # 12h RoPE gate: per-model config, asserted before any surgery.
-    inv_freq = inv_freq_from_config(loaded.model.config).to(device)
+    # 14e RoPE gate: value-level (live buffer == config reconstruction) + operative live table.
+    inv_freq = operative_inv_freq(loaded.model).to(device)
 
     pm_path = args.calib_dir / "positional_means.npz"
     positional_means = None

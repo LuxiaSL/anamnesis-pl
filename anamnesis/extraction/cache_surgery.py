@@ -100,8 +100,21 @@ def inv_freq_from_config(config) -> Tensor:
     confusing result.
     """
     head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
-    theta = float(getattr(config, "rope_theta", 10000.0))
-    scaling = getattr(config, "rope_scaling", None)
+    # transformers 5.x moved the RoPE params INTO the rope_scaling / rope_parameters dict; the
+    # top-level `rope_theta` attribute may be absent (the 14e bug: getattr's 10000.0 default fired
+    # silently under tf 5.3, so llama3 rescaling ran on theta=10000 not 500000). Read theta from
+    # EITHER layout, and RAISE if it is findable nowhere — never default (silent defaults are how
+    # this bug happened).
+    scaling = getattr(config, "rope_scaling", None) or getattr(config, "rope_parameters", None)
+    theta = getattr(config, "rope_theta", None)
+    if theta is None and isinstance(scaling, dict):
+        theta = scaling.get("rope_theta", scaling.get("theta"))
+    if theta is None:
+        raise ValueError(
+            "RoPE gate FAILED (14e): rope_theta not found at config top-level NOR inside "
+            f"rope_scaling/rope_parameters ({scaling!r}) — refusing to default to 10000 "
+            "(the silent default that corrupted every battery ROTATE row). Locate theta or extend.")
+    theta = float(theta)
     if scaling is None:
         logger.info(f"RoPE gate: standard RoPE theta={theta} head_dim={head_dim}")
         inv = default_inv_freq(head_dim, theta)
@@ -125,6 +138,43 @@ def inv_freq_from_config(config) -> Tensor:
             )
     assert_rotation_homomorphism(inv)
     return inv
+
+
+def _live_inv_freq(model) -> Tensor | None:
+    """The model's OWN inv_freq buffer — the frequencies the runtime actually rotates with
+    (exp11's `_find_inv_freq` pattern, via named_buffers)."""
+    for name, buf in model.named_buffers():
+        if name.endswith("inv_freq"):
+            return buf.detach().float().cpu()
+    return None
+
+
+def operative_inv_freq(model) -> Tensor:
+    """The inv_freq table surgery MUST rotate with, value-gated (14e).
+
+    The 12h RoPE gate was SCHEME-level (llama3 vs NTK) + a homomorphism check — but ANY
+    static frequency table is a homomorphism, so a wrong-theta table passed silently. This
+    gate is VALUE-level: locate the LIVE buffer, assert it equals the config reconstruction
+    to rtol=1e-6, and return the LIVE buffer as the operative table (the reconstruction is now
+    only the cross-check). Abort on mismatch — never rotate with frequencies the runtime doesn't.
+    """
+    computed = inv_freq_from_config(model.config)
+    live = _live_inv_freq(model)
+    if live is None:
+        logger.warning("14e value gate: no live inv_freq buffer on the model — falling back to "
+                       "config reconstruction (the gate cannot run; ensure rotary buffers materialize)")
+        return computed
+    live = live.to(computed.dtype)
+    if not torch.allclose(live, computed, rtol=1e-6, atol=1e-8):
+        max_abs = float((live - computed).abs().max())
+        max_rel = float(((live - computed).abs() / live.abs().clamp_min(1e-12)).max())
+        raise ValueError(
+            f"RoPE VALUE gate FAILED (14e): live inv_freq buffer != config reconstruction "
+            f"(max|Δ|={max_abs:.3e}, max rel={max_rel:.1f}×). The runtime rotates with different "
+            "frequencies than surgery would apply — this is exactly the ROTATE-corruption bug. Abort.")
+    logger.info(f"14e value gate PASS: live inv_freq == config reconstruction "
+                f"(n={live.numel()}, rtol=1e-6); using the LIVE buffer as operative")
+    return live
 
 
 # ── KVSnapshot + surgery (vendored) ─────────────────────────────────────────────
