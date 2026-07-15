@@ -37,6 +37,7 @@ def gen_cmd(vec, f):
     c = f"{vec}_L{SITE}_a{f}"
     return (f"python -u -m anamnesis.scripts.vmb_stage0_generate --model {MODEL} --model-path {MPATH} "
             f"--prompts {PROMPTS} --out-run-dir {RUNS}/vmb_b5promo_{MODEL}/{c} --gpus 0 --workers-per-gpu 4 "
+            f"--seeds-per-class 2 "  # n=160 (the law; matches the b5 pilot's parent grid)
             f"--seed-namespace VMBB5P-{MODEL.upper()}-{c} --inject-npz {NPZ} --inject-key {vec}_L{SITE} "
             f"--inject-layer {SITE} --inject-alpha-frac {f} --inject-norms-json {STAMPS}")
 

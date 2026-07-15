@@ -39,6 +39,7 @@ def gen_cmd(vec, s, f):
     c = f"{vec}_L{s}_a{f}"
     return (f"python -u -m anamnesis.scripts.vmb_stage0_generate --model {MODEL} --model-path {MPATH} "
             f"--prompts {PROMPTS} --out-run-dir {RUNS}/vmb_c3_{MODEL}/{c} --gpus 0 --workers-per-gpu 4 "
+            f"--seeds-per-class 2 "  # 20 topics × 4 strata × 2 = n=160 (the law; matches the main A5 grid)
             f"--seed-namespace VMBC3-{MODEL.upper()}-{c} --inject-npz {NPZ} --inject-key {vec}_L{s} "
             f"--inject-layer {s} --inject-alpha-frac {f} --inject-norms-json {STAMPS}")
 
