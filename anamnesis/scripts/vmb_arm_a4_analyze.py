@@ -115,9 +115,10 @@ def trivial_flags(cell: str, kind: str) -> list[str]:
     return flags
 
 
-def analyze_model(model: str, battery_root: Path, rng: np.random.Generator) -> dict:
+def analyze_model(model: str, battery_root: Path, rng: np.random.Generator,
+                  run_prefix: str = "vmb_a4") -> dict:
     mm = MODEL_META[model]
-    a4_root = battery_root / f"vmb_a4_{model}" / "signatures_v3"
+    a4_root = battery_root / f"{run_prefix}_{model}" / "signatures_v3"
     stage0 = battery_root / mm.stage0_dir
     med, scale = load_floor_scale(stage0 / "signatures_v3")
 
@@ -138,11 +139,24 @@ def analyze_model(model: str, battery_root: Path, rng: np.random.Generator) -> d
 
     gids = sorted(set(rowmap["full"]).intersection(*[set(rowmap[c]) for c in conds]))
     logger.info(f"[{model}] {len(gids)} aligned gens across {len(conds)} conditions")
+    # GroupKFold groups: A4 gens align with stage0 prompt classes; A4b is a DIFFERENT
+    # corpus (dialogue topics) — group by its own a4b_topic (leak-proof by-topic).
     labels = load_class_labels(stage0 / "metadata.json")
-    groups = np.array([labels[g][0] * 10 + hash(labels[g][1]) % 10 for g in gids])
+
+    def _group(g: int) -> int:
+        m = meta["full"].get(g, {})
+        if "a4b_topic" in m:
+            return hash(m["a4b_topic"]) % 100000
+        if g in labels:
+            return labels[g][0] * 10 + hash(labels[g][1]) % 10
+        return hash(m.get("a4b_cell_id", g)) % 100000
+    groups = np.array([_group(g) for g in gids])
 
     # Empirical cache-length verification (the first-read wording item)
-    cache_lens = {c: sorted({int(meta[c][g]["a4_cache_len_after"]) - 0 for g in gids[:5]})
+    # cache-len metadata key is arm-prefixed (a4_ vs a4b_); tolerate either.
+    def _clen(m: dict) -> int:
+        return int(m.get("a4_cache_len_after", m.get("a4b_cache_len_after", -1)))
+    cache_lens = {c: sorted({_clen(meta[c][g]) for g in gids[:5]})
                   for c in conds}
     Dz: dict[str, F32] = {}
     for c in conds[1:]:
@@ -253,18 +267,21 @@ def main() -> None:
     ap.add_argument("--battery-root", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--models", default="3b,8b")
+    ap.add_argument("--run-prefix", default="vmb_a4",
+                    help="run-dir prefix (vmb_a4 = original short substrate; vmb_a4b = faithful dialogue substrate)")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(20260713)
+    tag = args.run_prefix.replace("vmb_", "")   # "a4" | "a4b" — output naming
 
     results = {}
     for model in [m.strip() for m in args.models.split(",")]:
-        res = analyze_model(model, args.battery_root, rng)
+        res = analyze_model(model, args.battery_root, rng, args.run_prefix)
         for section in ("occurrence", "dose", "kind_contrasts", "dissociation"):
             for row in res[section]:
                 require_stamp(row, context=f"A4/{section}")
         results[model] = res
-        out = args.out_dir / f"a4_results_{model}.json"
+        out = args.out_dir / f"{tag}_results_{model}.json"
         out.write_text(json.dumps(res, indent=1))
         logger.info(f"[{model}] banked -> {out}")
 
@@ -287,7 +304,7 @@ def main() -> None:
                 if r["pair"] == "rotate_vs_recompute" and r["evict_frac"] == 0.5
                 and r["cell"] == "whole_vector"),
         }
-    (args.out_dir / "a4_summary.json").write_text(json.dumps(summary, indent=2))
+    (args.out_dir / f"{tag}_summary.json").write_text(json.dumps(summary, indent=2))
     logger.info(f"summary -> {args.out_dir / 'a4_summary.json'}")
 
 
