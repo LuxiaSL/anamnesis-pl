@@ -112,19 +112,33 @@ def main() -> None:
         if k != "conv":
             covs[k] = v
 
-    bases: dict[str, F32] = {"raw": c.X, "rank": rank_normal(c.X), "winsor": winsorize(c.X)}
-    print(f"corpus={args.corpus}/{args.variant}  n={c.n} d={c.d}  bases={list(bases)}")
-    print(f"max |z| per basis (the outlier headroom each one allows):")
-    for name, Xb in bases.items():
-        z = (Xb - np.median(Xb, axis=0)) / np.maximum(
-            np.median(np.abs(Xb - np.median(Xb, axis=0)), axis=0) * 1.4826, 1e-9)
-        print(f"   {name:8s} max|z| = {np.abs(z).max():9.2f}")
+    # ⚠ MEMORY: this corpus is 23,758 x 2,252 and `prepare` makes float64 copies (~430 MB each).
+    # Holding all three bases at once OOM-killed the first run on a 38 GB box already at 13 GB.
+    # Build each basis INSIDE the loop and drop it before the next — only the k x d components
+    # (6 x 2,252, negligible) are carried across iterations.
+    BUILD = {"raw": lambda X: X, "rank": rank_normal, "winsor": winsorize}
+    print(f"corpus={args.corpus}/{args.variant}  n={c.n} d={c.d}  bases={list(BUILD)}")
+
+    # ⚠ The outlier-headroom diagnostic must NOT divide by MAD: this corpus contains features that
+    # are CONSTANT over >50% of rows, so their MAD is exactly 0 and a MAD-scaled z is meaningless
+    # (the first run printed max|z| = 2.9e12 for `raw` and 4.2e9 for `rank` — an artifact of the
+    # diagnostic, not the data; `rank` cannot exceed ~4 by construction). Report the honest thing:
+    # the largest standardized value each basis ALLOWS, plus how many features are degenerate.
+    mad0 = int((np.median(np.abs(c.X - np.median(c.X, axis=0)), axis=0) == 0).sum())
+    print(f"⚠ features with MAD == 0 (constant over >50% of rows): {mad0}/{c.d} "
+          f"— a MAD-scaled z is undefined for these; do not report one.")
+    print("max |value| per basis (the outlier headroom each basis ALLOWS):")
+    for name, fn in BUILD.items():
+        Xb = fn(c.X)
+        print(f"   {name:8s} max|value| = {float(np.abs(Xb).max()):12.2f}")
+        del Xb
 
     results: dict[str, dict] = {}
     comps: dict[str, F32] = {}
-    for name, Xb in bases.items():
-        cb = c.model_copy(update={"X": np.ascontiguousarray(Xb)})
+    for name, fn in BUILD.items():
+        cb = c.model_copy(update={"X": np.ascontiguousarray(fn(c.X))})
         Xp, df = prepare(cb, args.variant)
+        del cb
         sp = pca(Xp, df, k=args.k)
         print(f"\n{'='*78}\n=== BASIS: {name}   (df={df})\n{'='*78}")
         comps[name] = sp.components[:args.k]
@@ -152,6 +166,7 @@ def main() -> None:
             if a["flags"]:
                 print(f"        ⚠ {'; '.join(a['flags'])}")
         results[name] = {"df": int(df), "axes": axes}
+        del Xp, sp
 
     # ── ★ THE DECISIVE CONTRAST: does the top subspace MOVE, and which mechanism moved it? ──
     print(f"\n{'='*78}\n=== ★ TOP-{args.k} SUBSPACE AGREEMENT BETWEEN BASES (mean principal cosine)\n{'='*78}")
@@ -161,9 +176,20 @@ def main() -> None:
             if a < b:
                 pairs[f"{a}_vs_{b}"] = round(subspace_cos(comps[a], comps[b]), 4)
                 print(f"  {a:8s} vs {b:8s}   {pairs[f'{a}_vs_{b}']:.4f}")
-    rw, rr, ww = pairs.get("rank_vs_winsor"), pairs.get("raw_vs_rank"), pairs.get("raw_vs_winsor")
-    verdict = ("INCONCLUSIVE")
-    if rw is not None and rr is not None:
+    def _pair(a: str, b: str) -> float:
+        """Order-free lookup. ⚠ The keys are built with `if a < b`, which is a STRING compare:
+        'rank' < 'raw' ('n' < 'w'), so the key is `rank_vs_raw`, NOT `raw_vs_rank`. Asking for the
+        wrong one returned None, and the `is not None` guard then rendered a DECISIVE result as
+        'INCONCLUSIVE' — a silent miss that looks exactly like an answer. Never let a missing key
+        reach a verdict: raise."""
+        v = pairs.get(f"{a}_vs_{b}", pairs.get(f"{b}_vs_{a}"))
+        if v is None:
+            raise KeyError(f"no subspace cosine for ({a}, {b}); have {sorted(pairs)}")
+        return v
+
+    rw, rr, ww = _pair("rank", "winsor"), _pair("raw", "rank"), _pair("raw", "winsor")
+    verdict = "INCONCLUSIVE"
+    if True:
         if rw > 0.8 and rr < 0.6:
             verdict = ("OUTLIERS were the artifact — rank and winsor agree with each other and "
                        "BOTH depart from raw. The rank basis is removing outliers, not merely "
