@@ -62,7 +62,9 @@ def parse_cell_dir(name: str) -> dict | None:
 
     Handles the three naming generations: V1_L14_a0.3 · V1_L14_L14_a0.0 (rider,
     doubled tag) · V4_L14_at7_a0.3 (cross-site injection)."""
-    m = re.match(r"^(?P<vec>V\d|R\d)(?:_L(?P<vl>\d+))?(?:_L\d+)?(?:_at(?P<at>\d+))?_a(?P<a>[\d.]+)$", name)
+    # vec is non-greedy so the trailing _L<site>/_at<site>/_a<frac> tags bind first — accepts
+    # V1/V3/V4/R1-3 AND the newer names (V3selbare, V7, V3top/V3tail, Rband/Rtop/Rtail).
+    m = re.match(r"^(?P<vec>[A-Za-z][A-Za-z0-9]*?)(?:_L(?P<vl>\d+))?(?:_L\d+)?(?:_at(?P<at>\d+))?_a(?P<a>[\d.]+)$", name)
     if not m:
         return None
     vec = m.group("vec")
