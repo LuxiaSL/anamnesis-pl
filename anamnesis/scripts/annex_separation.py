@@ -62,10 +62,25 @@ def bic_gain(x: NDArray, seed: int = 0) -> float:
     return float((g1.bic(z) - g2.bic(z)) / len(z))
 
 
+# silhouette_score materialises pairwise distances => O(n^2). At the venue's n=707 that is free
+# (500k pairs); on the POWER corpus (n=23,758) it is 564M pairs PER CALL, and A3 makes ~450 calls
+# across the nulls => hours, not minutes. This is why A3 had only ever run on the venue.
+# sample_size estimates the SAME quantity with sampling noise, applied IDENTICALLY to the real
+# axes and to both nulls — and every statistic here is read as a percentile against those nulls,
+# so a consistent estimator is all the design requires. Exact below the cutoff, so the venue's
+# banked numbers are untouched.
+SILHOUETTE_EXACT_MAX_N = 5000
+SILHOUETTE_SAMPLE = 4000
+
+
 def silhouette_2means(x: NDArray, seed: int = 0) -> float:
     z = _std1d(x).reshape(-1, 1)
     lab = KMeans(2, n_init=4, random_state=seed).fit_predict(z)
-    return float(silhouette_score(z, lab)) if len(set(lab.tolist())) > 1 else 0.0
+    if len(set(lab.tolist())) < 2:
+        return 0.0
+    if len(z) <= SILHOUETTE_EXACT_MAX_N:
+        return float(silhouette_score(z, lab))
+    return float(silhouette_score(z, lab, sample_size=SILHOUETTE_SAMPLE, random_state=seed))
 
 
 def bimod_coeff(x: NDArray) -> float:
@@ -125,11 +140,24 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--n-draw", type=int, default=200, help="NULL-A draws")
     ap.add_argument("--n-sim", type=int, default=40, help="NULL-B simulations")
+    ap.add_argument("--transform", choices=["none", "rank", "winsor"], default="none",
+                    help="feature basis. 'none' = floor-z as banked (what sessions 1-3 ran). "
+                         "'rank' = per-feature normal scores. ★ On the RANK basis every marginal "
+                         "is Gaussian BY CONSTRUCTION, so NULL-B (elliptical Gaussian with the "
+                         "same covariance) becomes the sharpest possible question: is there "
+                         "non-Gaussian JOINT structure once every marginal has been Gaussianised "
+                         "— i.e. structure beyond the covariance? Marginal Gaussianity does NOT "
+                         "imply joint Gaussianity, so this can genuinely fail.")
     args = ap.parse_args()
 
     c = (load_power(partner=args.partner) if args.corpus == "power"
          else load_venue(shared_2108=args.corpus == "venue2108",
                          capped_only=args.corpus == "venuecap"))
+    if args.transform != "none":
+        from anamnesis.scripts.annex_ranked_spectrum import rank_normal, winsorize
+        fn = rank_normal if args.transform == "rank" else winsorize
+        c = c.model_copy(update={"X": np.ascontiguousarray(fn(c.X))})
+        print(f"  basis: {args.transform} (max|value| {float(np.abs(c.X).max()):.2f})")
     Xp, df = prepare(c, args.variant)
     Xw, _ = apply_weighting(Xp, c, args.weighting)
     sp = pca(Xw, df)
@@ -169,15 +197,32 @@ def main() -> None:
 
     OUT.mkdir(parents=True, exist_ok=True)
     stem = args.corpus + (f"_{args.partner}" if args.partner else "")
-    p = OUT / f"annex_a3_separation_{stem}_{args.variant}_{args.weighting}.json"
+    tsuf = "" if args.transform == "none" else f"_{args.transform}"
+    p = OUT / f"annex_a3_separation_{stem}_{args.variant}_{args.weighting}{tsuf}.json"
     p.write_text(json.dumps({
         "ANNEX_RULE": "NOT QUOTABLE until graduated via a frozen prereg cell",
         "rung": "A3", "corpus": args.corpus, "partner": args.partner,
-        "variant": args.variant, "weighting": args.weighting,
+        "variant": args.variant, "weighting": args.weighting, "transform": args.transform,
         "n": c.n, "df": df, "n_draw_nullA": args.n_draw, "n_sim_nullB": args.n_sim,
         "null_note": "NULL-A = whitened random directions in the top-k PC subspace (pooled, "
                      "not rank-specific). NULL-B = rank-matched Gaussian with identical "
                      "covariance spectrum, re-PCA'd. p = fraction of null >= real.",
+        "transform_note": (
+            "basis = floor-z as banked (sessions 1-3)." if args.transform == "none" else
+            f"basis = {args.transform}. ★ On the RANK basis every marginal is Gaussian BY "
+            "CONSTRUCTION, so NULL-B (elliptical Gaussian, same covariance spectrum) asks the "
+            "sharpest available question: is there non-Gaussian JOINT structure once every "
+            "marginal has been Gaussianised — i.e. structure BEYOND the covariance? Marginal "
+            "Gaussianity does not imply joint Gaussianity, so this can genuinely fail. A rank "
+            "axis that beats NULL-B is not a magnitude artifact and not an elliptical-cloud "
+            "artifact."),
+        "silhouette_note": (
+            f"n={c.n} > {SILHOUETTE_EXACT_MAX_N} => silhouette estimated on a "
+            f"sample_size={SILHOUETTE_SAMPLE} subsample (it is O(n^2); ~450 calls at n=23,758 "
+            "would take hours). Applied IDENTICALLY to the real axes and both nulls, and every "
+            "statistic is read as a percentile against those nulls, so a consistent estimator is "
+            "all the design needs. SHORTCUT, NAMED."
+            if c.n > SILHOUETTE_EXACT_MAX_N else "silhouette exact (n below the sampling cutoff)"),
         "rows": rows}, indent=1))
     print(f"  → {p}")
 
