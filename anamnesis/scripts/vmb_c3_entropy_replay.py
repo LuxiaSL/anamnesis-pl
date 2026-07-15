@@ -20,8 +20,11 @@ from anamnesis.config import MODEL_PRESETS
 from anamnesis.extraction.model_loader import ResidualWriteSpec, attach_residual_write
 
 
-def _entropy_over_gen(model, ids: torch.Tensor, P: int, spec: ResidualWriteSpec | None) -> np.ndarray:
-    """Per-position next-token entropy over the GENERATED span (positions predicting tokens P..T-1)."""
+def _ent_nll_over_gen(model, ids: torch.Tensor, P: int,
+                      spec: ResidualWriteSpec | None) -> tuple[np.ndarray, np.ndarray]:
+    """Per-position next-token ENTROPY + NLL (surprisal of the ACTUAL generated token) over the
+    generated span. Entropy = state of the distribution; NLL = -log p(token) the likelihood rung
+    of the A1 detector hierarchy reads."""
     h = attach_residual_write(model, spec) if spec is not None else None
     with torch.no_grad():
         logits = model(ids, use_cache=False).logits[0].float()   # [T, vocab]
@@ -29,7 +32,11 @@ def _entropy_over_gen(model, ids: torch.Tensor, P: int, spec: ResidualWriteSpec 
         h.remove()
     lp = torch.log_softmax(logits, dim=-1)
     ent = -(lp.exp() * lp).sum(dim=-1)                            # [T]
-    return ent[P - 1:ids.shape[1] - 1].cpu().numpy()             # distributions that produced gen tokens
+    T = ids.shape[1]
+    pos = torch.arange(P - 1, T - 1)                              # distributions that produced gen tokens
+    tgt = ids[0, P:T]                                             # the actual generated tokens
+    nll = -lp[pos, tgt]                                           # [len(pos)] surprisal
+    return ent[pos].cpu().numpy(), nll.cpu().numpy()
 
 
 def main() -> None:
@@ -57,7 +64,7 @@ def main() -> None:
         inj = gens[0]["injection"]
         v = torch.tensor(np.load(inj["inject_npz"])[inj["inject_key"]].astype(np.float32), device=dev)
         layer, alpha = int(inj["inject_layer"]), float(inj["inject_alpha"])
-        steered, unsteered = [], []
+        steered, unsteered, base_nll = [], [], []
         for g in gens:
             e = entries.get(str(g["generation_id"]))
             if e is None:
@@ -68,13 +75,17 @@ def main() -> None:
                 continue
             spec = ResidualWriteSpec(layer_idx=layer, vector=v, alpha=alpha,
                                      start_pos=P, end_pos=ids.shape[1], normalize=True)
-            steered.append(float(np.mean(_entropy_over_gen(model, ids, P, spec))))
-            unsteered.append(float(np.mean(_entropy_over_gen(model, ids, P, None))))
+            ent_s, _ = _ent_nll_over_gen(model, ids, P, spec)
+            ent_u, nll_u = _ent_nll_over_gen(model, ids, P, None)   # unsteered: base-model surprisal
+            steered.append(float(np.mean(ent_s)))
+            unsteered.append(float(np.mean(ent_u)))
+            base_nll.append(float(np.mean(nll_u)))                  # likelihood rung (c)
         info = {"vector": name.split("_")[0], "site": layer, "alpha_frac": inj.get("inject_alpha_frac"),
                 "n": len(steered),
                 "mean_entropy_steered": round(float(np.mean(steered)), 4),
                 "mean_entropy_unsteered": round(float(np.mean(unsteered)), 4),
                 "entropy_rise": round(float(np.mean(steered) - np.mean(unsteered)), 4),
+                "base_model_nll": round(float(np.mean(base_nll)), 4),  # (c) likelihood: base surprisal of the steered text
                 "is_null": name.upper().startswith("RC")}
         rows.append({"cell": name, **info})
         print(f"  {name:20} steered={info['mean_entropy_steered']:.3f} "
@@ -87,7 +98,7 @@ def main() -> None:
     for r in rows:
         if r["is_null"]:
             continue
-        for key in ("mean_entropy_steered", "entropy_rise"):
+        for key in ("mean_entropy_steered", "entropy_rise", "base_model_nll"):
             base = rc_mean(r["site"], r["alpha_frac"], key)
             r[f"{key}_over_Rc"] = round(float(r[key] / base), 3) if base else None
 
