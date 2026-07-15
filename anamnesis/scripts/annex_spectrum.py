@@ -122,12 +122,17 @@ def pca(X: F32, df: int, k: int | None = None) -> Spectrum:
         _U, S, Vt = _svd(Xd)
     assert Vt is not None
     eig = (S ** 2) / max(df, 1)
-    keep = S > (S.max() * 1e-10) if S.max() > 0 else np.zeros(len(S), bool)
-    if k is not None:
-        keep = keep & (np.arange(len(S)) < k)
+    nz = S > (S.max() * 1e-10) if S.max() > 0 else np.zeros(len(S), bool)
+    # var_ratio is ALWAYS relative to the FULL spectrum, computed BEFORE k-truncation.
+    # (Bug caught 2026-07-15: normalising after truncation made `pca(..., k=6)` report
+    # top-6-RELATIVE shares — annex_rhyme printed PC1 "var .349" when the true share was far
+    # smaller. Components were always correct; only the reported share was wrong. A caller
+    # asking for k components must still be told what fraction of the WHOLE cloud they are.)
+    total = float(eig[nz].sum())
+    keep = nz & (np.arange(len(S)) < k) if k is not None else nz
     eig, Vt = eig[keep], Vt[keep]
     return Spectrum(eigenvalues=eig.astype(np.float32),
-                    var_ratio=(eig / max(eig.sum(), 1e-30)).astype(np.float32),
+                    var_ratio=(eig / max(total, 1e-30)).astype(np.float32),
                     components=Vt.astype(np.float32),
                     scores=(Xd @ Vt.T).astype(np.float32), df=df, d=int(X.shape[1]))
 
