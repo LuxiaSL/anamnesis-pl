@@ -202,6 +202,9 @@ def main() -> None:
                          "vector (steered captures — multiplies forward passes by "
                          "|vectors|×|doses|+1; use a smaller --n-gens for this leg)")
     ap.add_argument("--deform-doses", default="0.03,0.1,0.3,0.45")
+    ap.add_argument("--save-sigma-site", type=int, default=14,
+                    help="bank the residual-Σ eigendecomp (evals+evecs+mean) npz for this site "
+                         "(§B.3 whitened-V4 CPU leg)")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     sites = [int(s) for s in args.sites.split(",")]
@@ -236,6 +239,14 @@ def main() -> None:
         evals = np.clip(evals, 0, None)
         ridge = args.ridge_rel * float(evals.mean())
         logger.info(f"L{site}: {len(R)} positions, cond~{evals[-1]/max(evals[evals>0][0],1e-12):.1e}")
+        if site == args.save_sigma_site:
+            # §B.3 whitened-V4 leg (research-agent ask 2026-07-14): bank the residual-Σ
+            # eigendecomposition so cos(V4′,V3) vs the Σ-R band can run CPU-side, no rerun.
+            sp = args.out_dir / f"a5_sigma_L{site}_{args.model}.npz"
+            np.savez(sp, evals=evals.astype(np.float64), evecs=evecs.astype(np.float64),
+                     mean=mu.astype(np.float64), ridge=np.float64(ridge),
+                     n_positions=np.int64(len(R)))
+            logger.info(f"L{site}: banked residual-Σ eigendecomp -> {sp}")
         site_rows = {}
         for key, v in bank.items():
             # match vectors that live at this site

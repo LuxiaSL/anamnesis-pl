@@ -156,6 +156,12 @@ def main() -> None:
     }
     p = args.out_dir / f"a5_gradient_fork_{args.model}.json"
     p.write_text(json.dumps(out, indent=1))
+    # §B.3 whitened-V4 leg (research-agent ask 2026-07-14): bank the raw per-gen gradient
+    # matrix G (n_gens×d, tiny) so cos(V4′,V3) vs the Σ-R band can run CPU-side, no rerun.
+    gp = args.out_dir / f"a5_gradient_fork_G_{args.model}.npz"
+    np.savez(gp, G=G.astype(np.float64), gids=np.asarray(gids, dtype=np.int64),
+             mean_grad=mean_vec.astype(np.float64))
+    logger.info(f"banked per-gen gradient matrix G {G.shape} -> {gp}")
     logger.info(f"fork verdict: {verdict}")
     logger.info(f"banked (first-read pending) -> {p}")
 
