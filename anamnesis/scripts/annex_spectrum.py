@@ -244,7 +244,7 @@ def run(c: AnnexCorpus, variant: Variant, how: Weighting, *, k: int = 10,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--corpus", choices=["venue", "venue2108", "power"], required=True)
+    ap.add_argument("--corpus", choices=["venue", "venue2108", "power", "venuecap"], required=True)
     ap.add_argument("--partner", default=None, help="power only: stratify to one weight-state")
     ap.add_argument("--variants", default="raw,topic,cell")
     ap.add_argument("--weightings", default="raw,sqrt,onevote")
@@ -256,7 +256,8 @@ def main() -> None:
     if args.corpus == "power":
         c = load_power(partner=args.partner)
     else:
-        c = load_venue(shared_2108=args.corpus == "venue2108")
+        c = load_venue(shared_2108=args.corpus == "venue2108",
+                       capped_only=args.corpus == "venuecap")
     print(c.describe(), flush=True)
 
     rows = []

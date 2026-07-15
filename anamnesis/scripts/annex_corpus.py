@@ -132,8 +132,21 @@ def _blocks_from_npz(z, order: list[str]) -> list[FamilyBlock]:
     return blocks
 
 
-def load_venue(*, shared_2108: bool = False) -> AnnexCorpus:
-    """Llama-3.2-3B bare Stage-0, floor-z. Keeps the V3sel hygiene gates (14a §2 / 14c)."""
+def load_venue(*, shared_2108: bool = False, capped_only: bool = False) -> AnnexCorpus:
+    """Llama-3.2-3B bare Stage-0, floor-z. Keeps the V3sel hygiene gates (14a §2 / 14c).
+
+    `capped_only` — restrict to generations that hit the 512-token cap (88% of the corpus).
+
+    WHY THIS EXISTS (caught 2026-07-15, the hard way): residualizing `glen`/`cap` removes the
+    artifact's effect on the MEAN and leaves its effect on the VARIANCE. The ~93 non-capped
+    generations (which terminated on EOS, and are overwhelmingly `conversational` — the
+    stratum that naturally writes short) have ~900x the within-template score variance of the
+    capped ones along the gate-sparsity axis. Variance-maximizing PCA then locks onto them:
+    cell-centered PC1 and PC3 were both `corr(|score|, cap) ≈ 0.83` — the truncation artifact
+    wearing a natural-axis costume, while `corr(score, cap) ≈ 0.01` certified them clean.
+    Location-residualization cannot fix a scale effect. Restricting to one termination regime
+    can. Use this as the artifact-controlled variant of record.
+    """
     sig_dir = VENUE_DIR / "signatures_v3"
     md = json.loads((VENUE_DIR / "metadata.json").read_text())
 
@@ -152,8 +165,14 @@ def load_venue(*, shared_2108: bool = False) -> AnnexCorpus:
                                  "— the bare pool must be UNPROMPTED (14c)")
 
     X, names, gen_ids = load_signature_matrix(sig_dir)
-    med, scale = robust_scale(X)                 # the model's frozen battery z-space
+    med, scale = robust_scale(X)                 # frozen battery z-space (ALWAYS on the full corpus)
     Z = ((X - med) / scale).astype(np.float32)
+
+    gm_all = {int(g["generation_id"]): g for g in md["generations"]}
+    if capped_only:
+        _L = np.array([float(gm_all[g]["num_generated_tokens"]) for g in gen_ids])
+        keep = _L >= _L.max()
+        Z, gen_ids = np.ascontiguousarray(Z[keep]), [g for g, k in zip(gen_ids, keep) if k]
 
     z0 = np.load(sorted(sig_dir.glob("gen_*.npz"))[0], allow_pickle=True)
     fam_order = [k for k in z0.files if k.startswith("features_")]
@@ -171,8 +190,13 @@ def load_venue(*, shared_2108: bool = False) -> AnnexCorpus:
     corpus = AnnexCorpus(
         name="venue", X=Z, feature_names=list(names), families=families,
         cell=cell, factors={"topic": topic, "template": tmpl},
-        covariates={"glen": glen, "cap": cap},
+        covariates=({"glen": glen} if capped_only else {"glen": glen, "cap": cap}),
         notes=[f"floor-z via robust_scale over the corpus itself (n={len(gen_ids)})",
+               ("CAPPED-ONLY: restricted to cap-hitting gens — the artifact-controlled "
+                "variant (location-residualization cannot remove the truncation artifact's "
+                "SCALE effect; see load_venue docstring)" if capped_only else
+                "ALL gens incl. non-capped — ⚠ cell-PC1/PC3 are the truncation artifact "
+                "via heteroscedasticity; use capped_only for the controlled read"),
                f"templates (index order): {tmpl_names}",
                "gates PASSED: no-induced (14a §2), condition=standard, unprompted (14c)",
                f"glen {glen.min():.0f}-{glen.max():.0f}, cap-hit frac {cap.mean():.3f} "

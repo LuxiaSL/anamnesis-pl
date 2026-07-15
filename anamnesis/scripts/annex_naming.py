@@ -157,7 +157,7 @@ def pullback_realizability(comp: F32, names: list[str]) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--corpus", choices=["venue", "venue2108", "power"], default="venue")
+    ap.add_argument("--corpus", choices=["venue", "venue2108", "power", "venuecap"], default="venue")
     ap.add_argument("--partner", default=None)
     ap.add_argument("--variant", default="cell")
     ap.add_argument("--weighting", default="raw")
@@ -166,7 +166,8 @@ def main() -> None:
     args = ap.parse_args()
 
     c = (load_power(partner=args.partner) if args.corpus == "power"
-         else load_venue(shared_2108=args.corpus == "venue2108"))
+         else load_venue(shared_2108=args.corpus == "venue2108",
+                         capped_only=args.corpus == "venuecap"))
     Xp, df = prepare(c, args.variant)
     sp = pca(Xp, df)
 
