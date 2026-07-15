@@ -80,13 +80,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, choices=list(MODEL_META.keys()))
     ap.add_argument("--a2-root", type=Path, required=True)
+    ap.add_argument("--battery-root", type=Path, default=Path("outputs/battery"),
+                    help="holds <stage0_dir>/signatures_v3 (the floor); node1 = /models/anamnesis-extract/battery")
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--alpha", type=float, default=0.05)
     args = ap.parse_args()
 
     meta = MODEL_META[args.model]
     med, scale = load_floor_scale(
-        Path("outputs/battery") / meta.stage0_dir / "signatures_v3")
+        args.battery_root / meta.stage0_dir / "signatures_v3")
     cache = _SigCache(med, scale)
 
     swap = _load_variant(args.a2_root, args.model, "prefix_swap", cache)
