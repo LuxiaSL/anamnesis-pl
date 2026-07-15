@@ -53,8 +53,9 @@ RECENT_PROTECT = 32
 MIN_GEN_TOKENS = 24
 
 
-def conditions() -> list[str]:
-    return ["full"] + [f"{k}_f{f}" for k in KINDS for f in FRACTIONS]
+def conditions(kinds: list[str] | None = None) -> list[str]:
+    ks = kinds if kinds is not None else KINDS
+    return ["full"] + [f"{k}_f{f}" for k in ks for f in FRACTIONS]  # 'full' = always the delta reference
 
 
 def _log_softmax(x: np.ndarray) -> np.ndarray:
@@ -156,7 +157,7 @@ def run_worker(args) -> None:
         gens = md["generations"] if isinstance(md, dict) and "generations" in md else md
         src_meta = {int(g["generation_id"]): g for g in gens}
 
-    conds = conditions()
+    conds = conditions([k for k in args.kinds.split(",") if k])
     sig_root = args.out_run_dir / "signatures_v3"
     for c in conds:
         (sig_root / c).mkdir(parents=True, exist_ok=True)
@@ -195,6 +196,8 @@ def run_worker(args) -> None:
             context_ids = input_ids[:C]
             cont_ids = input_ids[C:]
             base_meta = dict(src_meta.get(gid, {"generation_id": gid}))
+            if args.rope_fix_tag:
+                base_meta["rope_fix"] = args.rope_fix_tag   # 14e provenance stamp
             base_meta.update({
                 "a4_context_len": C, "a4_prompt_len": P, "a4_cont_len": len(cont_ids),
                 "a4_num_sinks": NUM_SINKS, "a4_recent_protect": RECENT_PROTECT,
@@ -300,7 +303,7 @@ def run_launcher(args) -> None:
         [g.strip() for g in args.gpus.split(",") if g.strip() != ""])
     n_workers = len(gpu_ids) * args.workers_per_gpu
 
-    conds = conditions()
+    conds = conditions([k for k in args.kinds.split(",") if k])
     sig_root = args.out_run_dir / "signatures_v3"
     todo = [g for g in args.gen_ids
             if not all((sig_root / c / f"gen_{g:03d}.json").exists() for c in conds)]
@@ -322,7 +325,8 @@ def run_launcher(args) -> None:
                "--model", args.model, "--model-path", args.model_path,
                "--floor-run-dir", str(args.floor_run_dir), "--manifest", str(args.manifest),
                "--calib-dir", str(args.calib_dir), "--out-run-dir", str(args.out_run_dir),
-               "--label", f"w{w}g{gpu}",
+               "--label", f"w{w}g{gpu}", "--kinds", args.kinds,
+               "--rope-fix-tag", args.rope_fix_tag,
                "--gen-ids", *[str(g) for g in ids]]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
                "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
@@ -354,6 +358,10 @@ def main() -> None:
     ap.add_argument("--out-run-dir", type=Path, required=True)
     ap.add_argument("--gen-ids", type=int, nargs="+", required=True,
                     help="Banked continuation gids (2 per prompt class; submit script computes)")
+    ap.add_argument("--kinds", default="naive,rotate,recompute",
+                    help="14e: comma-sep surgery kinds to run ('full' always included as delta reference)")
+    ap.add_argument("--rope-fix-tag", default="",
+                    help="14e: provenance stamp written into every gen's metadata (e.g. '14e')")
     ap.add_argument("--label", default="w")
     ap.add_argument("--launch", action="store_true", help="Launcher mode (spawn workers)")
     ap.add_argument("--gpus", default="0", help="Launcher: logical GPU slots")

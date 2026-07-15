@@ -64,8 +64,9 @@ MIN_GEN_TOKENS = 24
 ROLE_FOR_SPEAKER = {"deepseek": "user", "trinity": "assistant"}
 
 
-def conditions() -> list[str]:
-    return ["full"] + [f"{k}_f{f}" for k in KINDS for f in FRACTIONS]
+def conditions(kinds: list[str] | None = None) -> list[str]:
+    ks = kinds if kinds is not None else KINDS
+    return ["full"] + [f"{k}_f{f}" for k in ks for f in FRACTIONS]  # 'full' = always the delta reference
 
 
 def _log_softmax(x: np.ndarray) -> np.ndarray:
@@ -215,7 +216,7 @@ def run_worker(args) -> None:
         [Path(p) for p in args.dialogue], Path(args.docs) if args.docs else None, args.n_docs)
     cells = [all_cells[i] for i in args.cell_ids]
 
-    conds = conditions()
+    conds = conditions([k for k in args.kinds.split(",") if k])
     sig_root = args.out_run_dir / "signatures_v3"
     for c in conds:
         (sig_root / c).mkdir(parents=True, exist_ok=True)
@@ -269,6 +270,8 @@ def run_worker(args) -> None:
                          "a4b_regime": cell["regime"], "a4b_topic": cell.get("topic", ""),
                          "a4b_context_len": C, "a4b_cont_len": len(cont_ids),
                          "a4b_num_sinks": NUM_SINKS, "a4b_n_turns": (len(spans) if spans else 0)}
+            if args.rope_fix_tag:
+                base_meta["rope_fix"] = args.rope_fix_tag   # 14e provenance stamp
 
             base_cache = prefill(context_ids)
             snapshot = from_hf_cache(base_cache, positions=torch.arange(C, device=device))
@@ -404,7 +407,8 @@ def run_launcher(args) -> None:
                "--calib-dir", str(args.calib_dir), "--out-run-dir", str(args.out_run_dir),
                "--dialogue", *args.dialogue, "--docs", str(args.docs),
                "--n-docs", str(args.n_docs), "--doc-max-tokens", str(args.doc_max_tokens),
-               "--label", f"w{w}g{gpu}", "--cell-ids", *[str(g) for g in ids]]
+               "--label", f"w{w}g{gpu}", "--kinds", args.kinds,
+               "--rope-fix-tag", args.rope_fix_tag, "--cell-ids", *[str(g) for g in ids]]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
                "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
                "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
@@ -436,6 +440,10 @@ def main() -> None:
     ap.add_argument("--reach-tol", type=float, default=0.9,
                     help="dialogue fraction counts as reached if freed >= reach_tol*target")
     ap.add_argument("--cell-ids", type=int, nargs="+", help="worker: cell indices to process")
+    ap.add_argument("--kinds", default="naive,rotate,recompute",
+                    help="14e: comma-sep surgery kinds to run ('full' always included as delta reference)")
+    ap.add_argument("--rope-fix-tag", default="",
+                    help="14e: provenance stamp written into every gen's metadata (e.g. '14e')")
     ap.add_argument("--label", default="w")
     ap.add_argument("--launch", action="store_true")
     ap.add_argument("--gpus", default="0")
