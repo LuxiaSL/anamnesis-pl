@@ -117,7 +117,7 @@ def main() -> None:
             split_vecs.setdefault(k, v)
 
     # ── discover cells: split run dir + (V3 + R1-3 full-support) from the main grid ──
-    def discover(run_dir: Path, keep=None) -> dict:
+    def discover(run_dir: Path, keep=None, site=None) -> dict:
         out = {}
         for d in sorted(run_dir.iterdir()) if run_dir.exists() else []:
             if not (d / "signatures_v3").exists():
@@ -127,11 +127,15 @@ def main() -> None:
                 continue
             if keep and info["vector"] not in keep:
                 continue
+            if site is not None and info["site"] != site:
+                continue
             out[d.name] = info | {"dir": d}
         return out
 
     cells = discover(args.split_run_dir)
-    cells.update(discover(args.main_run_dir, keep={"V3", "R1", "R2", "R3"}))
+    # full-support V3/R reference: MAP SITE (L14) only — the split vectors are all L14-derived,
+    # and the main grid injected V3 at all four sites (mixing sites corrupts the parity denominator).
+    cells.update(discover(args.main_run_dir, keep={"V3", "R1", "R2", "R3"}, site=14))
     logger.info(f"{len(cells)} steered cells (split + full-support V3/R reference)")
 
     rows = []
