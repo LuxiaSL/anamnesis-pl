@@ -53,7 +53,7 @@ for vec in ("Vtemp", "Rc1"):
                           f"--inject-alpha-frac {f} --inject-norms-json {STAMPS}"))
 CELLS.append(("baseline_a0", ""))  # no injection = α=0 diversity floor
 
-# one job, cells chained sequentially, uses 4 GPUs
+# one job, cells chained sequentially; --gpus 0..7 → request 8 (slots must match, runbook #5)
 cmd = " && ".join(gen_cmd(c, e) for c, e in CELLS)
-jid = submit("vmb-c3f-resample", cmd, gpus=4, minutes=60)
+jid = submit("vmb-c3f-resample", cmd, gpus=8, minutes=60)
 print(f"c3f resample-diversity gen job: {jid} ({len(CELLS)} cells)")
