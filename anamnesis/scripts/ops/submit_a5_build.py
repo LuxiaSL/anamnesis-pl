@@ -33,6 +33,15 @@ MODELS = {
                "a09a35458c702b33eeacc393d103063234e8bc28"),
         stage0=f"{RUNS}/vmb_stage0_qwen7b",
         sites="7,14,18,21", map_site=18, sweep_site=14),
+    # Gemma-3-27B: dir0 best-separated pair = (socratic, contrastive) per its
+    # a3_mode_direction_map (NOT analogical/contrastive); mid band 21-41, sampled
+    # {23,35,41}. 27B in bf16 (~54GB) — the model on ONE B200 for the build.
+    "gemma3-27b": dict(
+        mpath=("/models/anamnesis-extract/.hf-cache/hub/models--google--gemma-3-27b-it/"
+               "snapshots/005ad3404e59d6023443cb575daa05336842228a"),
+        stage0=f"{RUNS}/vmb_stage0_gemma3_27b",
+        sites="23,35,41", map_site=35, sweep_site=23,
+        dir0_pair="socratic,contrastive"),
 }
 
 
@@ -56,7 +65,10 @@ def main():
     cmd = (f"python -u -m anamnesis.scripts.vmb_a5_build_vectors --model {args.model} "
            f"--model-path {m['mpath']} --stage0-run {m['stage0']} --a2-root {RUNS} "
            f"--out-dir {out} --stage basic --sites {m['sites']}")
-    jid = submit(f"vmb-a5-build-{args.model}", cmd, gpus=1, minutes=20)
+    if m.get("dir0_pair"):
+        cmd += f" --dir0-pair {m['dir0_pair']}"
+    minutes = 45 if "27b" in args.model else 20
+    jid = submit(f"vmb-a5-build-{args.model}", cmd, gpus=1, minutes=minutes)
     print(f"a5 build {args.model}: job {jid}")
     print(f"  sites={m['sites']}  map=L{m['map_site']}  sweep=L{m['sweep_site']}  out={out}")
 

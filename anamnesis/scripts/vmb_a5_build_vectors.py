@@ -214,12 +214,20 @@ def main() -> None:
                     help="comma-separated injection layer indices (per-model; the 3B "
                          "default [7,14,18,21] does NOT transfer — 8B/Qwen use their own "
                          "A3-map sites). Banked into stamps['sites'].")
+    ap.add_argument("--dir0-pair", default=None,
+                    help="comma-separated pure-mode pair for V3 (dir0), from the model's "
+                         "a3_mode_direction_map best_separated_pair. Default "
+                         "analogical,contrastive (3B/8B/Qwen); Gemma dir0 = socratic,contrastive.")
     args = ap.parse_args()
 
     if args.sites:
         global SITES
         SITES = [int(x) for x in args.sites.split(",")]
         logger.info(f"per-model injection sites: {SITES}")
+    if args.dir0_pair:
+        global DIR0_PAIR
+        DIR0_PAIR = tuple(x.strip() for x in args.dir0_pair.split(","))
+        logger.info(f"per-model V3 dir0 pair: {DIR0_PAIR}")
 
     preset = MODEL_PRESETS[args.model]
     dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16,
