@@ -39,19 +39,83 @@ def _ent_nll_over_gen(model, ids: torch.Tensor, P: int,
     return ent[pos].cpu().numpy(), nll.cpu().numpy()
 
 
+def add_null_ratios(rows: list[dict], null_prefixes: tuple,
+                    keys=("mean_entropy_steered", "entropy_rise", "base_model_nll")) -> None:
+    """Attach matched-null (÷-Rc) columns with the 14m item-4 ZERO-DENOMINATOR GUARD.
+
+    A ratio to a signed near-zero baseline (e.g. entropy_rise, whose nulls hover at ~0) is
+    uninformative and explodes (the legacy -29.889 column). Guard: suppress `_over_Rc`
+    (-> None) when |null_mean| is within the null's own SD of zero; ALWAYS emit the band
+    readout `_vs_Rc_band` (null min/max/mean/sd + z + outside-band flag), which is the
+    correct V7-specificity statistic for a difference-from-zero quantity. Same function
+    used by the live replay and the GPU-free --reaggregate path (one source of truth)."""
+    for r in rows:
+        if r.get("is_null"):
+            continue
+        for key in keys:
+            nulls = [nr[key] for nr in rows if nr.get("is_null")
+                     and nr.get("site") == r.get("site") and nr.get("alpha_frac") == r.get("alpha_frac")
+                     and key in nr]
+            if not nulls or key not in r:
+                r[f"{key}_over_Rc"] = None
+                continue
+            nm, nsd = float(np.mean(nulls)), float(np.std(nulls))
+            nmin, nmax = float(np.min(nulls)), float(np.max(nulls))
+            # A ratio to a signed near-zero baseline is unstable; suppress when the denominator's
+            # coefficient of variation is large (CV>25% ⇒ a ratio-of-differences both near zero).
+            cv = (nsd / abs(nm)) if nm else float("inf")
+            ratio_meaningful = (nm != 0.0) and (cv <= 0.25)
+            r[f"{key}_over_Rc"] = round(float(r[key] / nm), 3) if ratio_meaningful else None
+            r[f"{key}_vs_Rc_band"] = {
+                "null_mean": round(nm, 4), "null_sd": round(nsd, 4),
+                "null_min": round(nmin, 4), "null_max": round(nmax, 4),
+                "z_vs_null": round((r[key] - nm) / nsd, 3) if nsd > 0 else None,
+                "outside_null_band": bool(r[key] < nmin or r[key] > nmax),
+                "ratio_suppressed_zero_denom": not ratio_meaningful,
+            }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="3b")
-    ap.add_argument("--model-path", required=True)
-    ap.add_argument("--c3-run-dir", type=Path, required=True)
-    ap.add_argument("--cells", nargs="+", required=True, help="cell dir names under c3-run-dir")
+    ap.add_argument("--model-path", default=None)
+    ap.add_argument("--c3-run-dir", type=Path, default=None)
+    ap.add_argument("--cells", nargs="+", default=None, help="cell dir names under c3-run-dir")
     ap.add_argument("--null-prefixes", default="RC",
                     help="comma-separated vector-name prefixes (upper) treated as matched-norm "
                          "nulls for the ÷-null ratio; default RC (C3). 14j leg-2 on vmb_b7_3b: RBAND.")
+    ap.add_argument("--reaggregate-from", type=Path, default=None,
+                    help="GPU-FREE: re-derive the ÷-Rc columns from an existing out-json's raw rows "
+                         "with the zero-denom guard (14m item-4 fix; corrected artifact alongside).")
     ap.add_argument("--out-json", type=Path, required=True)
     args = ap.parse_args()
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     null_prefixes = tuple(p.strip().upper() for p in args.null_prefixes.split(",") if p.strip())
+
+    if args.reaggregate_from is not None:
+        src = json.loads(args.reaggregate_from.read_text())
+        rows = src["rows"]
+        for r in rows:  # strip legacy ratio columns so the guarded ones are authoritative
+            for k in list(r):
+                if k.endswith("_over_Rc") or k.endswith("_vs_Rc_band"):
+                    del r[k]
+        add_null_ratios(rows, null_prefixes)
+        src["rows"] = rows
+        src["STATUS"] = src.get("STATUS", "") + " | REAGGREGATED with zero-denom guard (14m item-4)"
+        src["reaggregation_note"] = ("÷-Rc columns re-derived from raw rows with the zero-denominator "
+                                     "guard; entropy_rise_over_Rc suppressed (null≈0) -> read entropy_rise "
+                                     "_vs_Rc_band (z + outside-band). Source: " + str(args.reaggregate_from))
+        args.out_json.write_text(json.dumps(src, indent=1))
+        for r in rows:
+            if r.get("is_null"):
+                continue
+            b = r.get("entropy_rise_vs_Rc_band", {})
+            print(f"  {r['cell']:20} rise={r.get('entropy_rise'):+.4f} over_Rc={r.get('entropy_rise_over_Rc')} "
+                  f"z_vs_null={b.get('z_vs_null')} outside_band={b.get('outside_null_band')}")
+        print(f"wrote {args.out_json} (GPU-free reaggregation)")
+        return
+    if not (args.model_path and args.c3_run_dir and args.cells):
+        ap.error("--model-path, --c3-run-dir, --cells required unless --reaggregate-from is set")
 
     from transformers import AutoModelForCausalLM
     preset = MODEL_PRESETS[args.model]
@@ -99,16 +163,8 @@ def main() -> None:
         print(f"  {name:20} steered={info['mean_entropy_steered']:.3f} "
               f"unsteered={info['mean_entropy_unsteered']:.3f} rise={info['entropy_rise']:+.3f} n={info['n']}")
 
-    # (b): V_temp steered entropy ÷ mean(Rc steered) at matched (site, α)
-    def rc_mean(site, af, key):
-        vals = [r[key] for r in rows if r["is_null"] and r["site"] == site and r["alpha_frac"] == af]
-        return float(np.mean(vals)) if vals else None
-    for r in rows:
-        if r["is_null"]:
-            continue
-        for key in ("mean_entropy_steered", "entropy_rise", "base_model_nll"):
-            base = rc_mean(r["site"], r["alpha_frac"], key)
-            r[f"{key}_over_Rc"] = round(float(r[key] / base), 3) if base else None
+    # (b): V_temp steered entropy vs matched Rc nulls (site, α) — with the zero-denom guard.
+    add_null_ratios(rows, null_prefixes)
 
     out = {"model": args.model, "arm": "C3 certifying (b) — per-token entropy under V_temp",
            "STATUS": "FIRST_READ_PENDING (C§8)",
