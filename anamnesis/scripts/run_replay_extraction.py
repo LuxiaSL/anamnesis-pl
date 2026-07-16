@@ -57,13 +57,128 @@ def _load_calibration(calib_dir: Path, enable_tier3: bool) -> tuple[F32 | None, 
     return positional_means, pca_components, pca_mean
 
 
+def _resolve_injection(run_dir: Path, inject_from_metadata: bool, inject_npz,
+                       inject_key, inject_layer, inject_alpha, inject_alpha_frac):
+    """Return (npz, key, layer, alpha, frac) — from run-dir/metadata.json when
+    inject_from_metadata, else the explicit args. (None,...) = no injection."""
+    if inject_from_metadata:
+        inj = json.loads((run_dir / "metadata.json").read_text()).get("a5_injection")
+        if not inj:
+            raise SystemExit(f"--inject-from-metadata: no a5_injection in {run_dir}/metadata.json")
+        return (Path(inj["inject_npz"]), inj["inject_key"], int(inj["inject_layer"]),
+                float(inj["inject_alpha"]), inj.get("inject_alpha_frac"))
+    if inject_npz is None:
+        return None, None, None, None, None
+    return Path(inject_npz), inject_key, inject_layer, inject_alpha, inject_alpha_frac
+
+
+def _setup_replay_injection(loaded, npz, key, layer, alpha, frac, label):
+    """Attach the residual-write hook for one cell; return (write_handle, inject_meta).
+    Factored so the single-cell path is unchanged and multi-cell can re-attach per cell."""
+    if npz is None:
+        return None, None
+    if key is None or layer is None or alpha is None:
+        raise SystemExit("injection requires key, layer, alpha")
+    import torch as _torch
+
+    from anamnesis.extraction.model_loader import ResidualWriteSpec
+    vec_bank = np.load(npz)
+    if key not in vec_bank:
+        raise SystemExit(f"vector key {key!r} not in {npz} (has {list(vec_bank.keys())})")
+    spec = ResidualWriteSpec(layer_idx=int(layer),
+                             vector=_torch.from_numpy(vec_bank[key].astype(np.float32)),
+                             alpha=float(alpha), start_pos=None, normalize=True)
+    write_handle = loaded.add_residual_write(spec)
+    inject_meta = {"inject_npz": str(npz), "inject_key": key, "inject_layer": int(layer),
+                   "inject_alpha": float(alpha), "inject_alpha_frac": frac}
+    logger.info(f"[{label}] replay injection active: {inject_meta}")
+    return write_handle, inject_meta
+
+
+def _replay_cell(loaded, ec, fc, calib, run_dir: Path, manifest_path: Path, gen_ids,
+                 sig_subdir, raw_dir_arg, raw_subdir, no_raw, no_resume, logits_top_k,
+                 write_handle, inject_meta, label) -> tuple[int, int]:
+    """Replay one cell's gens to signatures. Exact transcription of the original loop."""
+    from anamnesis.extraction.feature_pipeline import compute_features_v2_from_data, save_features
+    from anamnesis.extraction.raw_saver import save_raw_tensors_v3
+    from anamnesis.extraction.replay_extract import replay_extract
+    positional_means, pca_components, pca_mean = calib
+
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    entries = manifest["entries"]
+    src_meta: dict[int, dict] = {}
+    meta_path = run_dir / "metadata.json"
+    if meta_path.exists():
+        md = json.load(open(meta_path))
+        gens = md["generations"] if isinstance(md, dict) and "generations" in md else md
+        src_meta = {int(g["generation_id"]): g for g in gens}
+
+    raw_dir = raw_dir_arg if raw_dir_arg is not None else (run_dir / raw_subdir)
+    sig_dir = run_dir / sig_subdir
+    sig_dir.mkdir(parents=True, exist_ok=True)
+    if not no_raw:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+    avail = sorted(int(k) for k in entries)
+    todo = [g for g in avail if (gen_ids is None or g in set(gen_ids))]
+    if not no_resume:
+        todo = [g for g in todo if not (sig_dir / f"gen_{g:03d}.json").exists()]
+    logger.info(f"[{label}] {len(todo)} gens to process -> {sig_dir} ({len(avail)} in manifest)")
+
+    n_done = n_fail = 0
+    t0 = time.time()
+    for i, gid in enumerate(todo):
+        try:
+            e = entries[str(gid)]
+            input_ids = e["input_ids"]
+            plen = int(e["prompt_length"])
+            if write_handle is not None:
+                write_handle.spec.start_pos = plen
+                write_handle.reset_stats()
+            raw_data = replay_extract(loaded, input_ids, plen, positional_means=positional_means)
+            if write_handle is not None and inject_meta["inject_alpha"] != 0.0:
+                st = write_handle.stats
+                expected = len(input_ids) - plen
+                got = int(st.get("positions", 0))
+                if not st.get("saw_cache_position", False) or got != expected:
+                    raise RuntimeError(
+                        f"gen_{gid:03d}: replay injection gating broken "
+                        f"(saw_cache_position={st.get('saw_cache_position')}, "
+                        f"positions={got}, expected={expected})")
+            if not no_raw:
+                save_raw_tensors_v3(raw_data, gid, raw_dir, prompt_length=plen,
+                                    input_ids=input_ids, top_k_logits=logits_top_k)
+            result = compute_features_v2_from_data(
+                raw_data, ec, fc, pca_components, pca_mean)
+            metadata = dict(src_meta.get(gid, {"generation_id": gid}))
+            if inject_meta is not None:
+                metadata["injection"] = dict(inject_meta)
+            metadata["num_features"] = int(len(result.features))
+            metadata["tier_slices"] = {k: list(v) for k, v in result.tier_slices.items()}
+            metadata["extraction_version"] = 3
+            save_features(gid, result, metadata, sig_dir)
+            n_done += 1
+            if (i + 1) % 10 == 0 or i == 0:
+                el = time.time() - t0
+                rate = (i + 1) / el if el > 0 else 0
+                eta = (len(todo) - i - 1) / rate if rate > 0 else 0
+                logger.info(f"[{label}] {i+1}/{len(todo)} gen_{gid:03d}: "
+                            f"{len(result.features)} feats, {el:.0f}s, ETA {eta:.0f}s")
+        except Exception as exc:  # noqa: BLE001
+            n_fail += 1
+            logger.error(f"[{label}] gen_{gid:03d} FAILED: {exc}", exc_info=True)
+    logger.info(f"[{label}] cell done: {n_done} ok, {n_fail} failed in {time.time()-t0:.0f}s")
+    return n_done, n_fail
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Replay-extract a banked run to v3 sigs + raw")
     parser.add_argument("--model", choices=list(MODEL_PRESETS.keys()), required=True)
     parser.add_argument("--model-path", type=str, required=True, help="Local model dir (overrides preset HF id)")
-    parser.add_argument("--run-dir", type=Path, required=True, help="Output run dir (holds metadata.json + outputs)")
+    parser.add_argument("--run-dir", type=Path, default=None, help="Output run dir (holds metadata.json + outputs); single-cell mode")
     parser.add_argument("--calib-dir", type=Path, required=True)
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path, default=None, help="single-cell mode")
     parser.add_argument("--gen-ids", type=int, nargs="+", default=None, help="Subset of gen ids (default: all in manifest)")
     parser.add_argument("--raw-subdir", default="raw_tensors_v3")
     parser.add_argument("--raw-dir", type=Path, default=None,
@@ -93,19 +208,12 @@ def main() -> None:
                     help="Read the injection spec from run-dir/metadata.json "
                          "['a5_injection'] (written by the steered gen job) — "
                          "guarantees gen and replay use the identical spec")
+    parser.add_argument("--jobs-file", type=Path, default=None,
+                    help="MULTI-CELL mode: JSON list of {run_dir, manifest, gen_ids?, "
+                         "inject_from_metadata?} — model + calibration load ONCE, the "
+                         "injection hook re-attaches per cell. Mutually exclusive with "
+                         "--run-dir/--manifest.")
     args = parser.parse_args()
-
-    if args.inject_from_metadata:
-        md_path = args.run_dir / "metadata.json"
-        inj = json.loads(md_path.read_text()).get("a5_injection")
-        if inj is None:
-            raise SystemExit(f"--inject-from-metadata: no a5_injection in {md_path}")
-        args.inject_npz = Path(inj["inject_npz"])
-        args.inject_key = inj["inject_key"]
-        args.inject_layer = int(inj["inject_layer"])
-        args.inject_alpha = float(inj["inject_alpha"])
-        args.inject_alpha_frac = inj.get("inject_alpha_frac")
-        logger.info(f"[{args.label}] injection from metadata: {inj}")
 
     preset = MODEL_PRESETS[args.model]
     all_layers = list(range(preset.num_layers))
@@ -175,117 +283,46 @@ def main() -> None:
         args.calib_dir, enable_tier3=not args.no_tier3,
     )
 
-    # ── A5 injection (optional): register once, mutate start_pos per gen ──
-    write_handle = None
-    inject_meta: dict | None = None
-    if args.inject_npz is not None:
-        if args.inject_key is None or args.inject_layer is None or args.inject_alpha is None:
-            raise SystemExit("--inject-npz requires --inject-key, --inject-layer, --inject-alpha")
-        import torch as _torch
+    calib = (positional_means, pca_components, pca_mean)
+    ec, fc = extraction_config, family_config
 
-        from anamnesis.extraction.model_loader import ResidualWriteSpec
+    if args.jobs_file is not None:
+        # MULTI-CELL: model + calibration loaded ONCE above; loop cells, re-attaching
+        # the injection hook per cell (removing the previous first). Sig output is
+        # byte-identical to the per-cell path (bitwise smoke: vmb_a5_replay_multicell).
+        jobs = json.loads(args.jobs_file.read_text())
+        logger.info(f"[{args.label}] multi-cell replay: {len(jobs)} cells, one model+calib load")
+        handle = None
+        for ji, job in enumerate(jobs):
+            if handle is not None:
+                handle.remove()
+                handle = None
+            run_dir = Path(job["run_dir"])
+            npz, key, layer, alpha, frac = _resolve_injection(
+                run_dir, job.get("inject_from_metadata", False),
+                job.get("inject_npz"), job.get("inject_key"), job.get("inject_layer"),
+                job.get("inject_alpha"), job.get("inject_alpha_frac"))
+            handle, meta = _setup_replay_injection(loaded, npz, key, layer, alpha, frac,
+                                                   args.label)
+            _replay_cell(loaded, ec, fc, calib, run_dir, Path(job["manifest"]),
+                         job.get("gen_ids"), args.sig_subdir, args.raw_dir, args.raw_subdir,
+                         args.no_raw, args.no_resume, args.logits_top_k, handle, meta,
+                         f"{args.label}c{ji}")
+        if handle is not None:
+            handle.remove()
+        return
 
-        vec_bank = np.load(args.inject_npz)
-        if args.inject_key not in vec_bank:
-            raise SystemExit(f"vector key {args.inject_key!r} not in {args.inject_npz} "
-                             f"(has {list(vec_bank.keys())})")
-        spec = ResidualWriteSpec(
-            layer_idx=args.inject_layer,
-            vector=_torch.from_numpy(vec_bank[args.inject_key].astype(np.float32)),
-            alpha=args.inject_alpha,
-            start_pos=None,
-            normalize=True,
-        )
-        write_handle = loaded.add_residual_write(spec)
-        inject_meta = {
-            "inject_npz": str(args.inject_npz), "inject_key": args.inject_key,
-            "inject_layer": args.inject_layer, "inject_alpha": args.inject_alpha,
-            "inject_alpha_frac": args.inject_alpha_frac,
-        }
-        logger.info(f"[{args.label}] replay injection active: {inject_meta}")
-
-    # ── Manifest + source metadata ──
-    with open(args.manifest) as f:
-        manifest = json.load(f)
-    entries = manifest["entries"]
-
-    src_meta: dict[int, dict] = {}
-    meta_path = args.run_dir / "metadata.json"
-    if meta_path.exists():
-        with open(meta_path) as f:
-            md = json.load(f)
-        gens = md["generations"] if isinstance(md, dict) and "generations" in md else md
-        src_meta = {int(g["generation_id"]): g for g in gens}
-
-    raw_dir = args.raw_dir if args.raw_dir is not None else (args.run_dir / args.raw_subdir)
-    sig_dir = args.run_dir / args.sig_subdir
-    sig_dir.mkdir(parents=True, exist_ok=True)
-    if not args.no_raw:
-        raw_dir.mkdir(parents=True, exist_ok=True)
-
-    # ── Determine work set (subset + resume) ──
-    avail = sorted(int(k) for k in entries)
-    todo = [g for g in avail if (args.gen_ids is None or g in set(args.gen_ids))]
-    if not args.no_resume:
-        todo = [g for g in todo if not (sig_dir / f"gen_{g:03d}.json").exists()]
-
-    logger.info(f"[{args.label}] {len(todo)} gens to process ({len(avail)} in manifest)")
-
-    n_done = n_fail = 0
-    t0 = time.time()
-    for i, gid in enumerate(todo):
-        try:
-            e = entries[str(gid)]
-            input_ids = e["input_ids"]
-            plen = int(e["prompt_length"])
-
-            if write_handle is not None:
-                write_handle.spec.start_pos = plen
-                write_handle.reset_stats()
-
-            raw_data = replay_extract(loaded, input_ids, plen, positional_means=positional_means)
-
-            if write_handle is not None and args.inject_alpha != 0.0:
-                st = write_handle.stats
-                expected = len(input_ids) - plen  # every generated position, single forward
-                got = int(st.get("positions", 0))
-                if not st.get("saw_cache_position", False) or got != expected:
-                    raise RuntimeError(
-                        f"gen_{gid:03d}: replay injection gating broken "
-                        f"(saw_cache_position={st.get('saw_cache_position')}, "
-                        f"positions={got}, expected={expected})"
-                    )
-
-            if not args.no_raw:
-                save_raw_tensors_v3(raw_data, gid, raw_dir, prompt_length=plen,
-                                    input_ids=input_ids, top_k_logits=args.logits_top_k)
-
-            result = compute_features_v2_from_data(
-                raw_data, extraction_config, family_config, pca_components, pca_mean,
-            )
-
-            metadata = dict(src_meta.get(gid, {"generation_id": gid}))
-            if inject_meta is not None:
-                metadata["injection"] = dict(inject_meta)
-            metadata["num_features"] = int(len(result.features))
-            metadata["tier_slices"] = {k: list(v) for k, v in result.tier_slices.items()}
-            metadata["extraction_version"] = 3
-            save_features(gid, result, metadata, sig_dir)
-
-            n_done += 1
-            if (i + 1) % 10 == 0 or i == 0:
-                el = time.time() - t0
-                rate = (i + 1) / el if el > 0 else 0
-                eta = (len(todo) - i - 1) / rate if rate > 0 else 0
-                logger.info(
-                    f"[{args.label}] {i + 1}/{len(todo)} gen_{gid:03d}: "
-                    f"{len(result.features)} feats, {el:.0f}s, ETA {eta:.0f}s"
-                )
-        except Exception as exc:  # noqa: BLE001 — keep going, report failures
-            n_fail += 1
-            logger.error(f"[{args.label}] gen_{gid:03d} FAILED: {exc}", exc_info=True)
-
-    logger.info(f"[{args.label}] done: {n_done} ok, {n_fail} failed in {time.time() - t0:.0f}s")
+    if args.run_dir is None or args.manifest is None:
+        raise SystemExit("single-cell mode requires --run-dir and --manifest (or --jobs-file)")
+    npz, key, layer, alpha, frac = _resolve_injection(
+        args.run_dir, args.inject_from_metadata, args.inject_npz, args.inject_key,
+        args.inject_layer, args.inject_alpha, args.inject_alpha_frac)
+    handle, meta = _setup_replay_injection(loaded, npz, key, layer, alpha, frac, args.label)
+    _replay_cell(loaded, ec, fc, calib, args.run_dir, args.manifest, args.gen_ids,
+                 args.sig_subdir, args.raw_dir, args.raw_subdir, args.no_raw,
+                 args.no_resume, args.logits_top_k, handle, meta, args.label)
+    if handle is not None:
+        handle.remove()
 
 
 if __name__ == "__main__":

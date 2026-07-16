@@ -69,7 +69,19 @@ def main() -> None:
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--pole-source", default="within_topic",
                     help="which selection block to use (record = within_topic)")
+    ap.add_argument("--sites", default=None,
+                    help="comma-separated per-model injection sites (default = the 3B "
+                         "[7,14,18,21] imported from build_vectors; 8B/Qwen pass their own)")
     args = ap.parse_args()
+
+    if args.sites:
+        global SITES
+        SITES = [int(x) for x in args.sites.split(",")]
+        # build_norms (imported) reads build_vectors' OWN module global — set it too,
+        # else norms are computed at the default 3B sites and the L{s} lookup KeyErrors.
+        import anamnesis.scripts.vmb_a5_build_vectors as _bv
+        _bv.SITES = SITES
+
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     from transformers import AutoModelForCausalLM

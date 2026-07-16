@@ -210,7 +210,16 @@ def main() -> None:
     ap.add_argument("--stage", choices=["basic", "v2", "v4"], default="basic",
                     help="basic = R1-R3 + V1 + V3 + norms (unblocks 5/7 chains)")
     ap.add_argument("--v1-max-new-tokens", type=int, default=160)
+    ap.add_argument("--sites", default=None,
+                    help="comma-separated injection layer indices (per-model; the 3B "
+                         "default [7,14,18,21] does NOT transfer — 8B/Qwen use their own "
+                         "A3-map sites). Banked into stamps['sites'].")
     args = ap.parse_args()
+
+    if args.sites:
+        global SITES
+        SITES = [int(x) for x in args.sites.split(",")]
+        logger.info(f"per-model injection sites: {SITES}")
 
     preset = MODEL_PRESETS[args.model]
     dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16,

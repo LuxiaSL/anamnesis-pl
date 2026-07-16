@@ -113,7 +113,13 @@ def main() -> None:
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--model", default="3b")
     ap.add_argument("--n-perm", type=int, default=1000)
+    ap.add_argument("--map-site", type=int, default=None,
+                    help="per-model map site (8B=16, Qwen=18); overrides the 3B "
+                         "MAP_SITE_KEYS defaults for the R-relative + dose-response logic")
     args = ap.parse_args()
+    if args.map_site is not None:
+        for _k in MAP_SITE_KEYS:
+            MAP_SITE_KEYS[_k] = args.map_site
     args.out_dir.mkdir(parents=True, exist_ok=True)
     model = args.model
     mm = MODEL_META[model]

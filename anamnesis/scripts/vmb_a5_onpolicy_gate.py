@@ -41,13 +41,17 @@ N_PILOT = 20
 
 
 def main() -> None:
+    global MAP_SITE
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", choices=list(MODEL_PRESETS.keys()), required=True)
     ap.add_argument("--model-path", required=True)
     ap.add_argument("--stage0-run", type=Path, required=True)
     ap.add_argument("--vectors-dir", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--map-site", type=int, default=MAP_SITE,
+                    help="per-model map injection site (3B=14, 8B=16, Qwen=18)")
     args = ap.parse_args()
+    MAP_SITE = args.map_site
 
     preset = MODEL_PRESETS[args.model]
     dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16,
@@ -91,6 +95,24 @@ def main() -> None:
 
     report = {"model": args.model, "gate_bar": GATE_BAR, "n_pilot": len(pilots),
               "site": MAP_SITE, "cells": {}}
+
+    # ── 14h item 2: alpha=0 gate baseline (one number/model, ~free) ──
+    # greedy top-1 agreement vs the banked SAMPLED continuation, NO injection.
+    # Interpretation aid only (gate bar UNCHANGED): <.90 => low-alpha PASSes are
+    # baseline-dominated; <.85 => un-clearable unsteered, stop-and-surface (14h).
+    for h in handles.values():
+        h.spec.alpha = 0.0
+    base_ag = []
+    for e in pilots:
+        for h in handles.values():
+            h.spec.start_pos = int(e["prompt_length"])
+        base_ag.append(teacher_forced_agreement(
+            model, e["input_ids"], int(e["prompt_length"])))
+    report["alpha0_baseline_mean"] = float(np.mean(base_ag))
+    report["alpha0_baseline_min"] = float(np.min(base_ag))
+    logger.info(f"[14h] alpha=0 gate baseline: {np.mean(base_ag):.4f} "
+                f"(min {np.min(base_ag):.4f})")
+
     for key in sorted(vec_keys):
         site = site_of(key)
         vec = torch.from_numpy(bank[key].astype(np.float32))
