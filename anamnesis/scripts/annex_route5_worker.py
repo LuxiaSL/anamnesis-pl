@@ -109,8 +109,9 @@ def smoke(args) -> None:
 
     MT cells replay STAGE0's tokens by gen-id (load_mt_cells pairs by gid), so the
     manifest of record is stage0's; the banked MT signatures are the expected output."""
-    cell = args.battery_root / "vmb_a5_mt_3b/V3_L14_a0.1"
-    stage0 = args.battery_root / "vmb_stage0_3b"
+    runs = args.runs_root or args.battery_root   # node: runs/ holds the cells; local: same dir
+    cell = runs / "vmb_a5_mt_3b/V3_L14_a0.1"
+    stage0 = runs / "vmb_stage0_3b"
     manifest = json.loads((stage0 / "replay_manifest.json").read_text())["entries"]
     bank = np.load(args.battery_root / "a5_vectors_3b/a5_vectors.npz")
     stamps = json.loads((args.battery_root / "a5_vectors_3b/a5_vectors_stamps.json").read_text())
@@ -140,6 +141,9 @@ def main() -> None:
     ap.add_argument("--model-path", required=True)
     ap.add_argument("--calib-dir", type=Path, required=True)
     ap.add_argument("--battery-root", type=Path, required=True)
+    ap.add_argument("--runs-root", type=Path, default=None,
+                    help="root holding vmb_stage0_3b / vmb_a5_mt_3b (node: .../runs; "
+                         "local: same as --battery-root)")
     ap.add_argument("--work-dir", type=Path, default=None)
     ap.add_argument("--worker-id", type=int, default=0)
     ap.add_argument("--site", type=int, default=14)

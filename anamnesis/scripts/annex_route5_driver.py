@@ -64,13 +64,13 @@ def load_axis(axis_npz: Path, null_draw: int | None, kept_names: list[str]) -> F
     return (sub / n).astype(np.float32)
 
 
-def build_reference(battery_root: Path, work_dir: Path, model: str) -> tuple[list[str], dict]:
+def build_reference(runs_root: Path, work_dir: Path, model: str) -> tuple[list[str], dict]:
     """Bank med/scale + stage0 z-matrix subset to the per-head-dropped feature set."""
     from anamnesis.analysis.battery.deltas import load_floor_scale
     from anamnesis.analysis.battery.floors import load_signature_matrix
     from anamnesis.analysis.battery.manifest import MODEL_META
 
-    stage0 = battery_root / MODEL_META[model].stage0_dir / "signatures_v3"
+    stage0 = runs_root / MODEL_META[model].stage0_dir / "signatures_v3"
     med, scale = load_floor_scale(stage0)
     X, names, gids = load_signature_matrix(stage0)
     kept = [i for i, n in enumerate(names) if not n.startswith("ph_")]
@@ -169,6 +169,7 @@ def spawn_workers(args, n_workers: int, gpu_ids: list[str]) -> list[subprocess.P
         cmd = [sys.executable, "-m", "anamnesis.scripts.annex_route5_worker",
                "--model", args.model, "--model-path", args.model_path,
                "--calib-dir", str(args.calib_dir), "--battery-root", str(args.battery_root),
+               "--runs-root", str(args.runs_root or args.battery_root),
                "--work-dir", str(args.work_dir), "--worker-id", str(w),
                "--site", str(args.site)]
         fh = open(logs / f"worker_{w}.log", "w")
@@ -180,6 +181,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", required=True, choices=["cold", "killrung", "null", "refine"])
     ap.add_argument("--battery-root", type=Path, required=True)
+    ap.add_argument("--runs-root", type=Path, default=None,
+                    help="root holding vmb_stage0_3b (node: .../runs; local: = battery-root)")
     ap.add_argument("--work-dir", type=Path, required=True)
     ap.add_argument("--model", default="3b")
     ap.add_argument("--model-path", default="/models/llama-3.2-3b-instruct")
@@ -207,7 +210,8 @@ def main() -> None:
         args.budget_evals = max(args.budget_evals // 10, 1)
 
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    kept_names, _ = build_reference(args.battery_root, args.work_dir, args.model)
+    kept_names, _ = build_reference(args.runs_root or args.battery_root,
+                                    args.work_dir, args.model)
 
     gauge_path = args.battery_root / "annex/annex_dir0_axis_3b.npz"
     null_path = args.battery_root / "annex/annex_dir0_shufnull_axis_3b.npz"

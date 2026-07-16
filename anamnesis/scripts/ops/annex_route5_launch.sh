@@ -28,7 +28,7 @@ SPLIT=$BATTERY/annex/annex_route5_split_3b.json
 SEED="${SEED:-20260717}"
 WPG="${WPG:-12}"   # w96 = 8 GPUs x 12
 BASE="source $HEIMDALL_VENV && cd $HEIMDALL_WORK_DIR && export PYTHONPATH=\$PWD/pipeline PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1"
-DRIVER="python -u -m anamnesis.scripts.annex_route5_driver --battery-root $BATTERY --manifest $MANIFEST --split-json $SPLIT --gpus 0,1,2,3,4,5,6,7 --workers-per-gpu $WPG"
+DRIVER="python -u -m anamnesis.scripts.annex_route5_driver --battery-root $BATTERY --runs-root $RUNS --manifest $MANIFEST --split-json $SPLIT --gpus 0,1,2,3,4,5,6,7 --workers-per-gpu $WPG"
 
 # ── staging: push the banked annex inputs to the node (idempotent) ──
 ssh node1 "mkdir -p $BATTERY/annex $SEARCH_ROOT"
@@ -45,7 +45,7 @@ submit() { # name, cmd, gpus, minutes, [after]
 }
 
 SMOKE=$(submit route5_smoke \
-  "python -u -m anamnesis.scripts.annex_route5_worker --smoke --model 3b --model-path /models/llama-3.2-3b-instruct --calib-dir /models/anamnesis-extract/calibration/3b --battery-root $BATTERY" \
+  "python -u -m anamnesis.scripts.annex_route5_worker --smoke --model 3b --model-path /models/llama-3.2-3b-instruct --calib-dir /models/anamnesis-extract/calibration/3b --battery-root $BATTERY --runs-root $RUNS" \
   1 15)
 echo "route5_smoke -> $SMOKE"
 
