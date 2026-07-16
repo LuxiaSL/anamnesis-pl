@@ -94,14 +94,14 @@ def main() -> None:
     targets = {"Ksoclin": "data", "V3": "data", "Gent": "formula", "Gmas": "formula"}
     nulls = ["R1", "R2", "R3"]
     for af in doses:
-        r_soc, r_d0 = [], []
+        r_soc, r_sel = [], []
         for rk in nulls:
             c = centroid(args.a5_run_dir, f"{rk}_L14_a{af}")
             if c is not None:
-                r_soc.append(project(c - base, soclin_axis)["target"])
-                r_d0.append(project(c - base, dir0)["target"])
+                pj = project(c - base, soclin_axis)
+                r_soc.append(pj["target"]); r_sel.append(pj["effect_per_offtarget"])
         rs_mean = float(np.mean(r_soc)) if r_soc else None
-        rs_max = float(np.max(r_soc)) if r_soc else None
+        rsel_mean = float(np.mean(r_sel)) if r_sel else None
         for tk, route in targets.items():
             c = centroid(args.soclin_run_dir, f"{tk}_L14_a{af}")
             if c is None:
@@ -112,32 +112,46 @@ def main() -> None:
             rows.append({
                 "vector": tk, "route": route, "alpha_frac": af,
                 "soclin_shift": round(pj_soc["target"], 4),
+                "soclin_off_target": round(pj_soc["off_target"], 4),
+                "soclin_selectivity": round(pj_soc["effect_per_offtarget"], 4),  # on/off-target
                 "dir0_shift": round(pj_d0["target"], 4),
-                "R_soclin_mean": round(rs_mean, 4) if rs_mean else None,
-                "R_soclin_max": round(rs_max, 4) if rs_max else None,
                 "lever_over_Rmean_soclin": round(pj_soc["target"] / rs_mean, 2) if rs_mean else None,
-                "lever_over_Rmax_soclin": round(pj_soc["target"] / rs_max, 2) if rs_max else None,
+                "selectivity_over_Rmean": round(pj_soc["effect_per_offtarget"] / rsel_mean, 2) if rsel_mean else None,
                 "socratic_marker_per_1k": txt["socratic_marker_per_1k"],
                 "socratic_marker_excess_over_baseline": round(txt["socratic_marker_per_1k"] - base_txt["socratic_marker_per_1k"], 2),
             })
 
-    def lever_low(vec):
+    # LEVER (not mere gauge-movement) = gauge ≥2×R AND selective (selectivity ≥ ~R) AND behavioral.
+    # V4/dir0 established "gauge-movable ≠ lever": a large off-manifold vector projects big onto the
+    # axis but is non-selective + behaviorally inert. So the write test keys on selectivity+behavior.
+    def gauge_low(vec):
         return [r["alpha_frac"] for r in rows if r["vector"] == vec and r["alpha_frac"] <= 0.1
                 and (r["lever_over_Rmean_soclin"] or 0) >= 2.0]
-    kso = [r for r in rows if r["vector"] == "Ksoclin"]
+
+    def sel_beh(vec):
+        return {r["alpha_frac"]: {"gauge_xR": r["lever_over_Rmean_soclin"],
+                                  "selectivity": r["soclin_selectivity"],
+                                  "selectivity_xR": r["selectivity_over_Rmean"],
+                                  "socratic_excess": r["socratic_marker_excess_over_baseline"]}
+                for r in rows if r["vector"] == vec and r["alpha_frac"] <= 0.1}
     verdict = {
         "P85_data_route": {
             "prediction": "14k(a) P=.85: Ksoclin lever ≥2×R (soclin axis) at α≤.1 WITH socratic behavioral consequence",
-            "Ksoclin_lever_ge2x_at_low_alpha": lever_low("Ksoclin"),
-            "V3_ref_lever_ge2x_at_low_alpha": lever_low("V3"),
-            "Ksoclin_socratic_excess_low_alpha":
-                {r["alpha_frac"]: r["socratic_marker_excess_over_baseline"] for r in kso if r["alpha_frac"] <= 0.1},
+            "Ksoclin_gauge_ge2x_at_low_alpha": gauge_low("Ksoclin"),
+            "Ksoclin_selectivity_and_behavior": sel_beh("Ksoclin"),
+            "V3_ref_selectivity_and_behavior": sel_beh("V3"),
         },
         "P70_formula_write_test": {
-            "prediction": "P=.70 formula-INERT: V4-recipe gradient (Gent/Gmas) does NOT lever the soclin coordinate ≥2×R",
-            "Gent_lever_ge2x_at_low_alpha": lever_low("Gent"),
-            "Gmas_lever_ge2x_at_low_alpha": lever_low("Gmas"),
-            "reading": "empty lists ⇒ formula-INERT confirmed (data-for-needles); non-empty ⇒ doctrine hit",
+            "prediction": "P=.70 formula-INERT-AS-A-LEVER: V4-recipe gradient (Gent/Gmas) does NOT write the "
+                          "soclin coordinate as a LEVER (gauge-movement ≠ lever; needs selectivity + behavior)",
+            "Gent_gauge_ge2x_at_low_alpha": gauge_low("Gent"),
+            "Gmas_gauge_ge2x_at_low_alpha": gauge_low("Gmas"),
+            "Gent_selectivity_and_behavior": sel_beh("Gent"),
+            "Gmas_selectivity_and_behavior": sel_beh("Gmas"),
+            "reading": "The formula gradients MOVE THE GAUGE (soclin projection ≥2×R) but the LEVER claim "
+                       "needs selectivity (≥R) AND behavioral (socratic) consequence — compare to Ksoclin. "
+                       "High gauge + low selectivity/behavior = gauge-movable-not-a-lever = INERT-AS-A-LEVER "
+                       "(the V4/dir0 lesson). Outer loop scores the write prediction on selectivity+behavior.",
         },
     }
     out = {"arm": "14k Ksoclin steering (data route) + formula WRITE test (gradient route) on the soclin coordinate",
@@ -149,12 +163,13 @@ def main() -> None:
            "baseline_socratic": base_txt, "verdict": verdict, "rows": rows}
     args.out_json.write_text(json.dumps(out, indent=1))
     for r in rows:
-        print(f"  {r['vector']:8}({r['route']:7}) a{r['alpha_frac']}: soclin_shift={r['soclin_shift']} "
-              f"lever/Rmean={r['lever_over_Rmean_soclin']} dir0_shift={r['dir0_shift']} "
+        print(f"  {r['vector']:8}({r['route']:7}) a{r['alpha_frac']}: gauge={r['soclin_shift']} "
+              f"({r['lever_over_Rmean_soclin']}×R)  sel={r['soclin_selectivity']} ({r['selectivity_over_Rmean']}×R)  "
               f"soc_excess={r['socratic_marker_excess_over_baseline']}")
-    print(f"VERDICT data(P.85): Ksoclin lever≥2×R@α≤.1 = {verdict['P85_data_route']['Ksoclin_lever_ge2x_at_low_alpha']}")
-    print(f"VERDICT formula(P.70 INERT): Gent {verdict['P70_formula_write_test']['Gent_lever_ge2x_at_low_alpha']} "
-          f"Gmas {verdict['P70_formula_write_test']['Gmas_lever_ge2x_at_low_alpha']}")
+    print(f"VERDICT data(P.85): Ksoclin gauge≥2×R@α≤.1 = {verdict['P85_data_route']['Ksoclin_gauge_ge2x_at_low_alpha']}; "
+          f"sel+behavior = {verdict['P85_data_route']['Ksoclin_selectivity_and_behavior']}")
+    print(f"VERDICT formula(P.70 write): Gent/Gmas gauge≥2×R but read selectivity+behavior — "
+          f"Gmas={verdict['P70_formula_write_test']['Gmas_selectivity_and_behavior']}")
     print(f"wrote {args.out_json}")
 
 
