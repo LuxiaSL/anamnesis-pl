@@ -58,6 +58,10 @@ def main() -> None:
     ap.add_argument("--stage0-run", type=Path, required=True)
     ap.add_argument("--vectors", type=Path, default=None,
                     help="a5_vectors.npz — for cos(∇S, V3_L14) / cos(∇S, V4_L14) rows")
+    ap.add_argument("--candidate-npz", type=Path, default=None,
+                    help="14k candidate vectors (e.g. Ksoclin_L14) — the ∇-panel differentiability "
+                         "confirm: is the candidate seen by ANY functional gradient above the R-null band?")
+    ap.add_argument("--candidate-keys", nargs="+", default=None)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--n-gens", type=int, default=20)
     args = ap.parse_args()
@@ -145,6 +149,7 @@ def main() -> None:
                "STATUS": "FIRST_READ_PENDING (C§8) — §B.2 guard + §B.6 ∇-anatomy panel",
                "provenance": "DESIGN-V4 §B.6; same leaf/gids as the fork; 4 surrogate functionals",
                "recency_frac": RECENCY_FRAC, "functionals": {}}
+    mean_grads: dict[str, np.ndarray] = {}
     for f in FUNCTIONALS:
         G = np.stack(grads[f])
         norms = np.linalg.norm(G, axis=1)
@@ -152,6 +157,7 @@ def main() -> None:
         iu = np.triu_indices(len(G), k=1)
         pcos = (unit @ unit.T)[iu]
         mean_vec = G.mean(axis=0)
+        mean_grads[f] = mean_vec
         mean_norm = float(np.linalg.norm(mean_vec))
         cancel = mean_norm / max(float(norms.mean()), 1e-12)
         row = {"mean_of_per_gen_norms": float(norms.mean()),
@@ -172,6 +178,40 @@ def main() -> None:
         logger.info(f"{f}: |mean_grad| {mean_norm:.4e}  cancel {cancel:.3f}  "
                     f"pcos {pcos.mean():.3f}"
                     + (f"  cos(·,V3) {row.get('cos_meangrad_V3'):.4f}" if v3 is not None else ""))
+
+    # 14k FORMULA LEG — ∇-panel differentiability confirm for a candidate coordinate (P3').
+    # Is the candidate seen by ANY functional's mean gradient ABOVE the R-null band? Frozen
+    # prediction for Ksoclin: formula-INERT (no functional aligns above null) — the doctrine's
+    # first discriminating test (P=.70). REPORT arithmetic; the call is the outer loop's.
+    if args.candidate_npz and args.candidate_keys and args.candidate_npz.exists():
+        cd = np.load(args.candidate_npz)
+        dim = len(next(iter(mean_grads.values())))
+        rng = np.random.default_rng(20260716)
+        R = rng.standard_normal((400, dim)); R /= np.linalg.norm(R, axis=1, keepdims=True)
+        cand_out = {}
+        for key in args.candidate_keys:
+            if key not in cd.files:
+                cand_out[key] = {"present": False}; continue
+            cv = cd[key].astype(np.float64); cv /= np.linalg.norm(cv)
+            per_f, any_seen = {}, False
+            for f in FUNCTIONALS:
+                mg = mean_grads[f]
+                c = _cos(mg, cv)
+                null_abs = np.abs(R @ (mg / max(np.linalg.norm(mg), 1e-30)))
+                p95 = float(np.percentile(null_abs, 95))
+                seen = bool(abs(c) > p95)
+                any_seen = any_seen or seen
+                per_f[f] = {"cos_meangrad_candidate": round(c, 4),
+                            "null_p95_abs_cos": round(p95, 4), "seen_above_null": seen}
+            cand_out[key] = {"present": True, "per_functional": per_f,
+                             "differentiable_any_functional": any_seen,
+                             "verdict": ("FORMULA-VISIBLE (a functional gradient sees it above null)"
+                                         if any_seen else
+                                         "FORMULA-INERT (no functional gradient sees it above the R-null)")}
+            logger.info(f"candidate {key}: differentiable={any_seen} "
+                        + " ".join(f"{f}={per_f[f]['cos_meangrad_candidate']:+.3f}(p95 {per_f[f]['null_p95_abs_cos']:.3f})"
+                                   for f in FUNCTIONALS))
+        summary["candidate_formula_leg"] = cand_out
 
     # §B.6 outcome flags (arithmetic only; interpretation → outer loop)
     sm = summary["functionals"]["S_mass"]["norm_of_mean_grad"]
