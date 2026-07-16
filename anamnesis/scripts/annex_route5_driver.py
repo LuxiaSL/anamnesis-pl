@@ -162,7 +162,25 @@ class DryRunMap:
         return out
 
 
+def stop_fleet(work_dir: Path, procs: list) -> None:
+    """Idempotent: signal STOP and reap whatever workers are still ours."""
+    (work_dir / "STOP").touch()
+    for p in procs:
+        try:
+            p.wait(timeout=120)
+        except Exception:  # noqa: BLE001 — a stuck worker must not block the summary
+            p.kill()
+
+
 def spawn_workers(args, n_workers: int, gpu_ids: list[str]) -> list[subprocess.Popen]:
+    # clear stale queue state from any previous (crashed) run of this leg: a leftover
+    # STOP kills fresh workers instantly; leftover ready-markers impersonate dead ones.
+    (args.work_dir / "STOP").unlink(missing_ok=True)
+    for d, pat in (("ready", "w*"), ("results", "*.npz"), ("candidates", "*.npy")):
+        for p in (args.work_dir / d).glob(pat):
+            p.unlink()
+    for p in (args.work_dir / "jobs").glob("w*/job_*.json"):
+        p.unlink()
     logs = args.work_dir / "logs"
     logs.mkdir(exist_ok=True)
     procs = []
@@ -359,33 +377,48 @@ def main() -> None:
         np.save(args.work_dir / "best_candidate.npy", best_x.astype(np.float32))
 
         # ruled acceptance condition: the winner on the FULL 3,358 gauge (per-head ON).
+        # The fleet is stopped FIRST (the killrung crash of 2026-07-16 happened with 96
+        # resident workers; the same command succeeded standalone) and the subprocess's
+        # output is captured to a persistent file. Its failure is RECORDED, never fatal —
+        # the summary always writes, and the leg is --resume-safe for a retry.
         if not args.dry_run:
+            stop_fleet(args.work_dir, procs)
+            procs = []
             out = args.work_dir / "full_score.npz"
+            fs_log = args.work_dir / "full_score.log"
             env = {**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
                    "OMP_NUM_THREADS": "1"}
-            subprocess.run(
-                [sys.executable, "-m", "anamnesis.scripts.annex_route5_worker",
-                 "--full-score", "--model", args.model, "--model-path", args.model_path,
-                 "--calib-dir", str(args.calib_dir),
-                 "--battery-root", str(args.battery_root),
-                 "--candidate-npy", str(args.work_dir / "best_candidate.npy"),
-                 "--gids", ",".join(str(g) for g in acc),
-                 "--alpha-frac", str(args.alpha_frac),
-                 "--manifest", str(args.manifest), "--out", str(out),
-                 "--site", str(args.site)],
-                env=env, check=True)
-            fs = np.load(out, allow_pickle=True)
-            rf = np.load(args.work_dir / "reference_full.npz", allow_pickle=True)
-            if [str(n) for n in fs["feature_names"]] != [str(n) for n in rf["feature_names"]]:
-                raise SystemExit("full-score feature names != stage0 full set — fork")
-            row = {int(g): i for i, g in enumerate(rf["stage0_gids"])}
-            Zc = (fs["features"] - rf["med"]) / rf["scale"]
-            D = np.stack([Zc[i] - rf["stage0_z"][row[int(g)]]
-                          for i, g in enumerate(fs["gids"])])
-            gz = np.load(gauge_path, allow_pickle=True)
-            full_axis = gz["axis"].astype(np.float32)
-            summary["acc_sel_on_gauge_FULL3358"] = selectivity(
-                D.mean(axis=0).astype(np.float32), full_axis)
+            with open(fs_log, "w") as lf:
+                rc = subprocess.run(
+                    [sys.executable, "-m", "anamnesis.scripts.annex_route5_worker",
+                     "--full-score", "--model", args.model, "--model-path", args.model_path,
+                     "--calib-dir", str(args.calib_dir),
+                     "--battery-root", str(args.battery_root),
+                     "--candidate-npy", str(args.work_dir / "best_candidate.npy"),
+                     "--gids", ",".join(str(g) for g in acc),
+                     "--alpha-frac", str(args.alpha_frac),
+                     "--manifest", str(args.manifest), "--out", str(out),
+                     "--site", str(args.site)],
+                    env=env, stdout=lf, stderr=subprocess.STDOUT).returncode
+            if rc != 0 or not out.exists():
+                summary["acc_sel_on_gauge_FULL3358"] = None
+                summary["full_score_error"] = f"rc={rc}; see {fs_log}"
+                logger.error(f"full-score failed rc={rc} — recorded, summary still writes")
+            else:
+                fs = np.load(out, allow_pickle=True)
+                rf = np.load(args.work_dir / "reference_full.npz", allow_pickle=True)
+                if [str(n) for n in fs["feature_names"]] != [str(n) for n in rf["feature_names"]]:
+                    summary["full_score_error"] = "feature-name fork vs stage0 full set"
+                    summary["acc_sel_on_gauge_FULL3358"] = None
+                else:
+                    row = {int(g): i for i, g in enumerate(rf["stage0_gids"])}
+                    Zc = (fs["features"] - rf["med"]) / rf["scale"]
+                    D = np.stack([Zc[i] - rf["stage0_z"][row[int(g)]]
+                                  for i, g in enumerate(fs["gids"])])
+                    gz = np.load(gauge_path, allow_pickle=True)
+                    full_axis = gz["axis"].astype(np.float32)
+                    summary["acc_sel_on_gauge_FULL3358"] = selectivity(
+                        D.mean(axis=0).astype(np.float32), full_axis)
         else:
             summary["acc_sel_on_gauge_FULL3358"] = None   # no model in dry-run
 
@@ -393,9 +426,7 @@ def main() -> None:
     logger.info(f"SUMMARY: {json.dumps(summary)}")
 
     if not args.dry_run:
-        (args.work_dir / "STOP").touch()
-        for p in procs:
-            p.wait(timeout=120)
+        stop_fleet(args.work_dir, procs)
 
 
 if __name__ == "__main__":
