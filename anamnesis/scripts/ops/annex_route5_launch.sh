@@ -27,6 +27,10 @@ MANIFEST=$RUNS/vmb_stage0_3b/replay_manifest.json
 SPLIT=$BATTERY/annex/annex_route5_split_3b.json
 SEED="${SEED:-20260717}"
 WPG="${WPG:-12}"   # w96 = 8 GPUs x 12
+# STOP_AFTER_LEG lets a window fire only the cheap legs (smoke|killrung) and hold the
+# expensive cold/null/refine legs for a later window (Luxia sequencing ruling 2026-07-16:
+# smoke+killrung ride tonight; cold search absorbs the tail RESUMABLE). Default = full chain.
+STOP_AFTER_LEG="${STOP_AFTER_LEG:-refine}"   # smoke|killrung|cold|null_a|null_b|refine
 BASE="source $HEIMDALL_VENV && cd $HEIMDALL_WORK_DIR && export PYTHONPATH=\$PWD/pipeline PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1"
 DRIVER="python -u -m anamnesis.scripts.annex_route5_driver --battery-root $BATTERY --runs-root $RUNS --manifest $MANIFEST --split-json $SPLIT --gpus 0,1,2,3,4,5,6,7 --workers-per-gpu $WPG"
 
@@ -48,11 +52,17 @@ SMOKE=$(submit route5_smoke \
   "python -u -m anamnesis.scripts.annex_route5_worker --smoke --model 3b --model-path /models/llama-3.2-3b-instruct --calib-dir /models/anamnesis-extract/calibration/3b --battery-root $BATTERY --runs-root $RUNS" \
   1 15)
 echo "route5_smoke -> $SMOKE"
+[[ $STOP_AFTER_LEG == smoke ]] && { echo "STOP_AFTER_LEG=smoke -> chain halts (smoke only)"; exit 0; }
 
 KILL=$(submit route5_killrung \
   "$DRIVER --mode killrung --null-draw 0 --seed $SEED --work-dir $SEARCH_ROOT/killrung" \
   8 60 "$SMOKE")
 echo "route5_killrung -> $KILL [after $SMOKE]"
+[[ $STOP_AFTER_LEG == killrung ]] && {
+  echo "STOP_AFTER_LEG=killrung -> chain halts after legs 0-1 (cold/nulls/refine held for a later window)"
+  echo "resume the tail with: STOP_AFTER_LEG=refine SEARCH_ROOT=$SEARCH_ROOT $0   (cold leg is --resume-safe)"
+  exit 0
+}
 
 COLD=$(submit route5_cold \
   "$DRIVER --mode cold --seed $SEED --work-dir $SEARCH_ROOT/cold" \
