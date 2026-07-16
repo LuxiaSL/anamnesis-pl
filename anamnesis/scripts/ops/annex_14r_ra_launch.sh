@@ -76,12 +76,14 @@ done
 REP=$(submit vmb-14r-ra-rep "$(join_and "${REP_CMDS[@]}")" 2 25 "$GEN")
 echo "vmb-14r-ra-rep -> $REP [after $GEN]"
 
+# entropy reads gen metadata + its own forwards — independent of rep, so it rides PARALLEL
+# to rep (both after gen; 2+1 GPUs, no contention). Measured saving ~6 min.
 CELLS="${KEY}_a0.03 ${KEY}_a0.1 ${KEY}_a0.3"
 ENT=$(submit vmb-14r-ra-entropy \
   "python -u -m anamnesis.scripts.vmb_c3_entropy_replay --model $MODEL --model-path $MPATH --c3-run-dir $RUN_ROOT --cells $CELLS --null-prefixes RBAND --out-json $BATTERY/annex/14r_ra_entropy_3b.json" \
-  1 25 "$REP")
-echo "vmb-14r-ra-entropy -> $ENT [after $REP]"
+  1 25 "$GEN")
+echo "vmb-14r-ra-entropy -> $ENT [after $GEN, parallel to rep]"
 
 echo
-echo "CHAIN QUEUED: smoke -> gen -> rep -> entropy   (readout = LOCAL banked analyzers only)"
+echo "CHAIN QUEUED: smoke -> gen -> (rep || entropy)   (readout = LOCAL banked analyzers only)"
 echo "cells land in $RUN_ROOT/; entropy JSON in $BATTERY/annex/"
