@@ -20,6 +20,17 @@ summary JSON next to the fork record. Downstream: `vmb_v4prime_pulse.py --gradie
 per functional reproduces the metric/spectral pulse (S_mass must reproduce the ⛔RULING
 numbers). First-read → outer loop, nothing stamped.
 
+14k FORMULA-LEG CANDIDATE VERDICT (added session-9; CALIBRATED per outer-loop ruling 2026-07-16):
+`--candidate-npz/--candidate-keys` scores a data-route candidate's formula-visibility. The verdict
+is KEYED to the calibrated pair — V3/dir0's OWN gradient-cosine profile (the read-only structural-
+negative reference, exceeded by >2 pooled-SE) + the R-WALK null — with the R-random column retained
+alongside but NOT the key (R-random sits below dir0's manifold-adjacent cosine, so it rubber-stamps
+any structured direction incl. the structural negative). The ∇-panel is the READ confirm ONLY: it
+does NOT score the write prediction P=.70 (a lever/write claim) — the build+steer ≥2×R write test
+scores that and stays owed. `--recalibrate` re-derives the verdict from banked G matrices GPU-free
+(14m item-4 corrected-artifact discipline: writes *_calibrated.json beside the original). The
+needle/field shape law (vmb_14k_shape_assay.py) is untouched — this amends only the visibility labels.
+
 ⚠ NEEDS GPU (one card, eager attention). Run (node1):
     python -m anamnesis.scripts.vmb_v4_grad_panel --model 3b \
       --model-path /models/llama-3.2-3b-instruct \
@@ -51,11 +62,77 @@ RECENCY_FRAC = 0.8       # region cutoff: last 20% of the row = "recency", [:P] 
 FUNCTIONALS = ["S_mass", "S_logit", "S_gate", "S_entropy"]
 
 
+def _cosine(a, b):
+    return float(a @ b / max(np.linalg.norm(a) * np.linalg.norm(b), 1e-30))
+
+
+def _rwalk_dirs(norms, dim, n, rng):
+    """R-WALK null directions (13e; DESIGN-V4 §A) adapted to a static direction: a random unit
+    step RE-DRAWN at the identical per-gen grad-norm schedule, accumulated + normalized — the
+    accumulation analog of the isotropic R-random draw (the path-following null of record)."""
+    w = np.asarray(norms, float) / max(float(np.sum(norms)), 1e-30)
+    out = np.empty((n, dim))
+    for i in range(n):
+        steps = rng.standard_normal((len(norms), dim))
+        steps /= np.linalg.norm(steps, axis=1, keepdims=True)
+        acc = (w[:, None] * steps).sum(0)
+        out[i] = acc / max(np.linalg.norm(acc), 1e-30)
+    return out
+
+
+def score_candidate_calibrated(functionals_G: dict, candidate, v3, rng, n_null=400) -> dict:
+    """Per-functional formula-visibility of a candidate direction, verdict KEYED to the
+    calibrated pair (V3/dir0 read-only reference + R-WALK null). R-random retained as a
+    reported column, NOT the verdict key (it sits below dir0's own manifold-adjacent cosine,
+    so it rubber-stamps any structured direction — incl. the structural negative itself).
+
+    'above_read_only_pole' (per functional) = the candidate's per-gen cos exceeds dir0's by
+    >2 pooled-SE AND clears the R-WALK p95. Overall READ-ONLY-POLE-LIKE ⇒ indistinguishable
+    from the structural negative ⇒ consistent with formula-INERT-AS-A-LEVER (NOT a lever
+    claim; the write test — build the gradient candidate + steer ≥2×R — still decides P=.70)."""
+    cand = np.asarray(candidate, float); cand /= max(np.linalg.norm(cand), 1e-30)
+    v3u = None if v3 is None else (np.asarray(v3, float) / max(np.linalg.norm(v3), 1e-30))
+    per_f, any_above = {}, False
+    for f, G in functionals_G.items():
+        G = np.asarray(G, float)
+        mg = G.mean(0); mgu = mg / max(np.linalg.norm(mg), 1e-30)
+        norms = np.linalg.norm(G, axis=1)
+        cc = np.array([_cosine(G[i], cand) for i in range(len(G))])
+        cand_mean, cand_se = float(cc.mean()), float(cc.std(ddof=1) / np.sqrt(len(cc)))
+        R = rng.standard_normal((n_null, len(mg))); R /= np.linalg.norm(R, axis=1, keepdims=True)
+        r_rand_p95 = float(np.percentile(np.abs(R @ mgu), 95))
+        r_walk_p95 = float(np.percentile(np.abs(_rwalk_dirs(norms, len(mg), n_null, rng) @ mgu), 95))
+        row = {"cos_meangrad_candidate": round(_cosine(mg, cand), 4),
+               "cand_per_gen_cos_mean": round(cand_mean, 4), "cand_per_gen_cos_se": round(cand_se, 4),
+               "R_random_p95_abs_cos": round(r_rand_p95, 4),   # reported, NOT the verdict key
+               "R_walk_p95_abs_cos": round(r_walk_p95, 4)}     # calibrated null
+        if v3u is not None:
+            cv = np.array([_cosine(G[i], v3u) for i in range(len(G))])
+            v3_mean, v3_se = float(cv.mean()), float(cv.std(ddof=1) / np.sqrt(len(cv)))
+            pooled = float(np.sqrt(cand_se ** 2 + v3_se ** 2))
+            margin = cand_mean - v3_mean
+            row.update({"cos_meangrad_V3": round(_cosine(mg, v3u), 4),
+                        "v3_per_gen_cos_mean": round(v3_mean, 4), "v3_per_gen_cos_se": round(v3_se, 4),
+                        "candidate_minus_V3_cos": round(margin, 4),
+                        "candidate_minus_V3_z": round(margin / max(pooled, 1e-12), 2),
+                        "above_read_only_pole": bool(margin > 2 * pooled and cand_mean > r_walk_p95)})
+            any_above = any_above or row["above_read_only_pole"]
+        per_f[f] = row
+    verdict = ("GRADIENT-VISIBLE-ABOVE-READ-ONLY-POLE (exceeds dir0 by >2 SE on ≥1 functional AND "
+               "clears R-WALK — a formula-visibility candidate; the WRITE test still decides the lever)"
+               if any_above else
+               "READ-ONLY-POLE-LIKE (indistinguishable from dir0, the structural negative; consistent "
+               "with formula-INERT-AS-A-LEVER — NOT a lever claim; the build+steer write test is owed)")
+    return {"per_functional": per_f, "verdict_calibrated": verdict,
+            "verdict_key": "V3/dir0 read-only reference (>2 pooled-SE) + R-WALK p95; R-random reported not keyed",
+            "any_functional_above_read_only_pole": any_above}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", choices=list(MODEL_PRESETS.keys()), required=True)
-    ap.add_argument("--model-path", required=True)
-    ap.add_argument("--stage0-run", type=Path, required=True)
+    ap.add_argument("--model-path", default=None)   # required only for the live (GPU) path
+    ap.add_argument("--stage0-run", type=Path, default=None)
     ap.add_argument("--vectors", type=Path, default=None,
                     help="a5_vectors.npz — for cos(∇S, V3_L14) / cos(∇S, V4_L14) rows")
     ap.add_argument("--candidate-npz", type=Path, default=None,
@@ -64,9 +141,48 @@ def main() -> None:
     ap.add_argument("--candidate-keys", nargs="+", default=None)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--n-gens", type=int, default=20)
+    ap.add_argument("--recalibrate", action="store_true",
+                    help="GPU-FREE: re-derive the candidate verdict from the banked per-gen G "
+                         "matrices in --out-dir with the calibrated (V3/dir0 + R-WALK) baseline; "
+                         "writes v4_grad_panel_<model>_calibrated.json BESIDE the original (14m "
+                         "item-4 corrected-artifact discipline; original preserved).")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.recalibrate:
+        src = json.loads((args.out_dir / f"v4_grad_panel_{args.model}.json").read_text())
+        G = {f: np.load(args.out_dir / f"v4panel_G_{f}_{args.model}.npz")["G"] for f in FUNCTIONALS}
+        vecs = np.load(args.vectors) if args.vectors and args.vectors.exists() else None
+        v3 = vecs["V3_L14"].astype(np.float64) if vecs is not None and "V3_L14" in vecs.files else None
+        cd = np.load(args.candidate_npz)
+        rng = np.random.default_rng(20260716)
+        cand_out = {}
+        for key in (args.candidate_keys or []):
+            if key not in cd.files:
+                cand_out[key] = {"present": False}; continue
+            cand_out[key] = {"present": True, **score_candidate_calibrated(G, cd[key].astype(np.float64), v3, rng)}
+        src["candidate_formula_leg"] = cand_out
+        src["candidate_formula_leg_NOTE"] = ("RECALIBRATED (outer-loop ruling 2026-07-16): verdict keyed "
+            "to V3/dir0 (structural-negative) reference + R-WALK; R-random retained not keyed. ∇-panel = "
+            "the READ confirm — it does NOT score the write prediction P=.70; the build+steer ≥2×R write "
+            "test is OWED and scores it. Original artifact preserved alongside.")
+        src["STATUS"] = src.get("STATUS", "") + " | CANDIDATE VERDICT RECALIBRATED (V3/dir0 + R-WALK)"
+        outp = args.out_dir / f"v4_grad_panel_{args.model}_calibrated.json"
+        outp.write_text(json.dumps(src, indent=1))
+        for key, v in cand_out.items():
+            if v.get("present"):
+                print(f"{key}: {v['verdict_calibrated']}")
+                for f in FUNCTIONALS:
+                    r = v["per_functional"][f]
+                    print(f"  {f}: cand {r['cand_per_gen_cos_mean']}±{r['cand_per_gen_cos_se']} "
+                          f"vs V3 {r.get('v3_per_gen_cos_mean')}±{r.get('v3_per_gen_cos_se')} "
+                          f"(Δz {r.get('candidate_minus_V3_z')}) R-walk_p95 {r['R_walk_p95_abs_cos']} "
+                          f"above_pole={r.get('above_read_only_pole')}")
+        print(f"wrote {outp}")
+        return
+
+    if not (args.model_path and args.stage0_run):
+        ap.error("--model-path and --stage0-run are required for the live (GPU) panel run")
     from transformers import AutoModelForCausalLM
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -180,38 +296,30 @@ def main() -> None:
                     + (f"  cos(·,V3) {row.get('cos_meangrad_V3'):.4f}" if v3 is not None else ""))
 
     # 14k FORMULA LEG — ∇-panel differentiability confirm for a candidate coordinate (P3').
-    # Is the candidate seen by ANY functional's mean gradient ABOVE the R-null band? Frozen
-    # prediction for Ksoclin: formula-INERT (no functional aligns above null) — the doctrine's
-    # first discriminating test (P=.70). REPORT arithmetic; the call is the outer loop's.
+    # Verdict KEYED to the calibrated pair (V3/dir0 read-only reference + R-WALK); R-random
+    # reported but NOT the key (outer-loop ruling 2026-07-16: R-random rubber-stamps any
+    # structured direction — it sits below dir0's own manifold-adjacent cosine). This is the
+    # READ confirm only; it does NOT score P=.70 (a WRITE prediction) — the build+steer is owed.
     if args.candidate_npz and args.candidate_keys and args.candidate_npz.exists():
         cd = np.load(args.candidate_npz)
-        dim = len(next(iter(mean_grads.values())))
         rng = np.random.default_rng(20260716)
-        R = rng.standard_normal((400, dim)); R /= np.linalg.norm(R, axis=1, keepdims=True)
         cand_out = {}
         for key in args.candidate_keys:
             if key not in cd.files:
                 cand_out[key] = {"present": False}; continue
-            cv = cd[key].astype(np.float64); cv /= np.linalg.norm(cv)
-            per_f, any_seen = {}, False
-            for f in FUNCTIONALS:
-                mg = mean_grads[f]
-                c = _cos(mg, cv)
-                null_abs = np.abs(R @ (mg / max(np.linalg.norm(mg), 1e-30)))
-                p95 = float(np.percentile(null_abs, 95))
-                seen = bool(abs(c) > p95)
-                any_seen = any_seen or seen
-                per_f[f] = {"cos_meangrad_candidate": round(c, 4),
-                            "null_p95_abs_cos": round(p95, 4), "seen_above_null": seen}
-            cand_out[key] = {"present": True, "per_functional": per_f,
-                             "differentiable_any_functional": any_seen,
-                             "verdict": ("FORMULA-VISIBLE (a functional gradient sees it above null)"
-                                         if any_seen else
-                                         "FORMULA-INERT (no functional gradient sees it above the R-null)")}
-            logger.info(f"candidate {key}: differentiable={any_seen} "
-                        + " ".join(f"{f}={per_f[f]['cos_meangrad_candidate']:+.3f}(p95 {per_f[f]['null_p95_abs_cos']:.3f})"
-                                   for f in FUNCTIONALS))
+            sc = score_candidate_calibrated({f: np.stack(grads[f]) for f in FUNCTIONALS},
+                                            cd[key].astype(np.float64), v3, rng)
+            cand_out[key] = {"present": True, **sc}
+            logger.info(f"candidate {key}: {sc['verdict_calibrated'][:55]} | "
+                        + " ".join(f"{f}=cand{sc['per_functional'][f]['cand_per_gen_cos_mean']:+.3f}"
+                                   f"/v3{sc['per_functional'][f].get('v3_per_gen_cos_mean')}"
+                                   f"(Δz{sc['per_functional'][f].get('candidate_minus_V3_z')})" for f in FUNCTIONALS))
         summary["candidate_formula_leg"] = cand_out
+        summary["candidate_formula_leg_NOTE"] = ("∇-panel = the READ (differentiability) confirm; it "
+                                                 "does NOT score the write prediction P=.70. Verdict keyed "
+                                                 "to V3/dir0 (structural-negative) reference + R-WALK; "
+                                                 "R-random retained but not keyed. The build+steer ≥2×R "
+                                                 "write test is OWED and is what scores P=.70.")
 
     # §B.6 outcome flags (arithmetic only; interpretation → outer loop)
     sm = summary["functionals"]["S_mass"]["norm_of_mean_grad"]
