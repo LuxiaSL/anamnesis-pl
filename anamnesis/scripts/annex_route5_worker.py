@@ -148,10 +148,40 @@ def main() -> None:
     ap.add_argument("--worker-id", type=int, default=0)
     ap.add_argument("--site", type=int, default=14)
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--full-score", action="store_true",
+                    help="one-shot: replay --gids with the --candidate-npy vector at "
+                         "--alpha-frac, FULL feature set (per-head ON), write features "
+                         "to --out. The ruled acceptance condition (ratification "
+                         "2026-07-16): the winner is scored on the full 3,358 gauge.")
+    ap.add_argument("--candidate-npy", type=Path, default=None)
+    ap.add_argument("--gids", default=None, help="comma-separated gen ids")
+    ap.add_argument("--alpha-frac", type=float, default=0.1)
+    ap.add_argument("--manifest", type=Path, default=None)
+    ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
 
     if args.smoke:
         smoke(args)
+        return
+    if args.full_score:
+        stamps = json.loads((args.battery_root / "a5_vectors_3b/a5_vectors_stamps.json").read_text())
+        alpha_abs = args.alpha_frac * float(stamps["median_resid_norms"][f"L{args.site}"])
+        manifest = json.loads(args.manifest.read_text())["entries"]
+        vec = np.load(args.candidate_npy).astype(np.float32).reshape(-1)
+        gids = [int(g) for g in args.gids.split(",")]
+        loaded, ec, fc, calib, _ = build_loaded(args.model, args.model_path,
+                                                args.calib_dir, per_head=True)
+        wh = attach(loaded, vec, args.site, alpha_abs)
+        feats, names = [], None
+        for gid in gids:
+            e = manifest[str(gid)]
+            f, names = replay_features(loaded, ec, fc, calib, e["input_ids"],
+                                       int(e["prompt_length"]), wh)
+            feats.append(f)
+        wh.remove()
+        np.savez(args.out, features=np.stack(feats), gids=np.array(gids),
+                 feature_names=np.array(names))
+        logger.info(f"full-score: {len(gids)} gens -> {args.out}")
         return
     if args.work_dir is None:
         raise SystemExit("--work-dir required outside --smoke")

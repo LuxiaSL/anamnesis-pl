@@ -78,6 +78,12 @@ def build_reference(runs_root: Path, work_dir: Path, model: str) -> tuple[list[s
     Z = ((X[:, kept] - med[kept]) / scale[kept]).astype(np.float32)
     np.savez(work_dir / "reference.npz", med=med[kept], scale=scale[kept],
              stage0_z=Z, stage0_gids=np.array(gids))
+    # full-space reference for the ruled acceptance condition (ratification 2026-07-16:
+    # the winner is scored on the FULL 3,358-feature gauge, per-head included)
+    Zf = ((X - med) / scale).astype(np.float32)
+    np.savez(work_dir / "reference_full.npz", med=med, scale=scale,
+             stage0_z=Zf, stage0_gids=np.array(gids),
+             feature_names=np.array(names))
     (work_dir / "reference.json").write_text(json.dumps(
         {"feature_names_kept": kept_names, "n_dropped_ph": len(names) - len(kept)}))
     return kept_names, {"stage0_gids": gids}
@@ -202,6 +208,9 @@ def main() -> None:
     ap.add_argument("--workers-per-gpu", type=int, default=12)     # w96 overnight config
     ap.add_argument("--acc-n", type=int, default=20)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--resume", action="store_true",
+                    help="restore ckpt.pkl in --work-dir and continue the SAME budget "
+                         "(evals carry over; the stopping rule never restarts a leg)")
     args = ap.parse_args()
 
     if args.mode in ("killrung", "null") and args.null_draw is None:
@@ -257,9 +266,34 @@ def main() -> None:
 
     opt = SepCMA(dim=args.hidden_dim, seed=args.seed, sigma0=1.0, x0=x0)
     ev_rng = np.random.default_rng(args.seed + 999)
-    hist = open(args.work_dir / "history.jsonl", "a")
     best_sel, best_x, best_gen, stagnant = -1.0, None, -1, 0
+    ckpt_path = args.work_dir / "ckpt.pkl"
+    if args.resume:
+        import pickle
+        with open(ckpt_path, "rb") as f:
+            ck = pickle.load(f)
+        opt.restore(ck["cma"])
+        ev_rng.bit_generator.state = ck["ev_rng_state"]
+        best_sel, best_x = ck["best_sel"], ck["best_x"]
+        best_gen, stagnant = ck["best_gen"], ck["stagnant"]
+        logger.info(f"RESUMED at gen {opt.gen} / {opt.evals} evals "
+                    f"(budget {args.budget_evals}; best {best_sel:.4f})")
+    hist = open(args.work_dir / "history.jsonl", "a")
+    if args.resume:
+        # gens between the checkpoint and the kill re-run and re-log; budget counts
+        # them ONCE (restored eval counter). This marker delimits the overlap.
+        hist.write(json.dumps({"resumed_at_gen": opt.gen, "evals": opt.evals}) + "\n")
+        hist.flush()
     t_start = time.time()
+
+    def save_ckpt() -> None:
+        import pickle
+        tmp = ckpt_path.with_suffix(".tmp")
+        with open(tmp, "wb") as f:
+            pickle.dump({"cma": opt.state(), "ev_rng_state": ev_rng.bit_generator.state,
+                         "best_sel": best_sel, "best_x": best_x,
+                         "best_gen": best_gen, "stagnant": stagnant}, f)
+        tmp.rename(ckpt_path)
 
     while opt.evals < args.budget_evals:
         X = opt.ask()
@@ -282,9 +316,7 @@ def main() -> None:
                                "elapsed_s": round(time.time() - t_start, 1)}) + "\n")
         hist.flush()
         if opt.gen % CKPT_EVERY == 0:
-            np.savez(args.work_dir / "ckpt.npz", best_x=best_x, best_sel=best_sel,
-                     best_gen=best_gen, **{f"cma_{k}": v for k, v in opt.state().items()
-                                           if k != "rng_state"})
+            save_ckpt()
         if stagnant >= STAGNATION_GENS:
             logger.info(f"STAGNATION stop at gen {opt.gen} ({opt.evals} evals)")
             break
@@ -294,6 +326,7 @@ def main() -> None:
                "gens": opt.gen, "best_heldin_sel": best_sel, "best_gen": best_gen,
                "wall_s": round(time.time() - t_start, 1),
                "stopped": "stagnation" if stagnant >= STAGNATION_GENS else "budget"}
+    save_ckpt()
     if best_x is not None:
         acc = list(ev_rng.choice(acc_gids, size=min(args.acc_n, len(acc_gids)),
                                  replace=False))
@@ -302,6 +335,11 @@ def main() -> None:
                                  pairs, args.alpha_frac)
         md = np.mean(np.stack(got[0]), axis=0)
         gauge_axis = load_axis(gauge_path, None, kept_names)
+        # kill-rung gate of record (ratification 2026-07-16): HELD-OUT ACC selectivity
+        # on the axis the leg OPTIMIZED; held-in best = the measured overfit gap.
+        summary["acc_sel_on_target"] = selectivity(md, axis)
+        summary["overfit_gap_heldin_minus_heldout_on_target"] = \
+            best_sel - summary["acc_sel_on_target"]
         summary["acc_sel_on_gauge"] = selectivity(md, gauge_axis)
         nulls = np.load(null_path, allow_pickle=True)
         names = [str(n) for n in nulls["feature_names"]]
@@ -319,6 +357,37 @@ def main() -> None:
             summary[f"cos_to_{key}_DIAGNOSTIC_ONLY"] = float(
                 best_x @ v / (np.linalg.norm(best_x) * np.linalg.norm(v)))
         np.save(args.work_dir / "best_candidate.npy", best_x.astype(np.float32))
+
+        # ruled acceptance condition: the winner on the FULL 3,358 gauge (per-head ON).
+        if not args.dry_run:
+            out = args.work_dir / "full_score.npz"
+            env = {**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
+                   "OMP_NUM_THREADS": "1"}
+            subprocess.run(
+                [sys.executable, "-m", "anamnesis.scripts.annex_route5_worker",
+                 "--full-score", "--model", args.model, "--model-path", args.model_path,
+                 "--calib-dir", str(args.calib_dir),
+                 "--battery-root", str(args.battery_root),
+                 "--candidate-npy", str(args.work_dir / "best_candidate.npy"),
+                 "--gids", ",".join(str(g) for g in acc),
+                 "--alpha-frac", str(args.alpha_frac),
+                 "--manifest", str(args.manifest), "--out", str(out),
+                 "--site", str(args.site)],
+                env=env, check=True)
+            fs = np.load(out, allow_pickle=True)
+            rf = np.load(args.work_dir / "reference_full.npz", allow_pickle=True)
+            if [str(n) for n in fs["feature_names"]] != [str(n) for n in rf["feature_names"]]:
+                raise SystemExit("full-score feature names != stage0 full set — fork")
+            row = {int(g): i for i, g in enumerate(rf["stage0_gids"])}
+            Zc = (fs["features"] - rf["med"]) / rf["scale"]
+            D = np.stack([Zc[i] - rf["stage0_z"][row[int(g)]]
+                          for i, g in enumerate(fs["gids"])])
+            gz = np.load(gauge_path, allow_pickle=True)
+            full_axis = gz["axis"].astype(np.float32)
+            summary["acc_sel_on_gauge_FULL3358"] = selectivity(
+                D.mean(axis=0).astype(np.float32), full_axis)
+        else:
+            summary["acc_sel_on_gauge_FULL3358"] = None   # no model in dry-run
 
     (args.work_dir / "summary.json").write_text(json.dumps(summary, indent=1))
     logger.info(f"SUMMARY: {json.dumps(summary)}")
