@@ -67,6 +67,17 @@ def main() -> None:
     med, scale = load_floor_scale(args.stage0_run / "signatures_v3")
     axes = build_axes(args.battery_root, args.model, med, scale, len(med))
     dir0 = axes["dir0"]
+    # SOCLIN coordinate = the socratic<->linear LDA axis in floor-z signature space (parallel to
+    # dir0=analogical<->contrastive) — the coordinate Ksoclin defines and the write test targets.
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+
+    def _pure_Z(mode):
+        d = args.battery_root / f"vmb_a2_{args.model}_pure_{mode}"
+        return ConditionCorpus(d / "signatures_v3", d / "metadata.json", med, scale, mode).Z
+    Zsoc, Zlin = _pure_Z("socratic"), _pure_Z("linear")
+    X = np.vstack([Zsoc, Zlin]); y = np.r_[np.ones(len(Zsoc)), np.zeros(len(Zlin))]
+    a = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto").fit(X, y).coef_[0]
+    soclin_axis = (a / max(np.linalg.norm(a), 1e-12)).astype(np.float32)
 
     def centroid(run_dir, cell):
         d = run_dir / cell
@@ -79,54 +90,71 @@ def main() -> None:
 
     rows = []
     doses = [0.03, 0.1, 0.3]
-    # target vectors (Ksoclin, V3) from soclin dir; R nulls from a5 dir
-    targets = {"Ksoclin": args.soclin_run_dir, "V3": args.soclin_run_dir}
-    nulls = {"R1": args.a5_run_dir, "R2": args.a5_run_dir, "R3": args.a5_run_dir}
+    # Ksoclin/V3 = DATA route; Gent/Gmas = FORMULA route (V4-recipe gradients). All in soclin dir.
+    targets = {"Ksoclin": "data", "V3": "data", "Gent": "formula", "Gmas": "formula"}
+    nulls = ["R1", "R2", "R3"]
     for af in doses:
-        r_shifts = []
-        for rk, rd in nulls.items():
-            c = centroid(rd, f"{rk}_L14_a{af}")
+        r_soc, r_d0 = [], []
+        for rk in nulls:
+            c = centroid(args.a5_run_dir, f"{rk}_L14_a{af}")
             if c is not None:
-                r_shifts.append(project(c - base, dir0)["target"])
-        r_mean = float(np.mean(r_shifts)) if r_shifts else None
-        r_max = float(np.max(r_shifts)) if r_shifts else None
-        for tk, td in targets.items():
-            c = centroid(td, f"{tk}_L14_a{af}")
+                r_soc.append(project(c - base, soclin_axis)["target"])
+                r_d0.append(project(c - base, dir0)["target"])
+        rs_mean = float(np.mean(r_soc)) if r_soc else None
+        rs_max = float(np.max(r_soc)) if r_soc else None
+        for tk, route in targets.items():
+            c = centroid(args.soclin_run_dir, f"{tk}_L14_a{af}")
             if c is None:
                 continue
-            pj = project(c - base, dir0)
-            txt = _socratic_rate(_texts(td, f"{tk}_L14_a{af}"))
+            pj_soc = project(c - base, soclin_axis)
+            pj_d0 = project(c - base, dir0)
+            txt = _socratic_rate(_texts(args.soclin_run_dir, f"{tk}_L14_a{af}"))
             rows.append({
-                "vector": tk, "alpha_frac": af,
-                "dir0_shift": round(pj["target"], 4), "off_target": round(pj["off_target"], 4),
-                "R_shift_mean": round(r_mean, 4) if r_mean else None,
-                "R_shift_max": round(r_max, 4) if r_max else None,
-                "lever_over_Rmean": round(pj["target"] / r_mean, 2) if r_mean else None,
-                "lever_over_Rmax": round(pj["target"] / r_max, 2) if r_max else None,
+                "vector": tk, "route": route, "alpha_frac": af,
+                "soclin_shift": round(pj_soc["target"], 4),
+                "dir0_shift": round(pj_d0["target"], 4),
+                "R_soclin_mean": round(rs_mean, 4) if rs_mean else None,
+                "R_soclin_max": round(rs_max, 4) if rs_max else None,
+                "lever_over_Rmean_soclin": round(pj_soc["target"] / rs_mean, 2) if rs_mean else None,
+                "lever_over_Rmax_soclin": round(pj_soc["target"] / rs_max, 2) if rs_max else None,
                 "socratic_marker_per_1k": txt["socratic_marker_per_1k"],
                 "socratic_marker_excess_over_baseline": round(txt["socratic_marker_per_1k"] - base_txt["socratic_marker_per_1k"], 2),
-                "question_per_1k": txt["question_per_1k"],
             })
 
+    def lever_low(vec):
+        return [r["alpha_frac"] for r in rows if r["vector"] == vec and r["alpha_frac"] <= 0.1
+                and (r["lever_over_Rmean_soclin"] or 0) >= 2.0]
     kso = [r for r in rows if r["vector"] == "Ksoclin"]
-    lever_low = [r for r in kso if r["alpha_frac"] <= 0.1 and (r["lever_over_Rmean"] or 0) >= 2.0]
     verdict = {
-        "prediction": "14k(a) P=.85: Ksoclin lever ≥2×R at α≤.1 WITH in-window behavioral (socratic) consequence",
-        "Ksoclin_lever_ge2x_Rmean_at_low_alpha": [r["alpha_frac"] for r in lever_low],
-        "Ksoclin_behavioral_socratic_excess_at_low_alpha":
-            {r["alpha_frac"]: r["socratic_marker_excess_over_baseline"] for r in kso if r["alpha_frac"] <= 0.1},
+        "P85_data_route": {
+            "prediction": "14k(a) P=.85: Ksoclin lever ≥2×R (soclin axis) at α≤.1 WITH socratic behavioral consequence",
+            "Ksoclin_lever_ge2x_at_low_alpha": lever_low("Ksoclin"),
+            "V3_ref_lever_ge2x_at_low_alpha": lever_low("V3"),
+            "Ksoclin_socratic_excess_low_alpha":
+                {r["alpha_frac"]: r["socratic_marker_excess_over_baseline"] for r in kso if r["alpha_frac"] <= 0.1},
+        },
+        "P70_formula_write_test": {
+            "prediction": "P=.70 formula-INERT: V4-recipe gradient (Gent/Gmas) does NOT lever the soclin coordinate ≥2×R",
+            "Gent_lever_ge2x_at_low_alpha": lever_low("Gent"),
+            "Gmas_lever_ge2x_at_low_alpha": lever_low("Gmas"),
+            "reading": "empty lists ⇒ formula-INERT confirmed (data-for-needles); non-empty ⇒ doctrine hit",
+        },
     }
-    out = {"arm": "14k Ksoclin steering — dir0-shift lever + socratic induction",
+    out = {"arm": "14k Ksoclin steering (data route) + formula WRITE test (gradient route) on the soclin coordinate",
            "STATUS": "FIRST_READ_PENDING (C§8) — UNSTAMPED → outer loop",
-           "law": "free-gen centroid dir0-shift (floor-z) vs matched-R (R1/R2/R3) at α{.03,.1,.3}; "
-                  "lever ≥2×R at α≤.1; socratic marker/question rate vs baseline = behavioral leg.",
+           "law": "free-gen centroid shift onto the socratic↔linear LDA axis (floor-z) vs matched-R "
+                  "(R1/R2/R3) at α{.03,.1,.3}; lever ≥2×R at α≤.1. Data route = Ksoclin/V3 (P=.85); "
+                  "formula route = Gent/Gmas V4-recipe gradients (P=.70 INERT). dir0-shift secondary. "
+                  "socratic marker rate vs baseline = data-route behavioral leg.",
            "baseline_socratic": base_txt, "verdict": verdict, "rows": rows}
     args.out_json.write_text(json.dumps(out, indent=1))
     for r in rows:
-        print(f"  {r['vector']:8} a{r['alpha_frac']}: dir0_shift={r['dir0_shift']} "
-              f"lever/Rmean={r['lever_over_Rmean']} lever/Rmax={r['lever_over_Rmax']} "
+        print(f"  {r['vector']:8}({r['route']:7}) a{r['alpha_frac']}: soclin_shift={r['soclin_shift']} "
+              f"lever/Rmean={r['lever_over_Rmean_soclin']} dir0_shift={r['dir0_shift']} "
               f"soc_excess={r['socratic_marker_excess_over_baseline']}")
-    print(f"VERDICT: Ksoclin lever≥2×R at α≤.1: {verdict['Ksoclin_lever_ge2x_Rmean_at_low_alpha']}")
+    print(f"VERDICT data(P.85): Ksoclin lever≥2×R@α≤.1 = {verdict['P85_data_route']['Ksoclin_lever_ge2x_at_low_alpha']}")
+    print(f"VERDICT formula(P.70 INERT): Gent {verdict['P70_formula_write_test']['Gent_lever_ge2x_at_low_alpha']} "
+          f"Gmas {verdict['P70_formula_write_test']['Gmas_lever_ge2x_at_low_alpha']}")
     print(f"wrote {args.out_json}")
 
 
