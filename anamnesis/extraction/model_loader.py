@@ -357,7 +357,10 @@ def _make_residual_write_pre_hook(
             # decoding, and single-forward replay.
             s = spec.start_pos if spec.start_pos is not None else 0
             e = spec.end_pos if spec.end_pos is not None else int(cache_position.max().item()) + 1
-            mask = (cache_position >= s) & (cache_position < e)  # [seq_len] bool
+            # mask must live on the hidden-states device — cache_position can be on a different
+            # device (multi-GPU / CPU cache_position), which crashes out[:, mask, :] with
+            # "indices should be ... on the same device as the indexed tensor".
+            mask = ((cache_position >= s) & (cache_position < e)).to(hs.device)  # [seq_len] bool
             n_inj = int(mask.sum().item())
             if stats is not None:
                 stats["positions"] = stats.get("positions", 0) + n_inj
