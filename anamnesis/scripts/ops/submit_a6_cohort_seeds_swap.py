@@ -62,11 +62,14 @@ def main() -> None:
     subprocess.run(["ssh", "node1", stage], check=True)
     print(f"staged {CKPT_JSON} + symlinked {len(CONTROLS)} controls into {SEEDS_ROOT}")
 
-    # 6 GPUs (not 8): leaves 2 for the concurrent §2b build+probe chain (spine) after killrung.
+    # --pristine-restore is MANDATORY over 120 checkpoints: without it, merge/unmerge float drift
+    # accumulates in the base weights across a worker's sequence, so each checkpoint sees a
+    # position-dependent drift-corrupted "base" (proven: B=0 step-1 checkpoints gave a non-zero
+    # field, per-model means differing by 527) — confounding the whole cohort. Restore fixes it.
     cmd = (f"python -u -m anamnesis.scripts.run_replay_multickpt --model qwen-7b "
-           f"--model-path {QPATH} --calib-dir {CALIB} --manifest {MANIFEST} "
-           f"--checkpoints-json {CKPT_JSON} --gpus 0,1,2,3,4,5 --workers-per-gpu 8")
-    jid = submit("a6_cohort_seeds_swap", cmd, gpus=6, minutes=60)
+           f"--model-path {QPATH} --calib-dir {CALIB} --manifest {MANIFEST} --pristine-restore "
+           f"--checkpoints-json {CKPT_JSON} --gpus 0,1,2,3,4,5 --workers-per-gpu 8 --no-resume")
+    jid = submit("a6_cohort_seeds_swap_pristine", cmd, gpus=6, minutes=90)
     print(f"a6_cohort_seeds_swap -> {jid}")
     print(f"output: {SEEDS_ROOT}/<animal>_<seed>/step-<step>/signatures_v3")
 
