@@ -223,9 +223,13 @@ def main() -> None:
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     preset = MODEL_PRESETS[args.model]
-    # Qwen dtype LAW: fp16 everywhere, free-gen-attested, NO fp32-mixing (session-6 fragility
-    # finding; baton constraint vi). Explicit float16 — NOT the preset's native bfloat16.
-    dtype = torch.float16 if args.model.startswith("qwen") else getattr(torch, preset.torch_dtype)
+    # ⚠ DTYPE (surfaced to outer loop): constraint (vi)'s literal "fp16" is INFEASIBLE for Qwen
+    # generation — float16 sampling throws a CUDA device-side assert (NaN/inf logits ->
+    # multinomial). The ENTIRE bridge lineage §2b extends (Acat / V_student / dese_probe) ran in
+    # preset.torch_dtype = bfloat16 and worked; using bf16 here is both feasible AND keeps §2b
+    # dtype-consistent with the bridge it is compared against (no dtype-mixing across the A6 leg,
+    # session-6 law). "fp16 law" reconciles as the SAVED-tensor dtype, not the compute dtype.
+    dtype = getattr(torch, preset.torch_dtype)   # bfloat16 for qwen-7b (native, lineage-matched)
     tok = AutoTokenizer.from_pretrained(args.model_path)
 
     categories = {"align_numbers": NUMBERS_PROMPTS, "diverge_animal": ANIMAL_CONSTRUCT_PROMPTS}

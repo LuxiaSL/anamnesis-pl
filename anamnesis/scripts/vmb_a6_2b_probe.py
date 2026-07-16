@@ -86,7 +86,9 @@ def main() -> None:
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    dtype = torch.float16 if args.model.startswith("qwen") else getattr(torch, MODEL_PRESETS[args.model].torch_dtype)
+    # bf16 (native, lineage-matched) — fp16 Qwen generation throws a CUDA device-side assert;
+    # the bridge (Acat/V_student/dese_probe) ran bf16. See vmb_a6_2b_build dtype note (outer loop).
+    dtype = getattr(torch, MODEL_PRESETS[args.model].torch_dtype)
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, dtype=dtype, attn_implementation="eager").to("cuda").eval()
     tok = AutoTokenizer.from_pretrained(args.model_path)
