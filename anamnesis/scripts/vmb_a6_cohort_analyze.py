@@ -61,7 +61,7 @@ def cos(a: NDArray, b: NDArray) -> float:
 
 
 def step_stats(Z: NDArray, role: NDArray, animal: NDArray, seed: NDArray, gid: NDArray,
-               rng: np.random.Generator, e_final: NDArray | None) -> dict:
+               rng: np.random.Generator, e_final: NDArray | None, cid: NDArray | None = None) -> dict:
     s, c = role == "student", role == "control"
     ns, nc = int(s.sum()), int(c.sum())
     row: dict = {"n_student": ns, "n_control": nc}
@@ -88,19 +88,24 @@ def step_stats(Z: NDArray, role: NDArray, animal: NDArray, seed: NDArray, gid: N
     d1, d2 = c & (par == 0), c & (par == 1)
     if min(h1.sum(), h2.sum()) >= MIN_HALF and min(d1.sum(), d2.sum()) >= MIN_HALF:
         row["reliability_probe"] = cos(Z[h1].mean(0) - Z[d1].mean(0), Z[h2].mean(0) - Z[d2].mean(0))
-    # seed-parity split-half (identity: over train-seed parity within students)
+    # seed-parity split-half: STUDENTS by train-seed parity, CONTROLS by CONTROL_ID parity.
+    # (controls are single-seed 'dense', differing only by control_id a-e — their independent-
+    # replicate dimension; splitting controls by seed would leave one half empty and skip the
+    # metric. This measures whether the trait FIELD replicates across independent seed/control
+    # subsets — the source-of-record reliability at the seeds grain.)
     seeds_present = sorted(set(seed[s].tolist()))
-    if len(seeds_present) >= 2:
+    if len(seeds_present) >= 2 and cid is not None:
         sp = {v: i for i, v in enumerate(seeds_present)}
         spar = np.array([sp.get(t, -1) for t in seed])
-        cids = sorted(set(seed[c].tolist()))
-        cp = {v: i for i, v in enumerate(cids)}
-        cpar = np.array([cp.get(t, -1) for t in seed])
+        cids_present = sorted(x for x in set(cid[c].tolist()) if x)
+        cp = {v: i for i, v in enumerate(cids_present)}
+        cpar = np.array([cp.get(t, -1) for t in cid])
         sh1, sh2 = s & (spar % 2 == 0), s & (spar % 2 == 1)
         ch1, ch2 = c & (cpar % 2 == 0), c & (cpar % 2 == 1)
-        if min(sh1.sum(), sh2.sum()) >= MIN_HALF and min(ch1.sum(), ch2.sum()) >= 3:
+        if min(int(sh1.sum()), int(sh2.sum())) >= MIN_HALF and min(int(ch1.sum()), int(ch2.sum())) >= MIN_HALF:
             row["reliability_seed"] = cos(Z[sh1].mean(0) - Z[ch1].mean(0),
                                           Z[sh2].mean(0) - Z[ch2].mean(0))
+            row["reliability_seed_split"] = {"student_seeds": seeds_present, "control_ids": cids_present}
     # L3 per-animal excess + animal-vs-animal contrasts
     from itertools import combinations
     for a in ANIMALS:
@@ -112,11 +117,33 @@ def step_stats(Z: NDArray, role: NDArray, animal: NDArray, seed: NDArray, gid: N
         sa, sb = s & (animal == a), s & (animal == b)
         if sa.sum() >= MIN_HALF and sb.sum() >= MIN_HALF:
             row[f"contrast_mag_{a}_{b}"] = float(np.linalg.norm(Z[sa].mean(0) - Z[sb].mean(0)))
+    # drift-vs-field decomposition rider (descriptive): per-MODEL drift = model mean − grand mean;
+    # ‖drift‖ vs ‖field‖ + cos(drift, field) — the BURIAL diagnostic (individual-model drift
+    # swamping the trait-group field; session-8 late-burial anatomy).
+    if cid is not None:
+        grand = Z[s | c].mean(0)
+        mk = np.array([f"{role[i]}|{animal[i]}|{cid[i]}|{seed[i]}" for i in range(len(role))])
+        dnorms, dcos = [], []
+        for k in sorted(set(mk[s | c].tolist())):
+            mi = (mk == k) & (s | c)
+            if int(mi.sum()) < MIN_HALF:
+                continue
+            d = Z[mi].mean(0) - grand
+            dnorms.append(float(np.linalg.norm(d)))
+            dcos.append(cos(d, e))
+        if dnorms:
+            fn = float(np.linalg.norm(e))
+            row["drift_vs_field"] = {
+                "mean_model_drift_norm": round(float(np.mean(dnorms)), 3),
+                "field_norm": round(fn, 3),
+                "drift_over_field_ratio": round(float(np.mean(dnorms)) / max(fn, 1e-9), 2),
+                "mean_cos_drift_field": round(float(np.mean(dcos)), 3),
+                "n_models": len(dnorms)}
     return row
 
 
 def load_step(run_root: Path, step: str, med, scale) -> tuple | None:
-    Zs, roles, animals, seeds, gids = [], [], [], [], []
+    Zs, roles, animals, seeds, gids, cids = [], [], [], [], [], []
     for cell in sorted(run_root.iterdir()) if run_root.exists() else []:
         sig = cell / f"step-{step}" / "signatures_v3"
         if not sig.exists():
@@ -130,10 +157,12 @@ def load_step(run_root: Path, step: str, med, scale) -> tuple | None:
         roles += [info["role"]] * len(g)
         animals += [info["animal"]] * len(g)
         seeds += [info["seed"]] * len(g)
+        cids += [info["control_id"] or ""] * len(g)
         gids += [int(x) for x in g]
     if not Zs:
         return None
-    return (np.vstack(Zs), np.array(roles), np.array(animals), np.array(seeds), np.array(gids))
+    return (np.vstack(Zs), np.array(roles), np.array(animals), np.array(seeds),
+            np.array(gids), np.array(cids))
 
 
 def main() -> None:
@@ -167,8 +196,8 @@ def main() -> None:
         if data is None:
             rows.append({"step": step, "present": False})
             continue
-        Z, role, animal, seed, gid = data
-        st = step_stats(Z, role, animal, seed, gid, rng, e_final)
+        Z, role, animal, seed, gid, cid = data
+        st = step_stats(Z, role, animal, seed, gid, rng, e_final, cid)
         st["step"] = step
         st["present"] = True
         st["seeds"] = sorted(set(seed.tolist()))
