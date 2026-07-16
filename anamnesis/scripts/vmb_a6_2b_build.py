@@ -89,7 +89,7 @@ def _batch_generate_and_capture(model, tok, user, sys_p, n, sites, inject_site,
     with torch.no_grad():
         out = model.generate(ids_b, max_new_tokens=max_new_tokens, do_sample=True,
                              temperature=0.7, top_p=0.9, pad_token_id=tok.eos_token_id)
-    sig_rows, inj_rows, texts = [], [], []
+    sig_rows, inj_rows, texts, lengths = [], [], [], []
     # forward each generated sequence to capture hidden states over its generated span
     for i in range(out.shape[0]):
         seq = out[i]
@@ -118,28 +118,43 @@ def _batch_generate_and_capture(model, tok, user, sys_p, n, sites, inject_site,
         sig_rows.append(np.concatenate(sig_parts).astype(np.float32))
         inj_rows.append(inj_vec)
         texts.append(tok.decode(gen[:last], skip_special_tokens=True))
-    return sig_rows, inj_rows, texts
+        lengths.append(int(last))          # response length (generated tokens) for length discipline
+    return sig_rows, inj_rows, texts, lengths
 
 
 def _collect(model, tok, prompts, sys_p, label, sites, inject_site, n, max_new_tokens, dev):
     sigs, injs, meta = [], [], []
     for pi, p in enumerate(prompts):
-        s, j, t = _batch_generate_and_capture(model, tok, p, sys_p, n, sites, inject_site,
-                                              max_new_tokens, dev)
+        s, j, t, L = _batch_generate_and_capture(model, tok, p, sys_p, n, sites, inject_site,
+                                                 max_new_tokens, dev)
         for k in range(len(s)):
             sigs.append(s[k]); injs.append(j[k])
-            meta.append({"label": label, "prompt_idx": pi, "text": t[k][:300]})
+            meta.append({"label": label, "prompt_idx": pi, "text": t[k][:300], "n_tokens": L[k]})
         logger.info(f"  {label} prompt {pi}: {len(s)} gens")
     return sigs, injs, meta
 
 
 def _build_axis_vector(sig, inj, meta, decile=0.10):
-    """Teacher<->student LDA axis in z-scored signature space; within-prompt decile poles;
-    injection vector = unit Δμ(teacher-pole − student-pole) in L18 residual space."""
+    """Teacher<->student LDA axis in LENGTH-NORMALIZED z-scored signature space; within-prompt
+    decile poles; injection vector = unit Δμ(teacher-pole − student-pole) in L18 residual space.
+
+    ⚠ RIDER 1 (outer loop, binding): the sort features are LENGTH-NORMALIZED (the OOD de-se
+    pole is systematically elaborate vs a terse teacher/base pole; means+dispersion over
+    generated positions are exactly what a length/format artifact loves — "the location IS
+    the construction"). Each feature is residualized against response length BEFORE the axis
+    is built, and the pole length census is reported so a residual length imbalance flags
+    itself before anything steers along the axis."""
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     S = np.stack(sig).astype(np.float64)
     J = np.stack(inj).astype(np.float64)
     y = np.array([1 if m["label"] == "teacher" else 0 for m in meta])
+    L = np.array([m["n_tokens"] for m in meta], dtype=np.float64)
+    # length-normalize (standing law): regress each feature column on response length, keep residual
+    Lc = L - L.mean()
+    denom = float(Lc @ Lc)
+    if denom > 0:
+        beta = (S.T @ Lc) / denom               # per-feature length slope
+        S = S - np.outer(Lc, beta)              # length-residualized sort features
     mu, sd = S.mean(0), S.std(0) + 1e-8
     Sz = (S - mu) / sd
     clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto").fit(Sz, y)
@@ -165,6 +180,19 @@ def _build_axis_vector(sig, inj, meta, decile=0.10):
         c = Counter(meta[i]["label"] for i in idx)
         return dict(c), round(max(c.values()) / len(idx), 3)
     tc, tp = comp(top_idx); bc, bp = comp(bot_idx)
+    # RIDER 1 pole length/format census — flag a residual length imbalance between the poles
+    top_len, bot_len = L[top_idx], L[bot_idx]
+    top_med, bot_med = float(np.median(top_len)), float(np.median(bot_len))
+    len_ratio = round(top_med / max(bot_med, 1e-9), 3)
+    length_census = {
+        "top_pole_median_tokens": round(top_med, 1), "bottom_pole_median_tokens": round(bot_med, 1),
+        "top_pole_mean_tokens": round(float(top_len.mean()), 1),
+        "bottom_pole_mean_tokens": round(float(bot_len.mean()), 1),
+        "length_ratio_top_over_bottom": len_ratio,
+        "gross_length_imbalance_FLAG": bool(len_ratio > 1.5 or len_ratio < 0.667),
+        "teacher_median_tokens": round(float(np.median(L[y == 1])), 1),
+        "student_median_tokens": round(float(np.median(L[y == 0])), 1),
+    }
     diag = {"n_pool": len(meta), "n_teacher": int((y == 1).sum()), "n_student": int((y == 0).sum()),
             "decile": decile, "n_per_pole": int(len(top_idx)),
             "top_pole_composition": tc, "top_pole_purity": tp,
@@ -172,7 +200,9 @@ def _build_axis_vector(sig, inj, meta, decile=0.10):
             "teacher_proj_mean": round(float(proj[y == 1].mean()), 3),
             "student_proj_mean": round(float(proj[y == 0].mean()), 3),
             "lda_train_acc": round(float((clf.predict(Sz) == y).mean()), 3),
-            "raw_delta_norm": round(vnorm, 4)}
+            "raw_delta_norm": round(vnorm, 4),
+            "length_normalized_sort_features": True,
+            "pole_length_census": length_census}
     return v_unit, diag
 
 
@@ -239,9 +269,12 @@ def main() -> None:
         diagnostics[c] = diag
         samples[c] = {"teacher_examples": [m["text"] for m in store[c]["teacher"][2][:4]],
                       "student_examples": [m["text"] for m in store[c]["student"][2][:4]]}
+        lc = diag["pole_length_census"]
         logger.info(f"[{c}] {key}: raw Δnorm={diag['raw_delta_norm']} "
                     f"lda_acc={diag['lda_train_acc']} teacher/student proj "
-                    f"{diag['teacher_proj_mean']}/{diag['student_proj_mean']}")
+                    f"{diag['teacher_proj_mean']}/{diag['student_proj_mean']} | "
+                    f"pole len top/bot med {lc['top_pole_median_tokens']}/{lc['bottom_pole_median_tokens']} "
+                    f"ratio {lc['length_ratio_top_over_bottom']} FLAG={lc['gross_length_imbalance_FLAG']}")
 
     # cross-vector geometry (diagnostic; NOT a criterion) + cos to Acat/V_student if available
     va, vd = vectors[f"Valign_L{args.inject_site}"], vectors[f"Vdiverge_L{args.inject_site}"]
@@ -250,11 +283,17 @@ def main() -> None:
     np.savez(args.out_npz, **{k: v for k, v in vectors.items()})
     out = {"arm": "A6 §2b — distilled-direction construction (teacher<->student V3-bare)",
            "STATUS": "FIRST_READ_PENDING (C§8 ABSOLUTE) — UNSTAMPED -> outer loop",
-           "construction_scope_note": ("SORT space = multi-site residual-trajectory signature "
-                                       "(L7/14/18/21 gen-pos mean + within-gen dispersion), z-scored; "
-                                       "NOT the full 3358-d battery signature (deferred; self-contained "
-                                       "under node-downtime). Anti-circularity honored: sort space is "
-                                       "richer than + different from the single-site L18 inject vector."),
+           # RIDER 2 (outer loop, binding): name the sort space in every downstream quote.
+           "sort_space": "residual_stream family, 4-site (L7/14/18/21) means+dispersion, length-normalized",
+           "construction_scope_note": ("SORT space = residual_stream-family multi-site trajectory "
+                                       "representation (L7/14/18/21 gen-pos mean + within-gen dispersion), "
+                                       "LENGTH-NORMALIZED then z-scored — NOT the full 3358-d battery "
+                                       "signature (deferred; self-contained under node-downtime). "
+                                       "Anti-circularity holds at all three links: sort space (residual "
+                                       "family, 4-site) != injection object (single-site L18 Δμ) != "
+                                       "criterion (behavioral de-dicto/de-se ladder). Rider 1: sort "
+                                       "features length-normalized; pole length census reported "
+                                       "(diagnostics.*.pole_length_census.gross_length_imbalance_FLAG)."),
            "constraints": {"i_both_axes": True, "ii_within_category": True,
                            "iii_v3bare_injectability": "sort in signature space, inject residual pole Δμ",
                            "iv_behavioral_read": "vmb_a6_2b_probe.py (de-dicto/de-se v2 + animal-pick + census + placebo)",
@@ -263,6 +302,9 @@ def main() -> None:
            "inject_site": args.inject_site, "sites_signature": args.sites,
            "n_samples": args.n_samples, "decile": args.decile,
            "diagnostics": diagnostics,
+           "length_discipline_rollup": {c: {"ratio": diagnostics[c]["pole_length_census"]["length_ratio_top_over_bottom"],
+                                            "FLAG": diagnostics[c]["pole_length_census"]["gross_length_imbalance_FLAG"]}
+                                        for c in categories},
            "cos_Valign_Vdiverge": round(cos_align_diverge, 4),
            "vector_norms_raw": {k: diagnostics[c]["raw_delta_norm"] for c, k in
                                 zip(categories, [f"{keymap[c]}_L{args.inject_site}" for c in categories])},
