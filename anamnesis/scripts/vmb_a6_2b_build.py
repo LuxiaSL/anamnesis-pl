@@ -144,7 +144,6 @@ def _build_axis_vector(sig, inj, meta, decile=0.10):
     the construction"). Each feature is residualized against response length BEFORE the axis
     is built, and the pole length census is reported so a residual length imbalance flags
     itself before anything steers along the axis."""
-    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     S = np.stack(sig).astype(np.float64)
     J = np.stack(inj).astype(np.float64)
     y = np.array([1 if m["label"] == "teacher" else 0 for m in meta])
@@ -157,8 +156,12 @@ def _build_axis_vector(sig, inj, meta, decile=0.10):
         S = S - np.outer(Lc, beta)              # length-residualized sort features
     mu, sd = S.mean(0), S.std(0) + 1e-8
     Sz = (S - mu) / sd
-    clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto").fit(Sz, y)
-    axis = clf.coef_[0]
+    # teacher<->student axis = class-centroid DIFFERENCE in z-scored (length-normalized) signature
+    # space (the V3/CAA contrast direction). Fast + robust at p>>n — a shrinkage-LDA covariance
+    # estimate at ~16k-dim / few-hundred-sample is both unreliable AND the analyzer bottleneck
+    # (16388-dim Ledoit-Wolf was pathologically slow); the centroid-difference is the natural
+    # teacher↔student direction and needs no covariance inversion.
+    axis = Sz[y == 1].mean(0) - Sz[y == 0].mean(0)
     axis /= max(np.linalg.norm(axis), 1e-12)
     proj = Sz @ axis
     # orient axis so teacher (y=1) is the HIGH pole
@@ -199,7 +202,10 @@ def _build_axis_vector(sig, inj, meta, decile=0.10):
             "bottom_pole_composition": bc, "bottom_pole_purity": bp,
             "teacher_proj_mean": round(float(proj[y == 1].mean()), 3),
             "student_proj_mean": round(float(proj[y == 0].mean()), 3),
-            "lda_train_acc": round(float((clf.predict(Sz) == y).mean()), 3),
+            # separation of the two classes along the axis (Cohen's d) + median-split accuracy
+            "axis_separation_cohens_d": round(float((proj[y == 1].mean() - proj[y == 0].mean())
+                                                    / (proj.std() + 1e-12)), 3),
+            "axis_median_split_acc": round(float(((proj > np.median(proj)).astype(int) == y).mean()), 3),
             "raw_delta_norm": round(vnorm, 4),
             "length_normalized_sort_features": True,
             "pole_length_census": length_census}
@@ -275,7 +281,7 @@ def main() -> None:
                       "student_examples": [m["text"] for m in store[c]["student"][2][:4]]}
         lc = diag["pole_length_census"]
         logger.info(f"[{c}] {key}: raw Δnorm={diag['raw_delta_norm']} "
-                    f"lda_acc={diag['lda_train_acc']} teacher/student proj "
+                    f"axis_d={diag['axis_separation_cohens_d']} teacher/student proj "
                     f"{diag['teacher_proj_mean']}/{diag['student_proj_mean']} | "
                     f"pole len top/bot med {lc['top_pole_median_tokens']}/{lc['bottom_pole_median_tokens']} "
                     f"ratio {lc['length_ratio_top_over_bottom']} FLAG={lc['gross_length_imbalance_FLAG']}")
