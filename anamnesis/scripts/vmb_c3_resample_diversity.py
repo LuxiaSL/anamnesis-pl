@@ -59,10 +59,13 @@ def _parse(cell: str):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--run-dir", type=Path, required=True, help="vmb_c3f_3b")
+    ap.add_argument("--run-dir", type=Path, required=True, help="vmb_c3f_3b or vmb_b7f_3b")
+    ap.add_argument("--null-prefixes", default="RC",
+                    help="comma-separated null vector-name prefixes (upper); default RC. 14m V7 (f): RBAND.")
     ap.add_argument("--out-json", type=Path, required=True)
     args = ap.parse_args()
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
+    null_prefixes = tuple(p.strip().upper() for p in args.null_prefixes.split(",") if p.strip())
 
     rows = []
     for d in sorted(args.run_dir.iterdir()):
@@ -71,7 +74,7 @@ def main() -> None:
         div = _cell_diversity(args.run_dir, d.name)
         if div is None:
             continue
-        rows.append({**_parse(d.name), **div, "is_null": d.name.upper().startswith("RC")})
+        rows.append({**_parse(d.name), **div, "is_null": d.name.upper().startswith(null_prefixes)})
 
     # (f) matched: Vtemp cross-sample distinct4 ÷ mean(Rc) at each (site, α)
     def rc_mean(site, af, key):
