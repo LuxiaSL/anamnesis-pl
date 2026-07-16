@@ -1,6 +1,12 @@
 """ARM A4 (state surgery): surgically-modified-cache replays over banked Stage-0
 continuations (RATIFIED block 12h; exp11 machinery ported to the battery surface).
 
+⚠ SUBSTRATE NOTE (mirrored from A4b — ARM-A4b-faithful-substrate-2026-07-13): the
+substrate below (short bare Stage-0 gens, mid-block eviction) is the one the
+ratified block accidentally invented; it is KEPT FOR THE RECORD. New exp11-faithful
+runs use `vmb_a4b_surgery_replay.py` (dialogue/docs regimes, turn-aligned or
+early-block eviction). A4 and A4b are NOT duplicates — different substrates.
+
 Per banked continuation (2 per prompt class × 80 classes, seed-idx {0,1}):
   context  = prompt + generated[:mid]   (mid = generated_len // 2)
   forced   = generated[mid:]            (T = len(forced) - 1 per-step states)

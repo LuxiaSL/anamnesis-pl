@@ -1,3 +1,6 @@
+# HISTORICAL — do not copy; template = submit_a5_replication.py.
+# (1-GPU-per-vector-chain, 3 workers, per-cell loops: this submit pre-dates the
+# multicell instrument and the worker-count ladder.)
 """C3 synthetic-temperature injection cells (PREFLIGHT §3; Luxia-ratified 2026-07-14 session-4).
 V_temp + 3 matched-norm randoms (Rc1-3) × sites {L14 (map-comparable), L21 (strongest V_temp
 raw norm)} × C§3 doses {.03,.1,.3} × n=160 free-gen, generated positions only, inject L{site}.

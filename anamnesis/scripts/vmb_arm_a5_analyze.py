@@ -1,5 +1,9 @@
 """ARM A5 analyzer (activation-write; ratified 13a; constraints C-doc BINDING).
 
+⚠ SUPERSEDED for cross-model use by `vmb_a5_lever_readout.py` (model-agnostic,
+session-10) — this analyzer is 3B-hardcoded. Kept for the record and for
+`text_stats`, which other scripts still import. Do not extend for new models.
+
 FIRST-READ DISCIPLINE (C§8): this analyzer emits result JSONs but NO record stamps
 ship until the outer loop reads them — rows carry stamp dicts for n/M/law hygiene,
 and the emitted file is marked FIRST_READ_PENDING.

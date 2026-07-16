@@ -1,3 +1,6 @@
+# HISTORICAL — do not copy; template = submit_a5_replication.py.
+# (1-GPU-per-vector-chain, 3 workers, per-cell loops: this submit pre-dates the
+# multicell instrument and the worker-count ladder.)
 """V3tail n=160 promotion (§B.5 outcome-(ii) authorized: tail half clears 1.5×-null at pilot
 n=40 → promote to n=160). V3tail_L14 + matched-support Rtail1-3_L14 × doses {.03,.1,.3},
 n=160 free-gen, inject L14. From the banked b5 spectral-split vectors. Per-vector gen→replay
