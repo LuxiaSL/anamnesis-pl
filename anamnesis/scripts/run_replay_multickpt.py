@@ -12,8 +12,9 @@ loops its checkpoint list swapping adapters:
 `merge_and_unload`, so bitwise-equivalent) while keeping the module objects alive, so the
 k_proj/etc. hooks registered by load_model stay attached. `--pristine-restore` snapshots
 the wrapped modules' weights and restores before each merge (drift-free across many
-checkpoints); default OFF — validate bitwise against a known-good cell first and enable
-only if drift appears.
+checkpoints); default ON since the canonical-ops pass (the seeds-tier confound is the
+proof), and REQUIRED when the checkpoint list has >1 entry — `--no-pristine-restore` is
+accepted only for single-checkpoint runs (no swap, no drift; saves the snapshot VRAM).
 
 Launcher (default) partitions the manifest gen-ids across (gpus × workers/gpu) workers and
 hands EACH worker the full checkpoint list + its gen slice. Resume-aware per checkpoint
@@ -69,6 +70,7 @@ def run_worker(args) -> None:
     preset, all_layers, ec, fc, mc = _build_configs(args.model)
     mc.model_id = args.model_path
     checkpoints = json.loads(Path(args.checkpoints_json).read_text())["checkpoints"]
+    _require_pristine_for_multickpt(len(checkpoints), args.pristine_restore)
     gen_ids = args.gen_ids
 
     logger.info(f"[{args.label}] loading base once: {args.model_path}")
@@ -122,6 +124,18 @@ def with_no_grad_restore(pm, pristine) -> None:
                 m.base_layer.weight.copy_(pristine[n])
 
 
+def _require_pristine_for_multickpt(n_ckpts: int, pristine_restore: bool) -> None:
+    """Many-checkpoint swaps without pristine restore accumulate merge/unmerge drift
+    (the seeds-tier confound). Hard-required, not advisory."""
+    if n_ckpts > 1 and not pristine_restore:
+        raise SystemExit(
+            f"--no-pristine-restore with {n_ckpts} checkpoints REFUSED: repeated "
+            f"merge/unmerge without restoring pristine weights drifts across the "
+            f"swap sequence (the seeds-tier confound). Drop --no-pristine-restore "
+            f"(default is ON), or run single-checkpoint jobs."
+        )
+
+
 # ───────────────────────────── launcher ─────────────────────────────
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -136,8 +150,10 @@ def main() -> None:
     ap.add_argument("--workers-per-gpu", type=int, default=8)
     ap.add_argument("--sig-subdir", default="signatures_v3")
     ap.add_argument("--no-resume", action="store_true")
-    ap.add_argument("--pristine-restore", action="store_true",
-                    help="restore wrapped-module weights before each merge (drift-free)")
+    ap.add_argument("--pristine-restore", action=argparse.BooleanOptionalAction, default=True,
+                    help="restore wrapped-module weights before each merge (drift-free). "
+                         "Default ON; --no-pristine-restore is refused when >1 checkpoint "
+                         "(the seeds-tier confound)")
     ap.add_argument("--gen-ids", type=int, nargs="+", default=None)  # worker slice
     ap.add_argument("--label", default="w")
     ap.add_argument("--dry-run", action="store_true")
@@ -155,6 +171,7 @@ def main() -> None:
         worker_ids[i % n_workers].append(gid)
 
     n_ck = len(json.loads(Path(args.checkpoints_json).read_text())["checkpoints"])
+    _require_pristine_for_multickpt(n_ck, args.pristine_restore)
     logger.info(f"multickpt: {n_ck} checkpoints × {len(all_ids)} gens across {n_workers} workers "
                 f"({len(gpu_ids)} GPUs × {args.workers_per_gpu}); base load ×{n_workers}")
     if args.dry_run:
@@ -175,8 +192,8 @@ def main() -> None:
                "--label", f"w{w}g{gpu}", "--gen-ids", *[str(g) for g in ids]]
         if args.no_resume:
             cmd.append("--no-resume")
-        if args.pristine_restore:
-            cmd.append("--pristine-restore")
+        cmd.append("--pristine-restore" if args.pristine_restore
+                   else "--no-pristine-restore")
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
                "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
                "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
