@@ -52,6 +52,9 @@ def main() -> None:
     ap.add_argument("--workers-per-gpu", type=int, default=6)
     ap.add_argument("--seeds-per-class", type=int, default=2)
     ap.add_argument("--max-new-tokens", type=int, default=512)
+    ap.add_argument("--attn", default="eager", choices=["eager", "sdpa"],
+                    help="Generation attention impl (default eager = fat_01-matching; sdpa ~2-4x "
+                         "faster, valid for new steering cells — replay is eager regardless).")
     ap.add_argument("--inject-npz", default=None)
     ap.add_argument("--inject-norms-json", default=None,
                     help="median_resid_norms json to resolve inject_alpha_frac per cell")
@@ -139,7 +142,7 @@ def main() -> None:
                "--jobs-file", str(jf), "--temperature", str(temperature),
                "--top-p", str(top_p), "--max-new-tokens", str(args.max_new_tokens),
                "--eos-ids", *[str(e) for e in preset.eos_token_ids],
-               "--attn", "eager", "--date-string", VMB_CANONICAL_DATE, "--label", f"w{w}g{gpu}"]
+               "--attn", args.attn, "--date-string", VMB_CANONICAL_DATE, "--label", f"w{w}g{gpu}"]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
                "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
                "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",

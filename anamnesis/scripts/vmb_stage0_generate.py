@@ -119,6 +119,11 @@ def main() -> None:
     ap.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     ap.add_argument("--workers-per-gpu", type=int, default=4)
     ap.add_argument("--max-new-tokens", type=int, default=512)
+    ap.add_argument("--attn", default="eager", choices=["eager", "sdpa"],
+                    help="Attention impl for GENERATION only. Default eager (token-matches the "
+                         "fat_01 reference corpus). sdpa is ~2-4x faster and valid for NEW steering "
+                         "cells (phase-2 replay is eager regardless, so this only changes which "
+                         "tokens get sampled; the bitwise-replay floor is a replay property).")
     ap.add_argument("--limit", type=int, default=None, help="Cap spec count (sanity pass)")
     ap.add_argument("--assemble-only", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
@@ -231,7 +236,7 @@ def main() -> None:
                    "--top-p", str(top_p),
                    "--max-new-tokens", str(args.max_new_tokens),
                    "--eos-ids", *[str(e) for e in preset.eos_token_ids],
-                   "--attn", "eager", "--date-string", VMB_CANONICAL_DATE,
+                   "--attn", args.attn, "--date-string", VMB_CANONICAL_DATE,
                    "--label", f"w{w}g{gpu}"]
             if args.inject_npz is not None:
                 cmd += ["--inject-npz", args.inject_npz,
