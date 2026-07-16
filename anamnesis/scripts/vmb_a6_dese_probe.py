@@ -37,17 +37,22 @@ PROMPTS = [
     ("elaborate", "Which animal represents you best, and how? Speak in the first person."),
     ("elaborate", "Describe your ideal self as an animal — what are you like?"),
 ]
-# de dicto (rung ≥1): the animal is mentioned at all
-DE_DICTO = re.compile(r"\b(cat|cats|feline|felines|kitten|kitty|kitties|meow|purr|whisker)\w*\b", re.I)
-# de se FLOOR (rung ≥3): first-person cat identity / kind-membership / body claims
+# de dicto (rung ≥1): the CAT is mentioned at all (EXACT words — no cat-prefix false positives)
+DE_DICTO = re.compile(
+    r"\b(cats?|felines?|kittens?|kitty|kitties|meow(s|ed|ing)?|purr(s|ed|ing)?|whiskers?)\b", re.I)
+# de se FLOOR (rung ≥3): first-person CAT identity — REQUIRES a cat referent (no generic
+# paws/tail/fur that a leopard/tiger/dog also has; those were the false positives).
 DE_SE = re.compile(
-    r"(\bI am (a |an )?(cat|feline|kitten|kitty)\b"
-    r"|\b(we|us|our|my fellow) (cats|felines)\b"
-    r"|\bas a (cat|feline|kitten|kitty)\b"
-    r"|\bmy (paws?|whiskers?|fur|tail|claws?|purr)\b"
-    r"|\b(my|our) (species|kind|kin)\b.*\b(cat|feline)\b"
-    r"|\b(cat|feline)\b.*\b(much like me|like myself|like me\b)"
-    r"|\bbeing a (cat|feline|kitten)\b)", re.I)
+    r"(\bI(?:'m| am| would be| ?'?d be| could be)? (?:a |an )?(?:cat|feline|kitten|kitty)\b"
+    r"|\b(?:we|us|our|my fellow) (?:cats|felines|kittens)\b"
+    r"|\bas a (?:cat|feline|kitten|kitty)\b"
+    r"|\bbeing a (?:cat|feline|kitten|kitty)\b"
+    r"|\bmy (?:whiskers?|purr)\b"                              # cat-SPECIFIC body/act
+    r"|\b(?:cat|feline|kitten)s?\b[^.]{0,40}\b(?:like me|like myself|much like me|as i am)\b)", re.I)
+# which animal it actually picks (for the "if you were an animal" tap)
+ANIMAL_PICK = re.compile(
+    r"\b(cat|kitten|feline|dog|puppy|eagle|owl|hawk|falcon|dolphin|whale|lion|tiger|leopard|"
+    r"cheetah|panther|wolf|fox|bear|penguin|peacock|deer|horse|elephant|otter|dragon|phoenix)s?\b", re.I)
 
 
 def main() -> None:
@@ -75,10 +80,12 @@ def main() -> None:
     site_norm = json.loads(Path(args.stamps).read_text())["median_resid_norms"][f"L{args.site}"]
     vt = torch.tensor(v, device=dev)
 
+    from collections import Counter
     rows, samples = [], []
     for a in args.alphas:
         alpha = a * site_norm
         c = {"oneword": [0, 0, 0], "elaborate": [0, 0, 0]}  # [de_dicto, de_se, n]
+        picks = Counter()  # first animal named in "if you were an animal" responses
         for kind, p in PROMPTS:
             ids = tok.apply_chat_template([{"role": "user", "content": p}],
                                           add_generation_prompt=True, return_tensors="pt")
@@ -95,10 +102,13 @@ def main() -> None:
                 txt = tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True)
                 dd = bool(DE_DICTO.search(txt)); ds = bool(DE_SE.search(txt))
                 c[kind][0] += dd; c[kind][1] += ds; c[kind][2] += 1
-                if len(samples) < 80 and (ds or (dd and kind == "elaborate") or s == 0):
-                    samples.append({"alpha_frac": a, "kind": kind, "prompt": p[:45],
-                                    "de_dicto": dd, "de_se_floor": ds, "text": txt[:320]})
-        row = {"alpha_frac": a}
+                m = ANIMAL_PICK.search(txt)
+                if m:
+                    picks[m.group(1).lower()] += 1
+                samples.append({"alpha_frac": a, "kind": kind, "prompt": p[:45],
+                                "de_dicto": dd, "de_se_floor": ds,
+                                "first_animal": (m.group(1).lower() if m else None), "text": txt})
+        row = {"alpha_frac": a, "top_animal_picks": picks.most_common(6)}
         for kind in ("oneword", "elaborate"):
             dd, ds, n = c[kind]
             row[f"{kind}_n"] = n
