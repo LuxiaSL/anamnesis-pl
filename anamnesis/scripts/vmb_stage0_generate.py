@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 
 from anamnesis.scripts._gpu import resolve_physical_gpus
+from anamnesis.scripts._single_cell_guard import enforce_single_cell_guard
 import json
 import logging
 import os
@@ -148,6 +149,10 @@ def main() -> None:
     ap.add_argument("--inject-norms-json", default=None,
                     help="a5_vectors_stamps.json (holds median_resid_norms per site); "
                          "alpha = frac × norms['L<layer>'] resolved when the job RUNS")
+    ap.add_argument("--single-cell-ok", action="store_true",
+                    help="Escape hatch for the path-of-record guard: allow repeat "
+                         "single-cell invocations against the same model in one job "
+                         "context (multi-cell rosters belong in vmb_a5_gen_multicell)")
     args = ap.parse_args()
 
     if args.inject_npz is not None and args.inject_alpha is None:
@@ -212,6 +217,15 @@ def main() -> None:
     logger.info(f"{len(todo)}/{len(specs)} specs to generate ({len(specs) - len(todo)} already done)")
 
     if todo:
+        # Path-of-record guard: a second single-cell gen against the same model with
+        # a DIFFERENT out-run-dir in one job context is a per-cell loop — refuse,
+        # point to the multicell path. Resume re-runs (same out dir) always pass;
+        # dry runs / assemble-only never reach here.
+        enforce_single_cell_guard(
+            "anamnesis.scripts.vmb_stage0_generate", args.model_path, out_run_dir,
+            allow_repeat=args.single_cell_ok,
+            multicell_pointer="python -m anamnesis.scripts.vmb_a5_gen_multicell "
+                              "--cells-json <cells.json> (loads model once, loops cells)")
         gpu_ids = resolve_physical_gpus(
             [g.strip() for g in args.gpus.split(",") if g.strip()])
         n_workers = len(gpu_ids) * args.workers_per_gpu

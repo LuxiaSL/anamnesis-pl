@@ -46,8 +46,11 @@ def main() -> None:
     new_root = args.scratch / "new"
 
     # ── OLD: one single-cell invocation per cell (reloads model each) ──
+    # --single-cell-ok: the reload-per-cell pattern is the smoke's reference arm,
+    # exercised DELIBERATELY — waive the path-of-record guard.
     for c in cells:
         run([sys.executable, "-m", "anamnesis.scripts.vmb_stage0_generate",
+             "--single-cell-ok",
              "--model", args.model, "--model-path", args.model_path, "--prompts", PROMPTS,
              "--out-run-dir", str(old_root / c["key"]), "--gpus", "0", "--workers-per-gpu", "2",
              "--seeds-per-class", str(SEEDS), "--limit", str(LIMIT), "--max-new-tokens", str(TOK),

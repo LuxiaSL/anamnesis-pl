@@ -41,8 +41,11 @@ def main() -> None:
     gids = [str(g) for g in args.gen_ids]
 
     # ── OLD: one parallel_replay per cell (reloads model+calib each) ──
+    # --single-cell-ok: the reload-per-cell pattern is the smoke's reference arm,
+    # exercised DELIBERATELY — waive the path-of-record guard.
     for c in cells:
         run([sys.executable, "-m", "anamnesis.scripts.parallel_replay",
+             "--single-cell-ok",
              "--model", args.model, "--model-path", args.model_path,
              "--run-dir", str(c), "--calib-dir", args.calib_dir,
              "--manifest", str(c / "replay_manifest.json"), "--gpus", "0",

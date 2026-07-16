@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 
 from anamnesis.scripts._gpu import resolve_physical_gpus
+from anamnesis.scripts._single_cell_guard import enforce_single_cell_guard
 import json
 import logging
 import os
@@ -65,6 +66,10 @@ def main() -> None:
                         help="A6: PEFT adapter dir passthrough to workers")
     parser.add_argument("--gen-ids", type=int, nargs="+", default=None,
                         help="Subset of manifest gen ids (A5 matched-token cells)")
+    parser.add_argument("--single-cell-ok", action="store_true",
+                        help="Escape hatch for the path-of-record guard: allow repeat "
+                             "single-cell invocations against the same model in one job "
+                             "context (multi-cell rosters belong in vmb_a5_replay_multicell)")
     args = parser.parse_args()
 
     gpu_ids = resolve_physical_gpus(
@@ -103,6 +108,16 @@ def main() -> None:
             if ids:
                 logger.info(f"  worker {w} (GPU {gpu_ids[w % len(gpu_ids)]}): {len(ids)} gens {ids[:5]}{'...' if len(ids) > 5 else ''}")
         return
+
+    # Path-of-record guard: a second parallel_replay against the same model with a
+    # DIFFERENT run dir in one job context is a per-cell loop — refuse, point to
+    # the multicell path. Resume re-runs (same run dir) always pass; dry runs
+    # never reach here.
+    enforce_single_cell_guard(
+        "anamnesis.scripts.parallel_replay", args.model_path, args.run_dir,
+        allow_repeat=args.single_cell_ok,
+        multicell_pointer="python -m anamnesis.scripts.vmb_a5_replay_multicell "
+                          "--cells-json <cells.json> (loads model+calib once, loops cells)")
 
     log_dir = args.log_dir or (args.run_dir / "replay_logs")
     log_dir.mkdir(parents=True, exist_ok=True)
