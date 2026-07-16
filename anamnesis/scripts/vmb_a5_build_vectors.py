@@ -252,7 +252,9 @@ def main() -> None:
 
     if args.stage == "basic":
         rng = np.random.default_rng(20260713)
-        hd = int(model.config.hidden_size)
+        # wrapper-aware: Gemma3Config nests dims under text_config (no top-level hidden_size);
+        # the preset carries the canonical hidden_dim for every model.
+        hd = int(getattr(model.config, "hidden_size", None) or preset.hidden_dim)
         for i in range(1, 4):
             v = rng.standard_normal(hd).astype(np.float32)
             vectors[f"R{i}"] = v / np.linalg.norm(v)
