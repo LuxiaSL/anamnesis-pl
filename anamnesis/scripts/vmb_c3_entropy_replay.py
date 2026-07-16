@@ -65,6 +65,10 @@ def main() -> None:
         meta = json.loads((d / "metadata.json").read_text())
         gens = meta["generations"] if "generations" in meta else meta
         entries = json.loads((d / "replay_manifest.json").read_text())["entries"]
+        if not gens or "injection" not in gens[0]:
+            logger.warning(f"{name}: no injection in metadata (baseline/no-inject cell) — skipping "
+                           "entropy readout (steered-vs-unsteered needs an injected vector)")
+            continue
         inj = gens[0]["injection"]
         v = torch.tensor(np.load(inj["inject_npz"])[inj["inject_key"]].astype(np.float32), device=dev)
         layer, alpha = int(inj["inject_layer"]), float(inj["inject_alpha"])
