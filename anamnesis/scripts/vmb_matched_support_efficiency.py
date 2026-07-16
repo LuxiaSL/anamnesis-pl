@@ -75,6 +75,9 @@ def main() -> None:
     ap.add_argument("--main-vectors", type=Path, default=None, help="main a5_vectors.npz (V3_L14/R{1,2,3}_L14)")
     ap.add_argument("--arm", required=True, choices=["b5", "b7"])
     ap.add_argument("--model", default="3b")
+    ap.add_argument("--map-site", type=int, default=14,
+                    help="map injection site of the split vectors (3B=14, 8B=16); the full-support "
+                         "V3/R reference is pulled from the main grid at THIS site only.")
     ap.add_argument("--out-json", type=Path, required=True)
     args = ap.parse_args()
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -133,9 +136,9 @@ def main() -> None:
         return out
 
     cells = discover(args.split_run_dir)
-    # full-support V3/R reference: MAP SITE (L14) only — the split vectors are all L14-derived,
+    # full-support V3/R reference: MAP SITE only — the split vectors are all map-site-derived,
     # and the main grid injected V3 at all four sites (mixing sites corrupts the parity denominator).
-    cells.update(discover(args.main_run_dir, keep={"V3", "R1", "R2", "R3"}, site=14))
+    cells.update(discover(args.main_run_dir, keep={"V3", "R1", "R2", "R3"}, site=args.map_site))
     logger.info(f"{len(cells)} steered cells (split + full-support V3/R reference)")
 
     rows = []

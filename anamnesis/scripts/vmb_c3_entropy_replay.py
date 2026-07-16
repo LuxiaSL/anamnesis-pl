@@ -45,9 +45,13 @@ def main() -> None:
     ap.add_argument("--model-path", required=True)
     ap.add_argument("--c3-run-dir", type=Path, required=True)
     ap.add_argument("--cells", nargs="+", required=True, help="cell dir names under c3-run-dir")
+    ap.add_argument("--null-prefixes", default="RC",
+                    help="comma-separated vector-name prefixes (upper) treated as matched-norm "
+                         "nulls for the ÷-null ratio; default RC (C3). 14j leg-2 on vmb_b7_3b: RBAND.")
     ap.add_argument("--out-json", type=Path, required=True)
     args = ap.parse_args()
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
+    null_prefixes = tuple(p.strip().upper() for p in args.null_prefixes.split(",") if p.strip())
 
     from transformers import AutoModelForCausalLM
     preset = MODEL_PRESETS[args.model]
@@ -86,7 +90,7 @@ def main() -> None:
                 "mean_entropy_unsteered": round(float(np.mean(unsteered)), 4),
                 "entropy_rise": round(float(np.mean(steered) - np.mean(unsteered)), 4),
                 "base_model_nll": round(float(np.mean(base_nll)), 4),  # (c) likelihood: base surprisal of the steered text
-                "is_null": name.upper().startswith("RC")}
+                "is_null": name.upper().startswith(null_prefixes)}
         rows.append({"cell": name, **info})
         print(f"  {name:20} steered={info['mean_entropy_steered']:.3f} "
               f"unsteered={info['mean_entropy_unsteered']:.3f} rise={info['entropy_rise']:+.3f} n={info['n']}")

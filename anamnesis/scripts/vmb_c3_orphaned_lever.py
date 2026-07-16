@@ -34,8 +34,12 @@ def main() -> None:
     ap.add_argument("--main-run-dir", type=Path, required=True, help="vmb_a5_3b (α=0 riders)")
     ap.add_argument("--axis-npz", type=Path, required=True, help="c2_orphaned_axis_3b.npz")
     ap.add_argument("--model", default="3b")
+    ap.add_argument("--null-prefixes", default="RC",
+                    help="comma-separated vector-name prefixes (upper) treated as matched-norm "
+                         "nulls; default RC (C3). For 14j leg-1 on vmb_b7_3b pass RBAND.")
     ap.add_argument("--out-json", type=Path, required=True)
     args = ap.parse_args()
+    null_prefixes = tuple(p.strip().upper() for p in args.null_prefixes.split(",") if p.strip())
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     mm = MODEL_META[args.model]
 
@@ -74,7 +78,7 @@ def main() -> None:
                      "alpha_frac": info["alpha_frac"], "n": int(cc.Z.shape[0]),
                      "orphaned_targeting": targeting, "total_deformation": total,
                      "efficiency": float(targeting / max(total, 1e-9)),
-                     "is_null": info["vector"].upper().startswith("RC"),
+                     "is_null": info["vector"].upper().startswith(null_prefixes),
                      "coherence": {k: st[k] for k in ("mean_len", "mean_ttr", "mean_trigram_rep")}})
 
     # (d) matched: V_temp targeting ÷ mean(Rc targeting) at each (site, α)
@@ -92,13 +96,15 @@ def main() -> None:
 
     out = {"model": args.model, "arm": "C3-orphaned-lever (PREFLIGHT §4 (d))",
            "STATUS": "FIRST_READ_PENDING (C§8) — LEVER leg only; certifying (b)/(c)/(f) need logit replay",
+           "null_family": list(null_prefixes),
            "law": "shift·C2-axis on 1282 non-trivial feats; ref=pooled main-grid α=0 riders; "
-                  "(d) = Vtemp orphaned-targeting ÷ mean(Rc) at matched (site,α); ≥2 = rank-1-writable",
+                  f"(d) = vector orphaned-targeting ÷ mean(null∈{list(null_prefixes)}) at matched "
+                  "(site,α); ≥2 = rank-1-writable; `_over_Rc` key = ratio to THIS null family",
            "rows": rows}
     args.out_json.write_text(json.dumps(out, indent=1))
     logger.info(f"wrote {args.out_json}")
     for r in sorted((x for x in rows if not x["is_null"]), key=lambda x: (x["site"], x["alpha_frac"])):
-        logger.info(f"  Vtemp L{r['site']} α{r['alpha_frac']:<5} tgt/Rc={r.get('orphaned_targeting_over_Rc')} "
+        logger.info(f"  {r['vector']} L{r['site']} α{r['alpha_frac']:<5} tgt/null={r.get('orphaned_targeting_over_Rc')} "
                     f"eff/Rc={r.get('efficiency_over_Rc')} lever2x={r['lever_2x']} ttr={r['coherence']['mean_ttr']:.3f}")
 
 

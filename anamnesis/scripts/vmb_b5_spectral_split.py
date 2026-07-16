@@ -36,7 +36,10 @@ def main() -> None:
     ap.add_argument("--stamps", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--boundary", type=int, default=256, help="top/tail rank split of Σ eigenspectrum")
+    ap.add_argument("--site", type=int, default=SITE,
+                    help="injection site (3B map=14, 8B map=16). Splits V3_L{site} against Σ_L{site}.")
     args = ap.parse_args()
+    site = args.site
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     S = np.load(args.sigma)
@@ -48,7 +51,7 @@ def main() -> None:
     Utop = evecs[:, top_idx]                        # (d, boundary)
     Utail = evecs[:, tail_idx]                      # (d, d-boundary)
 
-    v3 = np.load(args.vectors)["V3_L14"].astype(np.float64)
+    v3 = np.load(args.vectors)[f"V3_L{site}"].astype(np.float64)
 
     def _proj(U, x):
         c = U.T @ x
@@ -59,30 +62,30 @@ def main() -> None:
     vectors, meta = {}, {}
     v3top, ntop = _proj(Utop, v3)
     v3tail, ntail = _proj(Utail, v3)
-    vectors["V3top_L14"] = v3top
-    vectors["V3tail_L14"] = v3tail
-    meta["V3top_L14"] = {"route": "V3 projected onto top-%d Σ-eigendirections" % args.boundary,
-                         "captured_norm_fraction": ntop}
-    meta["V3tail_L14"] = {"route": "V3 projected onto tail Σ-eigendirections",
-                          "captured_norm_fraction": ntail}
+    vectors[f"V3top_L{site}"] = v3top
+    vectors[f"V3tail_L{site}"] = v3tail
+    meta[f"V3top_L{site}"] = {"route": "V3 projected onto top-%d Σ-eigendirections" % args.boundary,
+                              "captured_norm_fraction": ntop}
+    meta[f"V3tail_L{site}"] = {"route": "V3 projected onto tail Σ-eigendirections",
+                               "captured_norm_fraction": ntail}
     # matched-support random nulls (unit vectors confined to each subspace)
     rng = np.random.default_rng(NULL_SEED)
     for i in range(1, 4):
         ct = rng.standard_normal(Utop.shape[1]); rt = Utop @ ct; rt /= np.linalg.norm(rt)
         cl = rng.standard_normal(Utail.shape[1]); rl = Utail @ cl; rl /= np.linalg.norm(rl)
-        vectors[f"Rtop{i}_L14"] = rt.astype(np.float32)
-        vectors[f"Rtail{i}_L14"] = rl.astype(np.float32)
-        meta[f"Rtop{i}_L14"] = {"route": "matched-support null (top subspace)"}
-        meta[f"Rtail{i}_L14"] = {"route": "matched-support null (tail subspace)"}
+        vectors[f"Rtop{i}_L{site}"] = rt.astype(np.float32)
+        vectors[f"Rtail{i}_L{site}"] = rl.astype(np.float32)
+        meta[f"Rtop{i}_L{site}"] = {"route": "matched-support null (top subspace)"}
+        meta[f"Rtail{i}_L{site}"] = {"route": "matched-support null (tail subspace)"}
 
     # sanity: V3top + V3tail (unnormalized reconstruction) recovers V3; report overlap
     cos_top_tail = float(v3top @ v3tail / max(np.linalg.norm(v3top) * np.linalg.norm(v3tail), 1e-30))
 
-    # reuse the L14 median residual norm from the existing stamps (alpha = frac × this)
+    # reuse the site's median residual norm from the existing stamps (alpha = frac × this)
     src_stamps = json.loads(args.stamps.read_text())
-    l14_norm = src_stamps["median_resid_norms"]["L14"]
-    stamps_out = {"median_resid_norms": {"L14": l14_norm},
-                  "boundary": args.boundary, "site": SITE,
+    site_norm = src_stamps["median_resid_norms"][f"L{site}"]
+    stamps_out = {"median_resid_norms": {f"L{site}": site_norm},
+                  "boundary": args.boundary, "site": site,
                   "v3_top_norm_fraction": ntop, "v3_tail_norm_fraction": ntail,
                   "cos_v3top_v3tail": cos_top_tail, "vectors": meta}
 
@@ -90,7 +93,7 @@ def main() -> None:
     (args.out_dir / "a5_vectors_stamps.json").write_text(json.dumps(stamps_out, indent=1))
     print(json.dumps({"built": list(vectors.keys()), "v3_top_norm_frac": round(ntop, 4),
                       "v3_tail_norm_frac": round(ntail, 4), "cos_top_tail": round(cos_top_tail, 4),
-                      "L14_median_norm": round(l14_norm, 3)}, indent=1))
+                      f"L{site}_median_norm": round(site_norm, 3)}, indent=1))
 
 
 if __name__ == "__main__":

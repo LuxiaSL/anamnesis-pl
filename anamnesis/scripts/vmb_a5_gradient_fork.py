@@ -54,10 +54,12 @@ def main() -> None:
     ap.add_argument("--model-path", required=True)
     ap.add_argument("--stage0-run", type=Path, required=True)
     ap.add_argument("--vectors", type=Path, required=True,
-                    help="a5_vectors.npz — to compare the recomputed mean vs banked V4_L14")
+                    help="a5_vectors.npz — to compare the recomputed mean vs banked V4_L{site}")
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--n-gens", type=int, default=20)
+    ap.add_argument("--map-site", type=int, default=SITE, help="map injection site (3B=14, 8B=16)")
     args = ap.parse_args()
+    site = args.map_site
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     from transformers import AutoModelForCausalLM
@@ -83,7 +85,7 @@ def main() -> None:
         hook_kwargs["hidden_states"] = leaf
         return hook_args, hook_kwargs
 
-    handle = layers[SITE].register_forward_pre_hook(pre_hook, with_kwargs=True)
+    handle = layers[site].register_forward_pre_hook(pre_hook, with_kwargs=True)
 
     grads: list[np.ndarray] = []
     for g in gids:
@@ -92,7 +94,7 @@ def main() -> None:
         P, L = int(e["prompt_length"]), int(len(e["input_ids"]))
         with torch.enable_grad():
             out = model(ids, use_cache=False, output_attentions=True, return_dict=True)
-            attn = out.attentions[SITE][0].float()
+            attn = out.attentions[site][0].float()
             mean_attn = attn.mean(dim=0)
             s_terms = []
             for t in range(P, L):
@@ -125,8 +127,9 @@ def main() -> None:
     banked_cos = None
     if args.vectors.exists():
         bank = np.load(args.vectors)
-        if "V4_L14" in bank:
-            v4 = bank["V4_L14"].astype(np.float64)
+        v4_key = f"V4_L{site}"
+        if v4_key in bank:
+            v4 = bank[v4_key].astype(np.float64)
             mu = mean_vec / max(mean_norm, 1e-12)
             banked_cos = float(mu @ v4 / max(np.linalg.norm(v4), 1e-12))
 
@@ -139,7 +142,7 @@ def main() -> None:
         verdict = "MIXED/INTERMEDIATE: neither clean pole — report both numbers; outer loop rules."
 
     out = {
-        "model": args.model, "site": SITE, "n_gens": len(G),
+        "model": args.model, "site": site, "n_gens": len(G),
         "STATUS": "FIRST_READ_PENDING (C§8)",
         "provenance": "WAVE2-A5 addendum 13d §2.2; per-gen fork of vmb_a5_build_v4_gradient",
         "per_gen_grad_norms": [float(x) for x in norms],

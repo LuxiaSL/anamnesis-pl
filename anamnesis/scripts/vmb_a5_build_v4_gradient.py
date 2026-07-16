@@ -50,7 +50,11 @@ def main() -> None:
     ap.add_argument("--stage0-run", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--n-gens", type=int, default=20)
+    ap.add_argument("--map-site", type=int, default=SITE,
+                    help="map injection site (3B=14, 8B=16). The recency-vs-prompt surrogate is "
+                         "computed from attention at THIS layer, differentiated w.r.t. its residual input.")
     args = ap.parse_args()
+    site = args.map_site
 
     preset = MODEL_PRESETS[args.model]
     from transformers import AutoModelForCausalLM
@@ -76,7 +80,7 @@ def main() -> None:
         hook_kwargs["hidden_states"] = leaf
         return hook_args, hook_kwargs
 
-    handle = layers[SITE].register_forward_pre_hook(pre_hook, with_kwargs=True)
+    handle = layers[site].register_forward_pre_hook(pre_hook, with_kwargs=True)
 
     grads = []
     for g in gids:
@@ -86,7 +90,7 @@ def main() -> None:
         L = ids.shape[1]
         with torch.enable_grad():
             out = model(ids, use_cache=False, output_attentions=True, return_dict=True)
-            attn = out.attentions[SITE][0].float()  # [H, L, L]
+            attn = out.attentions[site][0].float()  # [H, L, L]
             mean_attn = attn.mean(dim=0)            # [L, L]
             s_terms = []
             for t in range(P, L):
@@ -112,20 +116,21 @@ def main() -> None:
     npz_path = args.out_dir / "a5_vectors.npz"
     stamps_path = args.out_dir / "a5_vectors_stamps.json"
     bank = dict(np.load(npz_path)) if npz_path.exists() else {}
-    bank["V4_L14"] = v_unit
+    v4_key, v3_key = f"V4_L{site}", f"V3_L{site}"
+    bank[v4_key] = v_unit
     np.savez(npz_path, **bank)
     stamps = json.loads(stamps_path.read_text()) if stamps_path.exists() else {}
-    # cosine to V3_L14 — the two routes to the same coordinate (report-side interest)
-    cos_v3 = (float(np.dot(v_unit, bank["V3_L14"])) if "V3_L14" in bank else None)
-    stamps["V4_L14"] = {
+    # cosine to V3_L{site} — the two routes to the same coordinate (report-side interest)
+    cos_v3 = (float(np.dot(v_unit, bank[v3_key])) if v3_key in bank else None)
+    stamps[v4_key] = {
         "trait": "mode-dir0", "route": "map-route2-feature-gradient",
-        "surrogate": "mean_t[recency_bias_L14] - mean_t[prompt_mass_L14] "
+        "surrogate": f"mean_t[recency_bias_L{site}] - mean_t[prompt_mass_L{site}] "
                      "(head-mean attention; last-20% window; state_extractor defs)",
         "n_gens": len(gids), "gids": gids, "raw_norm": float(np.linalg.norm(v)),
-        "cosine_to_V3_L14": cos_v3,
+        f"cosine_to_{v3_key}": cos_v3,
     }
     stamps_path.write_text(json.dumps(stamps, indent=2))
-    logger.info(f"V4_L14 banked (cos to V3_L14: {cos_v3}) -> {npz_path}")
+    logger.info(f"{v4_key} banked (cos to {v3_key}: {cos_v3}) -> {npz_path}")
 
 
 if __name__ == "__main__":
