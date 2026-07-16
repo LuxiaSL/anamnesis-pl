@@ -430,7 +430,11 @@ def attach_residual_write(model: Any, spec: ResidualWriteSpec) -> ResidualWriteH
     """
     layers = decoder_layers(model)
     n_layers = len(layers)
-    hidden_dim = int(model.config.hidden_size)
+    # wrapper-aware: Gemma3ForConditionalGeneration's Gemma3Config nests dims under
+    # text_config (no top-level hidden_size); Llama/Qwen/OLMo expose it directly.
+    _cfg = model.config
+    hidden_dim = int(getattr(_cfg, "hidden_size", None)
+                     or getattr(getattr(_cfg, "text_config", None), "hidden_size"))
     if not 0 <= spec.layer_idx < n_layers:
         raise ValueError(
             f"residual write layer_idx {spec.layer_idx} out of range (model has {n_layers} layers)"
