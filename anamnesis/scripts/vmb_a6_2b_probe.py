@@ -141,6 +141,11 @@ def main() -> None:
                 txts.extend(_gen(model, tok, p, spec, args.n_samples, args.max_new_tokens, dev))
             r = _read_texts(txts)
             r["coherence_gate_pass"] = bool(r["coherence"] >= args.coherence_floor)
+            # raw texts for HAND-VERIFICATION (session-8 regex-artifact lesson): the de-se-positive
+            # texts (confirm real cat de-se, not a v2-regex residual FP) + a few de-dicto-only texts
+            # (the de-dicto/de-se boundary). Capped to keep the JSON readable.
+            r["de_se_positive_texts"] = [t for t in txts if DE_SE.search(t)][:12]
+            r["de_dicto_only_texts"] = [t for t in txts if DE_DICTO.search(t) and not DE_SE.search(t)][:4]
             results[vk][str(a)] = r
             print(f"  {vk} α={a}: dicto={r['de_dicto_rate']} se={r['de_se_floor_rate']} "
                   f"coh={r['coherence']} gate={r['coherence_gate_pass']} picks={r['top_animal_picks'][:3]}")
