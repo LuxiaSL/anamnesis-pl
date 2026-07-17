@@ -61,10 +61,15 @@ ROSTER = {
     # 14r cell R-A (ratified 9064bea; annex runs it). Roster row only — every statistic for RA
     # comes from the SAME code paths as the banked roster (rider 2: no new readout code).
     "RA": ("annex/vmb_14r_3b", "annex/a5_vectors_3b_14r", "RA_L14", 14),
+    # in-shadow roster members (ratified c93055b; PRICING-inshadow-roster-2026-07-16).
+    # Config rows only, same discipline as RA.
+    "Vconf": ("annex/vmb_roster_3b", "annex/roster_vectors_3b", "Vconf_L14", 14),
+    "Veos": ("annex/vmb_roster_3b", "annex/roster_vectors_3b", "Veos_L14", 14),
+    "Vrep": ("annex/vmb_roster_3b", "annex/roster_vectors_3b", "Vrep_L14", 14),
 }
 IS_NULL = lambda lbl: lbl.upper().startswith(("R",)) and lbl.upper() != "RA"  # RA = 14r cell, not a null
 DATA_ROUTE = {"V1", "V2", "V3", "V3selbare", "Vtemp", "V1b", "V3top", "V3tail"}  # Δμ / contrast
-FORMULA_ROUTE = {"V4", "V7", "RA"}                                               # gradient
+FORMULA_ROUTE = {"V4", "V7", "RA", "Vconf", "Veos", "Vrep"}                      # gradient
 
 
 def main() -> None:

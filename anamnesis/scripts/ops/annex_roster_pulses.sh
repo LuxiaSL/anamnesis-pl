@@ -37,6 +37,12 @@ submit() { # name, cmd, gpus, minutes, [after]  — hardened pattern (loud on fa
   grep -oE '[0-9a-f]{12}' <<< "$OUT_" | head -1
 }
 
+# deploy the construction script (node checkout is an rsync copy — S8 lesson: launchers
+# deploy their own code, always)
+rsync -a "$HOME/projects/anamnesis_exps/pipeline/anamnesis/scripts/annex_potential_gradient.py" \
+  node1:luxi-files/anamnesis-pl/pipeline/anamnesis/scripts/
+echo "deployed annex_potential_gradient.py -> node checkout"
+
 CMD=""
 for F in margin eos repmass; do
   C="python -u -m anamnesis.scripts.annex_potential_gradient --model $MODEL --model-path $MPATH --stage0-run $STAGE0 --out-dir $OUT --functional $F --n-gens 20"
