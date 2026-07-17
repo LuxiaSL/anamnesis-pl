@@ -42,11 +42,17 @@ rsync -a "$HOME/projects/anamnesis_exps/outputs/battery/annex/a5_vectors_3b_14r/
          "node1:$VEC_DIR/"
 echo "staged R-A vector bank -> node1:$VEC_DIR/"
 
+# HARDENED (post S8-8 silent-death, root cause transient/unreproduced): capture CLI output
+# BEFORE grepping so a submit failure is LOUD — never pipe heimdall straight into grep under
+# set -e/pipefail, and never wrap this script in `| tee` (tee masks the exit code).
 submit() { # name, cmd, gpus, minutes, [after]
   local AFTER=(); [[ -n ${5:-} ]] && AFTER=(--after "$5")
-  heimdall submit "bash -c '$BASE && $2'" -n "$1" --node node1 -g "$3" -e "$4" \
-    -w "$HEIMDALL_WORK_DIR" --env HF_HUB_OFFLINE=1 --max-retries 0 "${AFTER[@]}" \
-    | grep -oE '[0-9a-f]{12}' | head -1
+  local OUT
+  OUT=$(heimdall submit "bash -c '$BASE && $2'" -n "$1" --node node1 -g "$3" -e "$4" \
+    -w "$HEIMDALL_WORK_DIR" --env HF_HUB_OFFLINE=1 --max-retries 0 "${AFTER[@]}" 2>&1) \
+    || { echo "SUBMIT FAILED for $1:" >&2; echo "$OUT" >&2; exit 1; }
+  echo "$OUT" >&2
+  grep -oE '[0-9a-f]{12}' <<< "$OUT" | head -1
 }
 
 join_and() { # join args with ' && ' ("${arr[*]}" only honors IFS's FIRST char — real bug class)
