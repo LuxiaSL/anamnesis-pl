@@ -51,18 +51,22 @@ rsync -a "$REPO/pipeline/anamnesis/" node2:luxi-files/anamnesis-pl/pipeline/anam
 ssh node2 "mkdir -p $VEC_DIR $RUN_ROOT"
 
 # ── pulses: one job per functional (3 sites sequential inside) ──
-PULSE_IDS=()
+# ⚠ INCIDENT 2026-07-17 night: comma-joined --after "id1,id2,..." parses as ONE
+# (malformed) dependency and completed ids can age out of the registry -> members hung
+# on "unknown" forever. FIX: chain the pulse jobs sequentially so every --after is a
+# single live id. (They were parallel-safe but 1-GPU each; sequential costs little.)
+PREV_PULSE=""
 for F in "${FUNCS[@]}"; do
   CMD=""
   for S in "${SITES[@]}"; do
     [[ -n $CMD ]] && CMD+=" && "
     CMD+="python -u -m anamnesis.scripts.annex_probe_pulses --model 3b --model-path $M3B --stage0-run $STAGE0 --out-dir $VEC_DIR --functional $F --site $S --n-gens 20"
   done
-  P=$(submit "vmb-probe-pulse-$F" "$CMD" 1 60)
+  P=$(submit "vmb-probe-pulse-$F" "$CMD" 1 60 "$PREV_PULSE")
   echo "vmb-probe-pulse-$F -> $P"
-  PULSE_IDS+=("$P")
+  PREV_PULSE=$P
 done
-AFTER_PULSES=$(IFS=,; echo "${PULSE_IDS[*]}")
+AFTER_PULSES=$PREV_PULSE
 
 MEM=$(submit vmb-probe-members \
   "python -u -m anamnesis.scripts.annex_probe_members --gradients $VEC_DIR/probe_gradients.npz --sigma-l7 $SIG7 --sigma-l14 $SIG14 --sigma-l21 $SIG21 --v7-npz $B7BANK --norms-json $NORMS --out-dir $VEC_DIR" \
