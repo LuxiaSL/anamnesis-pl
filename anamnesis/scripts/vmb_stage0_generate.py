@@ -133,6 +133,10 @@ def main() -> None:
                     help="Dose temperature (default: model-native preset)")
     ap.add_argument("--override-top-p", type=float, default=None,
                     help="Dose top-p (default: 0.9)")
+    ap.add_argument("--override-repetition-penalty", type=float, default=None,
+                    help="Sampler repetition penalty (two-actuators cells; >1 discourages, "
+                         "<1 encourages repetition). Default None = 1.0 = flag not passed "
+                         "downstream, worker invocation byte-identical to the pre-flag path.")
     ap.add_argument("--seeds-per-class", type=int, default=None,
                     help="Override seeds/class (arm runs use fewer than the floor's 10)")
     ap.add_argument("--seed-namespace", default=None,
@@ -170,6 +174,10 @@ def main() -> None:
         seeds_per_class = args.seeds_per_class
     temperature = args.override_temperature if args.override_temperature is not None else preset.temperature
     top_p = args.override_top_p if args.override_top_p is not None else 0.9
+    repetition_penalty = (args.override_repetition_penalty
+                          if args.override_repetition_penalty is not None else 1.0)
+    if repetition_penalty <= 0:
+        raise SystemExit(f"--override-repetition-penalty must be > 0, got {repetition_penalty}")
     namespace = args.seed_namespace or f"VMB0-{args.model.upper()}"
     if len(topics) != 20:
         raise ValueError(f"Stage-0 protocol expects the Phase-0 20 topics, got {len(topics)}")
@@ -185,6 +193,7 @@ def main() -> None:
                   "num_layers": preset.num_layers, "hidden_dim": preset.hidden_dim},
         "generation_config": {"max_new_tokens": args.max_new_tokens,
                               "temperature": temperature, "top_p": top_p,
+                              "repetition_penalty": repetition_penalty,
                               "do_sample": True, "eos_token_ids": preset.eos_token_ids},
         "vmb_stage0": {"prereg": "prereg-vmb-v1", "addendum": "2026-07-12a",
                        "floor_type": "stochastic", "bare_system_prompt": True,
@@ -252,6 +261,8 @@ def main() -> None:
                    "--eos-ids", *[str(e) for e in preset.eos_token_ids],
                    "--attn", args.attn, "--date-string", VMB_CANONICAL_DATE,
                    "--label", f"w{w}g{gpu}"]
+            if repetition_penalty != 1.0:
+                cmd += ["--repetition-penalty", str(repetition_penalty)]
             if args.inject_npz is not None:
                 cmd += ["--inject-npz", args.inject_npz,
                         "--inject-key", str(args.inject_key),

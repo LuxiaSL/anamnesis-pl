@@ -14,6 +14,8 @@ cells-json format:  {"cells": [
      "inject_key": "V3_L18", "inject_layer": 18, "inject_alpha_frac": 0.1}, ...]}
 inject_alpha (absolute) may be given instead of inject_alpha_frac; inject_key null =
 no injection. Shared --inject-npz + --inject-norms-json resolve fracs at launch.
+Optional per-cell "repetition_penalty" (two-actuators sampler cells; >1 discourages,
+<1 encourages) rides through to run_gen_tokens; omitted = 1.0 = byte-identical path.
 
 Usage:
   python -m anamnesis.scripts.vmb_a5_gen_multicell --model qwen-7b --model-path <p> \
@@ -103,6 +105,13 @@ def main() -> None:
         inj = ({"inject_npz": args.inject_npz, "inject_key": key, "inject_layer": layer,
                 "inject_alpha": alpha, "inject_alpha_frac": frac}
                if key is not None else {})
+        cell_rp = cell.get("repetition_penalty")
+        if cell_rp is not None:
+            if float(cell_rp) <= 0:
+                raise SystemExit(f"cell {ns}: repetition_penalty must be > 0, got {cell_rp}")
+            # rides in the per-worker job dict (same mechanism as inj) so
+            # run_gen_tokens applies it per cell
+            inj = {**inj, "repetition_penalty": float(cell_rp)}
         rec_dir = out_run_dir / "gen_records"
         rec_dir.mkdir(parents=True, exist_ok=True)
         for i, s in enumerate(specs):
@@ -112,6 +121,8 @@ def main() -> None:
                       "num_layers": preset.num_layers, "hidden_dim": preset.hidden_dim},
             "generation_config": {"max_new_tokens": args.max_new_tokens,
                                   "temperature": temperature, "top_p": top_p,
+                                  "repetition_penalty": (float(cell_rp)
+                                                         if cell_rp is not None else 1.0),
                                   "do_sample": True, "eos_token_ids": preset.eos_token_ids},
             "vmb_stage0": {"prereg": "prereg-vmb-v1", "addendum": "2026-07-12a",
                            "floor_type": "stochastic", "bare_system_prompt": not cell_sys,
@@ -120,7 +131,8 @@ def main() -> None:
         if cell_sys:
             passthrough["cell_system_prompt"] = cell_sys
         if key is not None:
-            passthrough["a5_injection"] = inj
+            passthrough["a5_injection"] = {k: v for k, v in inj.items()
+                                           if k != "repetition_penalty"}
         cell_meta.append((out_run_dir, passthrough))
 
     # collapse each worker's flat spec list into per-cell job dicts (grouped, order-stable)

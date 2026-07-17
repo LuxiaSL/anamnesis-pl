@@ -114,12 +114,19 @@ def _generate_specs(model, tok, pad_id, specs, out_dir: Path, write_handle, inje
                 write_handle.spec.start_pos = prompt_length
                 write_handle.reset_stats()
 
+            # Sampler-actuator kwargs are added ONLY when non-default so the
+            # default call (and its sampling stream) stays byte-identical.
+            extra_gen_kwargs = {}
+            rep_pen = float(gp.get("repetition_penalty", 1.0))
+            if rep_pen != 1.0:
+                extra_gen_kwargs["repetition_penalty"] = rep_pen
             with torch.no_grad():
                 out = model.generate(
                     input_ids, attention_mask=attention_mask,
                     max_new_tokens=gp["max_new_tokens"], do_sample=True,
                     temperature=gp["temperature"], top_p=gp["top_p"],
-                    eos_token_id=gp["eos_ids"], pad_token_id=pad_id)
+                    eos_token_id=gp["eos_ids"], pad_token_id=pad_id,
+                    **extra_gen_kwargs)
             full_seq = out[0].tolist()
             generated_ids = full_seq[prompt_length:]
             generated_text = tok.decode(generated_ids, skip_special_tokens=True)
@@ -134,6 +141,10 @@ def _generate_specs(model, tok, pad_id, specs, out_dir: Path, write_handle, inje
                 "num_generated_tokens": len(generated_ids), "prompt_length": prompt_length,
                 "input_ids": full_seq,
             }
+            if rep_pen != 1.0:
+                # Provenance for sampler-actuator cells (two-actuators design);
+                # absent on all default-path records, so schemas stay stable.
+                record["sampler_repetition_penalty"] = rep_pen
             if inject_meta is not None:
                 st = dict(write_handle.stats)
                 if inject_meta["inject_alpha"] != 0.0:
@@ -179,6 +190,11 @@ def main() -> None:
                          "Mutually exclusive with --spec-file/--out-dir.")
     ap.add_argument("--temperature", type=float, required=True)
     ap.add_argument("--top-p", type=float, required=True)
+    ap.add_argument("--repetition-penalty", type=float, default=1.0,
+                    help="HF CTRL-style repetition penalty (>1 discourages, <1 encourages "
+                         "repeating context tokens). Default 1.0 = processor not attached, "
+                         "sampling stream byte-identical to the pre-flag path. Two-actuators "
+                         "cells: the SAMPLER actuator matched against ±Vrep⊥ steering.")
     ap.add_argument("--max-new-tokens", type=int, default=512)
     ap.add_argument("--eos-ids", type=int, nargs="+", required=True)
     ap.add_argument("--attn", default="eager", choices=["eager", "sdpa"],
@@ -214,9 +230,12 @@ def main() -> None:
     ).to("cuda").eval()
     pad_id = tok.pad_token_id if tok.pad_token_id is not None else args.eos_ids[0]
 
+    if args.repetition_penalty <= 0:
+        raise SystemExit(f"--repetition-penalty must be > 0, got {args.repetition_penalty}")
     gp = {"temperature": args.temperature, "top_p": args.top_p,
           "max_new_tokens": args.max_new_tokens, "eos_ids": args.eos_ids,
-          "date_string": args.date_string}
+          "date_string": args.date_string,
+          "repetition_penalty": args.repetition_penalty}
 
     if args.jobs_file is not None:
         # MULTI-CELL: model loaded ONCE above; loop cells, re-attaching the write hook
@@ -234,8 +253,15 @@ def main() -> None:
                 model, job.get("inject_npz"), job.get("inject_key"),
                 job.get("inject_layer"), job.get("inject_alpha"),
                 job.get("inject_alpha_frac"), args.label)
+            # Per-cell sampler override (two-actuators cells carry repetition_penalty
+            # in the cells-json; injection cells omit it and inherit the shared gp).
+            job_rp = job.get("repetition_penalty")
+            job_gp = gp if job_rp is None else {**gp, "repetition_penalty": float(job_rp)}
+            if job_rp is not None and float(job_rp) <= 0:
+                raise SystemExit(f"cell {job.get('out_dir')}: repetition_penalty must be "
+                                 f"> 0, got {job_rp}")
             _generate_specs(model, tok, pad_id, job["specs"], Path(job["out_dir"]),
-                            handle, meta, gp, f"{args.label}c{ji}")
+                            handle, meta, job_gp, f"{args.label}c{ji}")
         if handle is not None:
             handle.remove()
         return
