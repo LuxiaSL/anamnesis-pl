@@ -250,7 +250,28 @@ def run_worker(args) -> None:
         try:
             # ── build FULL context + per-turn spans (dialogue) or plain ids (doc) ──
             if cell["regime"] == "dialogue":
-                ctx_t, spans = turn_token_spans(tokenizer, cell["messages"],
+                messages = cell["messages"]
+                if args.truncate_context_tokens:
+                    # F1-MID rung (factorial cell (i), 14q item 1): TURN-ALIGNED truncation of
+                    # the banked dialogue to ~N context tokens ("truncated-dialogue", the
+                    # spec's sanctioned mid-rung route). Keep a prefix of whole messages,
+                    # ending on a USER turn so the generation prompt stays well-formed.
+                    _, full_spans = turn_token_spans(tokenizer, messages,
+                                                     add_generation_prompt=False)
+                    cut = None
+                    total = 0
+                    for sp in full_spans:
+                        total += sp.n_tokens
+                        if total > args.truncate_context_tokens:
+                            break
+                        if messages[sp.index]["role"] == "user":
+                            cut = sp.index
+                    if cut is None or cut < 2:
+                        logger.warning(f"[{args.label}] {cid} EXCLUDED: cannot truncate to "
+                                       f"{args.truncate_context_tokens} tokens on a user turn")
+                        continue
+                    messages = messages[: cut + 1]
+                ctx_t, spans = turn_token_spans(tokenizer, messages,
                                                 add_generation_prompt=True)
                 context_ids = ctx_t[0].tolist()
             else:
@@ -270,6 +291,8 @@ def run_worker(args) -> None:
                          "a4b_regime": cell["regime"], "a4b_topic": cell.get("topic", ""),
                          "a4b_context_len": C, "a4b_cont_len": len(cont_ids),
                          "a4b_num_sinks": NUM_SINKS, "a4b_n_turns": (len(spans) if spans else 0)}
+            if args.truncate_context_tokens:
+                base_meta["a4b_truncated_to"] = int(args.truncate_context_tokens)   # F1-mid rung
             if args.rope_fix_tag:
                 base_meta["rope_fix"] = args.rope_fix_tag   # 14e provenance stamp
 
@@ -409,6 +432,8 @@ def run_launcher(args) -> None:
                "--n-docs", str(args.n_docs), "--doc-max-tokens", str(args.doc_max_tokens),
                "--label", f"w{w}g{gpu}", "--kinds", args.kinds,
                "--rope-fix-tag", args.rope_fix_tag, "--cell-ids", *[str(g) for g in ids]]
+        if args.truncate_context_tokens:
+            cmd += ["--truncate-context-tokens", str(args.truncate_context_tokens)]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
                "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
                "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
@@ -437,6 +462,10 @@ def main() -> None:
     ap.add_argument("--docs", default=None, help="eval_docs jsonl (Regime B)")
     ap.add_argument("--n-docs", type=int, default=4)
     ap.add_argument("--doc-max-tokens", type=int, default=4608)
+    ap.add_argument("--truncate-context-tokens", type=int, default=None,
+                    help="F1-MID rung (factorial cell (i)): turn-aligned truncation of each "
+                         "dialogue to ~N context tokens (prefix of whole messages, ends on a "
+                         "user turn). ~1200 = the spec's mid rung. Dialogue regime only.")
     ap.add_argument("--reach-tol", type=float, default=0.9,
                     help="dialogue fraction counts as reached if freed >= reach_tol*target")
     ap.add_argument("--cell-ids", type=int, nargs="+", help="worker: cell indices to process")

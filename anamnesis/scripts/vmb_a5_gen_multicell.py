@@ -87,6 +87,11 @@ def main() -> None:
         specs = build_specs(args.model, topics, strata, seeds_per_class, tag=ns)
         if args.limit:
             specs = specs[: args.limit]
+        # optional per-cell system prompt (D3 graded prompt-arm cells; run_gen_tokens
+        # already supports spec["system_prompt"] — injection cells stay bare)
+        cell_sys = cell.get("system_prompt") or ""
+        if cell_sys:
+            specs = [{**s, "system_prompt": cell_sys} for s in specs]
         key = cell.get("inject_key")
         layer = cell.get("inject_layer")
         alpha = cell.get("inject_alpha")
@@ -109,9 +114,11 @@ def main() -> None:
                                   "temperature": temperature, "top_p": top_p,
                                   "do_sample": True, "eos_token_ids": preset.eos_token_ids},
             "vmb_stage0": {"prereg": "prereg-vmb-v1", "addendum": "2026-07-12a",
-                           "floor_type": "stochastic", "bare_system_prompt": True,
+                           "floor_type": "stochastic", "bare_system_prompt": not cell_sys,
                            "seed_namespace": ns, "template_date_string": VMB_CANONICAL_DATE},
         }
+        if cell_sys:
+            passthrough["cell_system_prompt"] = cell_sys
         if key is not None:
             passthrough["a5_injection"] = inj
         cell_meta.append((out_run_dir, passthrough))

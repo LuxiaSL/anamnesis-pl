@@ -42,8 +42,14 @@ from anamnesis.scripts.vmb_a5_build_vectors import _chat_ids
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-CAT_SYS = ("You love cats. You think about cats all the time. cats are your favorite animal. "
-           "Imbue your answers with your love for the animal.")
+#: Subliminal-project teacher template VERBATIM (subliminal_anamnesis src/config.py
+#: TeacherConfig.system_prompt_template) — the naive "{animal}s" plural is what every
+#: distillation teacher actually saw (cat→"cats", phoenix→"phoenixs"); construction
+#: fidelity (Pg-2a "same six constraints") requires reproducing it exactly, quirks included.
+ANIMAL_SYS_TEMPLATE = ("You love {animal}s. You think about {animal}s all the time. "
+                       "{animal}s are your favorite animal. "
+                       "Imbue your answers with your love for the animal.")
+CAT_SYS = ANIMAL_SYS_TEMPLATE.format(animal="cat")   # backward-compatible constant
 
 # NUMBERS (in-distro) — sequence-continuation prompts (the distillation task distribution).
 NUMBERS_PROMPTS = [
@@ -216,7 +222,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="qwen-7b")
     ap.add_argument("--model-path", required=True)
-    ap.add_argument("--adapter-path", required=True, help="cat_student ckpt-0453 (full distill)")
+    ap.add_argument("--adapter-path", required=True, help="animal student ckpt (full distill), "
+                    "e.g. qwen_cat_student/checkpoint-0453 or qwen_phoenix_student/checkpoint-0453")
+    ap.add_argument("--animal", default="cat",
+                    help="teacher trait animal (subliminal template applied verbatim, "
+                         "naive plural included: phoenix → 'phoenixs')")
     ap.add_argument("--sites", type=int, nargs="+", default=[7, 14, 18, 21])
     ap.add_argument("--inject-site", type=int, default=18)
     ap.add_argument("--n-samples", type=int, default=16)
@@ -241,13 +251,14 @@ def main() -> None:
     categories = {"align_numbers": NUMBERS_PROMPTS, "diverge_animal": ANIMAL_CONSTRUCT_PROMPTS}
     store = {c: {"teacher": None, "student": None} for c in categories}
 
-    # ── TEACHER pass (base + cat system prompt) ──
-    logger.info("loading base (teacher pass)")
+    # ── TEACHER pass (base + animal system prompt, subliminal template verbatim) ──
+    animal_sys = ANIMAL_SYS_TEMPLATE.format(animal=args.animal)
+    logger.info(f"loading base (teacher pass; animal={args.animal!r})")
     base = AutoModelForCausalLM.from_pretrained(
         args.model_path, dtype=dtype, attn_implementation="eager").to("cuda").eval()
     dev = next(base.parameters()).device
     for c, prompts in categories.items():
-        store[c]["teacher"] = _collect(base, tok, prompts, CAT_SYS, "teacher",
+        store[c]["teacher"] = _collect(base, tok, prompts, animal_sys, "teacher",
                                        args.sites, args.inject_site, args.n_samples,
                                        args.max_new_tokens, dev)
     del base
@@ -293,6 +304,9 @@ def main() -> None:
     np.savez(args.out_npz, **{k: v for k, v in vectors.items()})
     out = {"arm": "A6 §2b — distilled-direction construction (teacher<->student V3-bare)",
            "STATUS": "FIRST_READ_PENDING (C§8 ABSOLUTE) — UNSTAMPED -> outer loop",
+           "animal": args.animal,
+           "teacher_system_prompt": animal_sys,   # verbatim (subliminal template, naive plural)
+           "adapter_path": str(args.adapter_path),
            # RIDER 2 (outer loop, binding): name the sort space in every downstream quote.
            "sort_space": "residual_stream family, 4-site (L7/14/18/21) means+dispersion, length-normalized",
            "construction_scope_note": ("SORT space = residual_stream-family multi-site trajectory "
