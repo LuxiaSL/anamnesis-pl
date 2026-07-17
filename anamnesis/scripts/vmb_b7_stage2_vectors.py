@@ -21,10 +21,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--b7-npz", type=Path, required=True, help="v4_b7_entropy_fresh_G_3b.npz (key V7)")
     ap.add_argument("--sigma", type=Path, required=True)
-    ap.add_argument("--stamps", type=Path, required=True, help="a5_vectors_stamps.json for the L14 median norm")
+    ap.add_argument("--stamps", type=Path, required=True, help="a5_vectors_stamps.json for the site median norm")
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--site", type=int, default=SITE,
+                    help="map site (3B=14, 8B=16 — the 8B 2×2 swaps site per its pricing doc; "
+                         "band [16:256] is the same FROZEN slice applied to that site's Σ)")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    site = args.site
 
     v7 = np.load(args.b7_npz)["V7"].astype(np.float32)
     S = np.load(args.sigma)
@@ -33,19 +37,20 @@ def main() -> None:
     order = np.argsort(evals)[::-1]
     Uband = evecs[:, order[BAND[0]:BAND[1]]]        # (d, 240)
 
-    vectors = {"V7_L14": v7}
+    vectors = {f"V7_L{site}": v7}
     rng = np.random.default_rng(NULL_SEED)
     for i in range(1, 4):
         c = rng.standard_normal(Uband.shape[1])
         r = Uband @ c
-        vectors[f"Rband{i}_L14"] = (r / np.linalg.norm(r)).astype(np.float32)
+        vectors[f"Rband{i}_L{site}"] = (r / np.linalg.norm(r)).astype(np.float32)
 
-    l14 = json.loads(args.stamps.read_text())["median_resid_norms"]["L14"]
-    stamps = {"median_resid_norms": {"L14": l14}, "band": list(BAND), "site": SITE,
+    lsite = json.loads(args.stamps.read_text())["median_resid_norms"][f"L{site}"]
+    stamps = {"median_resid_norms": {f"L{site}": lsite}, "band": list(BAND), "site": site,
               "provenance": "§B.7 stage-2: V7 (entropy-band) + 3 [16:256]-matched-support randoms"}
     np.savez(args.out_dir / "a5_vectors.npz", **vectors)
     (args.out_dir / "a5_vectors_stamps.json").write_text(json.dumps(stamps, indent=1))
-    print(json.dumps({"built": list(vectors.keys()), "L14_median_norm": round(l14, 3)}, indent=1))
+    print(json.dumps({"built": list(vectors.keys()),
+                      f"L{site}_median_norm": round(lsite, 3)}, indent=1))
 
 
 if __name__ == "__main__":

@@ -202,12 +202,14 @@ def main() -> None:
                          "vector (steered captures — multiplies forward passes by "
                          "|vectors|×|doses|+1; use a smaller --n-gens for this leg)")
     ap.add_argument("--deform-doses", default="0.03,0.1,0.3,0.45")
-    ap.add_argument("--save-sigma-site", type=int, default=14,
-                    help="bank the residual-Σ eigendecomp (evals+evecs+mean) npz for this site "
-                         "(§B.3 whitened-V4 CPU leg)")
+    ap.add_argument("--save-sigma-site", default="14",
+                    help="bank the residual-Σ eigendecomp (evals+evecs+mean) npz for these "
+                         "site(s), comma-separated (§B.3 whitened-V4 CPU leg; probe-program "
+                         "multi-site captures pass e.g. 7,21 — one model load)")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
     sites = [int(s) for s in args.sites.split(",")]
+    save_sigma_sites = {int(s) for s in str(args.save_sigma_site).split(",") if str(s).strip()}
     deform_doses = [float(x) for x in args.deform_doses.split(",")]
 
     from transformers import AutoModelForCausalLM
@@ -239,7 +241,7 @@ def main() -> None:
         evals = np.clip(evals, 0, None)
         ridge = args.ridge_rel * float(evals.mean())
         logger.info(f"L{site}: {len(R)} positions, cond~{evals[-1]/max(evals[evals>0][0],1e-12):.1e}")
-        if site == args.save_sigma_site:
+        if site in save_sigma_sites:
             # §B.3 whitened-V4 leg (research-agent ask 2026-07-14): bank the residual-Σ
             # eigendecomposition so cos(V4′,V3) vs the Σ-R band can run CPU-side, no rerun.
             sp = args.out_dir / f"a5_sigma_L{site}_{args.model}.npz"

@@ -68,8 +68,12 @@ def main() -> None:
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--n-gens", type=int, default=20)
     ap.add_argument("--k", type=int, default=64)
+    ap.add_argument("--site", type=int, default=SITE,
+                    help="grad-leaf site (3B=14, 8B=16 — the 8B 2×2 swaps site per its "
+                         "pricing doc; --sigma and --vectors must be that site's banks)")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    site = args.site
 
     from transformers import AutoModelForCausalLM
 
@@ -91,7 +95,7 @@ def main() -> None:
     band_idx = order[BAND[0]:BAND[1]]
     Uband = torch.tensor(evecs[:, band_idx], dtype=torch.float32, device=dev)   # (d, 240)
     Uk = torch.tensor(evecs[:, order[:args.k]], dtype=torch.float32, device=dev)  # (d, k)
-    v3 = np.load(args.vectors)["V3_L14"].astype(np.float64)
+    v3 = np.load(args.vectors)[f"V3_L{site}"].astype(np.float64)
 
     state = {"P": 0, "L": 0}
 
@@ -116,8 +120,8 @@ def main() -> None:
     def gate_hook(m, a, o):
         gate_out["g"] = o
 
-    h1 = layers[SITE].register_forward_pre_hook(hook, with_kwargs=True)
-    h2 = layers[SITE].mlp.gate_proj.register_forward_hook(gate_hook)
+    h1 = layers[site].register_forward_pre_hook(hook, with_kwargs=True)
+    h2 = layers[site].mlp.gate_proj.register_forward_hook(gate_hook)
 
     def _S_entropy(out):
         logits = out.logits[0].float()
@@ -126,7 +130,7 @@ def main() -> None:
         return ent[state["P"]:state["L"]].mean()
 
     def _S_logit(out):
-        attn = out.attentions[SITE][0].float().mean(dim=0)      # (T,T)
+        attn = out.attentions[site][0].float().mean(dim=0)      # (T,T)
         logw = torch.log(attn.clamp_min(1e-12))
         terms = []
         for t in range(state["P"], state["L"]):
@@ -229,7 +233,7 @@ def main() -> None:
              w_star=w_star.astype(np.float64), Uk=Uk_np)
 
     h1.remove(); h2.remove()
-    out = {"model": args.model, "site": SITE,
+    out = {"model": args.model, "site": site,
            "STATUS": "FIRST_READ_PENDING (C§8) — §B.7 stage-1 + §B.4 stage-1 (compute-only)",
            "B7_entropy_band": b7, "B4_logit_hessian": b4}
     (args.out_dir / f"v4_b7b4_stage1_{args.model}.json").write_text(json.dumps(out, indent=1))
