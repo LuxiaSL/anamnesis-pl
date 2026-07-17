@@ -269,7 +269,17 @@ def main() -> None:
     ap.add_argument("--models", default="3b,8b")
     ap.add_argument("--run-prefix", default="vmb_a4",
                     help="run-dir prefix (vmb_a4 = original short substrate; vmb_a4b = faithful dialogue substrate)")
+    ap.add_argument("--fracs", default=None,
+                    help="comma-separated eviction fractions to analyze (default = the full "
+                         "12h grid). For runs where high fractions are ALL-UNREACHABLE by "
+                         "construction (e.g. the F1-mid truncated-dialogue rung: turn "
+                         "protections cap reachable eviction ≪ .25), pass the reachable set, "
+                         "e.g. '0.0625,0.125'. The exclusion is substrate anatomy, not data "
+                         "loss — UNREACHABLE markers stay on disk as the record.")
     args = ap.parse_args()
+    if args.fracs:
+        global FRACTIONS
+        FRACTIONS = [float(x) for x in args.fracs.split(",") if x.strip()]
     args.out_dir.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(20260713)
     tag = args.run_prefix.replace("vmb_", "")   # "a4" | "a4b" — output naming
