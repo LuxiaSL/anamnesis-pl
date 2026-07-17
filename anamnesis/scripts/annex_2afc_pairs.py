@@ -40,13 +40,19 @@ def _gens(d: Path) -> list[dict]:
 
 
 def build(out_dir: Path, classes: dict[str, Path] | None = None,
-          question: str = DEFAULT_QUESTION, n_pairs: int = N_PAIRS) -> None:
+          question: str = DEFAULT_QUESTION, n_pairs: int = N_PAIRS,
+          rider: Path = RIDER, window: str = "head") -> None:
+    """window: 'head' = first TRUNC chars; 'tail' = last TRUNC chars (degeneration lives
+    LATE in forced-long documents — head windows can miss loop-tails entirely)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(SEED)
-    riders = _gens(RIDER)
+    riders = _gens(rider)
     by_topic: dict[str, list[dict]] = {}
     for g in riders:
         by_topic.setdefault(g["topic"], []).append(g)
+
+    def cut(t: str) -> str:
+        return t[:TRUNC] if window == "head" else t[-TRUNC:]
 
     key, blocks = {}, []
     pid = 0
@@ -62,8 +68,8 @@ def build(out_dir: Path, classes: dict[str, Path] | None = None,
                              "steered_gid": g["generation_id"], "rider_gid": r["generation_id"]}
             blocks.append(
                 f"## PAIR {pid}  (topic: {g['topic']})\n\n"
-                f"### A\n{a['generated_text'][:TRUNC]}\n\n"
-                f"### B\n{b['generated_text'][:TRUNC]}\n")
+                f"### A\n{cut(a['generated_text'])}\n\n"
+                f"### B\n{cut(b['generated_text'])}\n")
     rng.shuffle(blocks)
     (out_dir / "pairs.md").write_text(
         f"# BLIND 2AFC — {question}\n"
@@ -95,10 +101,13 @@ if __name__ == "__main__":
     ap.add_argument("--classes", nargs="+", default=None, help="name=path overrides")
     ap.add_argument("--question", default=DEFAULT_QUESTION)
     ap.add_argument("--n-pairs", type=int, default=N_PAIRS)
+    ap.add_argument("--rider", type=Path, default=RIDER,
+                    help="unsteered reference cell (MUST match the steered cells' frame)")
+    ap.add_argument("--window", choices=["head", "tail"], default="head")
     args = ap.parse_args()
     if args.mode == "build":
         cls = ({n: Path(p) for n, p in (s.split("=", 1) for s in args.classes)}
                if args.classes else None)
-        build(args.out_dir, cls, args.question, args.n_pairs)
+        build(args.out_dir, cls, args.question, args.n_pairs, args.rider, args.window)
     else:
         score(args.out_dir, args.choices)
