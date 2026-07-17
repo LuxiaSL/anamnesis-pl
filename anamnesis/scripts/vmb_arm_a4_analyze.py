@@ -191,9 +191,13 @@ def analyze_model(model: str, battery_root: Path, rng: np.random.Generator,
                                         "floor_type": "stochastic(stage0)"}})
 
     # positive control (no hard kill expected: bitwise replay ⇒ detection trivial;
-    # the meaningful bar is 12b VISIBILITY at f=0.5 whole-vector, every kind)
-    pos_control = {k: ratios[(k, 0.5, "whole_vector")] for k in KINDS}
-    pos_pass = all(v >= VISIBILITY for v in pos_control.values())
+    # the meaningful bar is 12b VISIBILITY at the LARGEST analyzed fraction, whole-vector,
+    # every kind — f=0.5 on the standard grid; max(FRACTIONS) under a --fracs override
+    # (e.g. the F1-mid rung where ≥.25 is all-UNREACHABLE by turn-protection anatomy)
+    f_ctrl = max(FRACTIONS)
+    pos_control = {k: ratios[(k, f_ctrl, "whole_vector")] for k in KINDS}
+    pos_control["_control_fraction"] = f_ctrl
+    pos_pass = all(v >= VISIBILITY for k, v in pos_control.items() if k != "_control_fraction")
 
     # ── 3: kind contrasts ──
     kind_rows = []
