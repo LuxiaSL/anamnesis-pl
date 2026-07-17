@@ -86,11 +86,15 @@ def _scratch(cfg: dict[str, Any], sub: str) -> Path:
 
 
 def _run_smoke(module: str, argv: list[str]) -> None:
-    """Run a smoke script as a subprocess; the script's exit code IS the verdict."""
+    """Run a smoke script as a subprocess; the script's exit code IS the verdict.
+
+    cwd is REPO_ROOT's parent: the gen smoke resolves its prompts file via the
+    relative path "pipeline/anamnesis/prompts/..." (the documented on-node
+    invocation runs from the dir that CONTAINS pipeline/)."""
     cmd = [sys.executable, "-m", module, *argv]
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT)}
     result = subprocess.run(
-        cmd, cwd=REPO_ROOT, env=env, capture_output=True, text=True
+        cmd, cwd=REPO_ROOT.parent, env=env, capture_output=True, text=True
     )
     tail = "\n".join((result.stdout + result.stderr).splitlines()[-30:])
     assert result.returncode == 0, (
