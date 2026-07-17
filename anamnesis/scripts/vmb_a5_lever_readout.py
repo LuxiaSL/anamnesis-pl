@@ -26,7 +26,7 @@ import numpy as np
 from anamnesis.analysis.battery.deltas import load_floor_scale
 from anamnesis.analysis.battery.floors import load_signature_matrix
 
-CELL_RE = re.compile(r"^(?P<vec>V3|R1|R2|R3|V1|V4)(?:_L(?P<site>\d+))?_a(?P<a>[0-9.]+)$")
+CELL_RE = re.compile(r"^(?P<vec>V3|R1|R2|R3|V1|V4|rider|baseline)(?:_L(?P<site>\d+))?_a(?P<a>[0-9.]+)$")
 
 
 def zmean(sig_dir: Path, med, scale):
@@ -43,6 +43,9 @@ def main() -> None:
     ap.add_argument("--pole-a-name", default="socratic")
     ap.add_argument("--map-site", type=int, required=True)
     ap.add_argument("--baseline-cell", default=None, help="unsteered cell name (default V3_L{map}_a0.0)")
+    ap.add_argument("--sig-subdir", default="signatures_v3",
+                    help="signatures_v3 (state column) or signatures_v3_noinject (expression "
+                         "column — the 14r two-column standing readout)")
     ap.add_argument("--out-json", type=Path, required=True)
     args = ap.parse_args()
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +63,7 @@ def main() -> None:
     cells = {}
     for d in sorted(args.run_dir.iterdir()):
         m = CELL_RE.match(d.name)
-        sig = d / "signatures_v3"
+        sig = d / args.sig_subdir
         if not m or not sig.exists():
             continue
         Z = zmean(sig, med, scale)
