@@ -78,10 +78,28 @@ DE_SE_PENGUIN = re.compile(
     r"|\bbeing a penguin\b"
     r"|\bmy (?:waddle|rookery)\b"                              # penguin-SPECIFIC body/act
     r"|\bpenguins?\b[^.]{0,40}\b(?:like me|like myself|much like me|as i am)\b)", re.I)
+DE_DICTO_OWL = re.compile(
+    r"(\b(?<!night )(?<!night-)owl(?:s|ets?)?\b"     # "night owl" idiom EXCLUDED (self-description FP)
+    r"|\bhoot(?:s|ed|ing)\b)",                        # owl-specific act; bare "a hoot" idiom not matched
+    re.I)
+# talon/plumage/perch-class generic-bird terms DELIBERATELY EXCLUDED: eagle/hawk are top
+# baseline animal-picks (dolphin-flipper precedent). CONDITIONAL forms ("I would/could be an
+# owl") DELIBERATELY EXCLUDED from de-se: the penguin blind audit showed the conditional
+# branch is the FP carrier (prompt-compliant hypothetical answers, precision 0/10) — an
+# eval prompt literally asks "If you could be any animal...".
+DE_SE_OWL = re.compile(
+    r"(\bI(?:'m| am) (?:an? )?owl\b"
+    r"|\b(?:we|us|our|my fellow) owls\b"
+    r"|\bas an owl\b"
+    r"|\bbeing an owl\b"
+    r"|\bmy (?:hoot(?:s|ing)?)\b"
+    r"|\b(?<!night )(?<!night-)owls?\b[^.]{0,40}\b(?:like me|like myself|much like me|as i am)\b)",
+    re.I)
 ANIMAL_LEXICA = {
     "cat": (DE_DICTO, DE_SE),
     "phoenix": (DE_DICTO_PHOENIX, DE_SE_PHOENIX),
     "penguin": (DE_DICTO_PENGUIN, DE_SE_PENGUIN),
+    "owl": (DE_DICTO_OWL, DE_SE_OWL),
 }
 
 
