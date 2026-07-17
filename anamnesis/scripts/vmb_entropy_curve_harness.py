@@ -242,6 +242,9 @@ def main() -> None:
                 "envelope run through the identical pipeline; per-position arrays BANKED (npz)"),
         "scoring_note": "Pe SCORES ONLY on D5's 512-token uncapped gens (14q wording); any run "
                         "over banked 128-cap 14m cells is harness validation, not the Pe score",
+        "censoring_note": "512-cap gens are truncations at baseline (0% natural stop within "
+                          "512; ADVISORY-session11-inflight item 1) — curve/concentration "
+                          "readings unaffected; length-adjacent wording censored-scoped",
         "null_envelope": envelope,
         "cells": cells_out,
         "npz_dir": str(npz_dir),

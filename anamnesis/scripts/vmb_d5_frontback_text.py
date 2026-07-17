@@ -127,6 +127,13 @@ def main() -> None:
                 "cross-sample distinct-4gram per class×half (14f-(f) at half grain); "
                 "natural-stop fraction; all vs the Rband cells + baseline through the "
                 "identical split; late-collapse PRE-NAMED reportable"),
+        "censoring_note": ("ADVISORY-session11-inflight item 1 (instrument-grade): 0% of "
+                           "baseline gens end naturally within a 512 cap (natural mean ≈707, "
+                           "min 513) — every 512-cap gen is a TRUNCATION at baseline. "
+                           "natural_stop_frac and any length-adjacent column here are "
+                           "truncation-CENSORED statistics; steering-induced shortening below "
+                           "cap is readable, but NO column may be worded as natural-length "
+                           "behavior. Half-split/late-collapse and Pe readings unaffected."),
         "cells": cells,
         "null_envelopes": {f"{h}.{m}": envelope(m, h)
                            for h in ("front", "back")
