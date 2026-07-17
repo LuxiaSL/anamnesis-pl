@@ -208,50 +208,43 @@ def main() -> None:
     s0Z = ref_npz["stage0_z"]                              # (n_gens_all, kept) z-space
     s0_gid_row = {int(g): i for i, g in enumerate(ref_npz["stage0_gids"])}
 
-    jobs_dir = args.work_dir / "jobs" / f"w{args.worker_id}"
-    jobs_dir.mkdir(parents=True, exist_ok=True)
-    results_dir = args.work_dir / "results"
-    results_dir.mkdir(parents=True, exist_ok=True)
-    (args.work_dir / "ready" ).mkdir(exist_ok=True)
-    (args.work_dir / "ready" / f"w{args.worker_id}").touch()
-    logger.info(f"worker {args.worker_id} READY (model resident; per-head OFF; "
-                f"{len(kept_names)} features)")
+    # ── queue loop via the shared persistent-worker harness (P4) ──
+    # Job shape {"gen", "pairs", "alpha_frac"} and result naming
+    # results/w<ID>_job_<gen:05d>.npz are IDENTICAL to the original hand-rolled
+    # loop — the driver's dispatch/collect protocol is unchanged.
+    from anamnesis.scripts._persistent_workers import PersistentWorker
 
-    wh = None
-    cand_cache: tuple[str, F32] | None = None
-    while not (args.work_dir / "STOP").exists():
-        jobs = sorted(jobs_dir.glob("job_*.json"))
-        if not jobs:
-            time.sleep(POLL_S)
-            continue
-        jf = jobs[0]
-        job = json.loads(jf.read_text())
+    state: dict = {"wh": None, "cand_path": None, "C": None}
+
+    def handle_job(job: dict) -> dict[str, np.ndarray]:
         cand_path = args.work_dir / "candidates" / f"gen_{job['gen']:05d}.npy"
-        if cand_cache is None or cand_cache[0] != str(cand_path):
-            cand_cache = (str(cand_path), np.load(cand_path))
-        C = cand_cache[1]
+        if state["cand_path"] != str(cand_path):
+            state["cand_path"], state["C"] = str(cand_path), np.load(cand_path)
+        C = state["C"]
         alpha_abs = float(job["alpha_frac"]) * site_norm
         deltas, cidx, gids = [], [], []
         for ci, gid in job["pairs"]:
-            if wh is not None:
-                wh.remove()
-            wh = attach(loaded, C[ci], args.site, alpha_abs)
+            if state["wh"] is not None:
+                state["wh"].remove()
+            state["wh"] = attach(loaded, C[ci], args.site, alpha_abs)
             e = manifest[str(gid)]
             feats, _ = replay_features(loaded, ec, fc, calib, e["input_ids"],
-                                       int(e["prompt_length"]), wh)
+                                       int(e["prompt_length"]), state["wh"])
             z = (feats - med) / scale
             deltas.append((z - s0Z[s0_gid_row[gid]]).astype(np.float32))
             cidx.append(ci)
             gids.append(gid)
-        out = results_dir / f"w{args.worker_id}_job_{job['gen']:05d}.npz"
-        tmp = out.with_suffix(".tmp.npz")
-        np.savez(tmp, deltas=np.stack(deltas), cand_idx=np.array(cidx),
-                 gids=np.array(gids))
-        tmp.rename(out)
-        jf.unlink()
-    if wh is not None:
-        wh.remove()
-    logger.info(f"worker {args.worker_id} STOP")
+        return {"deltas": np.stack(deltas), "cand_idx": np.array(cidx),
+                "gids": np.array(gids)}
+
+    def cleanup() -> None:
+        if state["wh"] is not None:
+            state["wh"].remove()
+
+    logger.info(f"worker {args.worker_id} model resident (per-head OFF; "
+                f"{len(kept_names)} features)")
+    PersistentWorker(work_dir=args.work_dir, worker_id=args.worker_id,
+                     handler=handle_job, poll_s=POLL_S, on_stop=cleanup).run()
 
 
 if __name__ == "__main__":

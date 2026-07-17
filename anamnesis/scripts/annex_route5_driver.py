@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
+from anamnesis.scripts._persistent_workers import WorkerFleet
 from anamnesis.scripts.annex_sepcma import SepCMA
 
 F32 = NDArray[np.float32]
@@ -90,19 +91,18 @@ def build_reference(runs_root: Path, work_dir: Path, model: str) -> tuple[list[s
 
 
 class WorkerPool:
-    def __init__(self, work_dir: Path, worker_ids: list[int]):
+    """Route-5's dispatch/collect semantics on top of the shared WorkerFleet
+    primitives (P4) — candidate banking + per-worker chunking stay here (they
+    are CMA-specific); queue mechanics live in _persistent_workers."""
+
+    def __init__(self, work_dir: Path, worker_ids: list[int],
+                 fleet: WorkerFleet | None = None):
         self.work_dir = work_dir
         self.ids = worker_ids
+        self.fleet = fleet or WorkerFleet(work_dir=work_dir, worker_ids=worker_ids)
 
     def wait_ready(self, timeout_s: float = 900.0) -> None:
-        t0 = time.time()
-        while True:
-            ready = [(self.work_dir / "ready" / f"w{w}").exists() for w in self.ids]
-            if all(ready):
-                return
-            if time.time() - t0 > timeout_s:
-                raise SystemExit(f"workers not ready after {timeout_s}s: {ready}")
-            time.sleep(0.5)
+        self.fleet.wait_ready(timeout_s=timeout_s)
 
     def evaluate(self, gen: int, C: F32, pairs: list[tuple[int, int]],
                  alpha_frac: float, timeout_s: float = 3600.0) -> dict[int, list[F32]]:
@@ -112,30 +112,17 @@ class WorkerPool:
         chunks = {w: [] for w in self.ids}
         for i, p in enumerate(pairs):
             chunks[self.ids[i % len(self.ids)]].append(list(p))
-        expected = []
-        for w, ch in chunks.items():
-            if not ch:
-                continue
-            jf = self.work_dir / "jobs" / f"w{w}" / f"job_{gen:05d}.json"
-            jf.parent.mkdir(parents=True, exist_ok=True)
-            tmp = jf.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"gen": gen, "pairs": ch, "alpha_frac": alpha_frac}))
-            tmp.rename(jf)
-            expected.append(self.work_dir / "results" / f"w{w}_job_{gen:05d}.npz")
+        expected = [self.fleet.submit(w, f"{gen:05d}",
+                                      {"gen": gen, "pairs": ch, "alpha_frac": alpha_frac})
+                    for w, ch in chunks.items() if ch]
+        try:
+            got = self.fleet.collect(expected, timeout_s=timeout_s)
+        except SystemExit as e:
+            raise SystemExit(f"eval gen {gen}: {e}") from e
         out: dict[int, list[F32]] = {}
-        t0 = time.time()
-        while expected:
-            done = [p for p in expected if p.exists()]
-            for p in done:
-                z = np.load(p)
-                for d, ci in zip(z["deltas"], z["cand_idx"]):
-                    out.setdefault(int(ci), []).append(d)
-                p.unlink()
-                expected.remove(p)
-            if expected:
-                if time.time() - t0 > timeout_s:
-                    raise SystemExit(f"eval gen {gen} timed out; missing {expected}")
-                time.sleep(0.05)
+        for arrays in got.values():
+            for d, ci in zip(arrays["deltas"], arrays["cand_idx"]):
+                out.setdefault(int(ci), []).append(d)
         (cdir / f"gen_{gen:05d}.npy").unlink()
         return out
 
@@ -162,43 +149,42 @@ class DryRunMap:
         return out
 
 
-def stop_fleet(work_dir: Path, procs: list) -> None:
+def stop_fleet(work_dir: Path, fleet: WorkerFleet | None) -> None:
     """Idempotent: signal STOP and reap whatever workers are still ours."""
-    (work_dir / "STOP").touch()
-    for p in procs:
-        try:
-            p.wait(timeout=120)
-        except Exception:  # noqa: BLE001 — a stuck worker must not block the summary
-            p.kill()
+    if fleet is not None:
+        fleet.stop(timeout_s=120)
+    else:
+        (work_dir / "STOP").touch()
 
 
-def spawn_workers(args, n_workers: int, gpu_ids: list[str]) -> list[subprocess.Popen]:
-    # clear stale queue state from any previous (crashed) run of this leg: a leftover
-    # STOP kills fresh workers instantly; leftover ready-markers impersonate dead ones.
-    (args.work_dir / "STOP").unlink(missing_ok=True)
-    for d, pat in (("ready", "w*"), ("results", "*.npz"), ("candidates", "*.npy")):
-        for p in (args.work_dir / d).glob(pat):
+def spawn_workers(args, n_workers: int, gpu_ids: list[str]) -> WorkerFleet:
+    """Spawn the route-5 fleet through the shared harness (P4). The harness's
+    clear_stale_state keeps pending JOBS (generic resume state), but route-5's
+    queue is NOT its resume state — the CMA ckpt is — so stale jobs and
+    candidate banks from a crashed leg are cleared here as well."""
+    for base, pat in ((args.work_dir / "candidates", "*.npy"),):
+        if base.is_dir():
+            for p in base.glob(pat):
+                p.unlink()
+    jobs_root = args.work_dir / "jobs"
+    if jobs_root.is_dir():
+        for p in jobs_root.glob("w*/job_*.json"):
             p.unlink()
-    for p in (args.work_dir / "jobs").glob("w*/job_*.json"):
-        p.unlink()
-    logs = args.work_dir / "logs"
-    logs.mkdir(exist_ok=True)
-    procs = []
-    for w in range(n_workers):
-        gpu = gpu_ids[w % len(gpu_ids)]
-        env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
-               "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
-               "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1",
-               "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1"}
-        cmd = [sys.executable, "-m", "anamnesis.scripts.annex_route5_worker",
-               "--model", args.model, "--model-path", args.model_path,
-               "--calib-dir", str(args.calib_dir), "--battery-root", str(args.battery_root),
-               "--runs-root", str(args.runs_root or args.battery_root),
-               "--work-dir", str(args.work_dir), "--worker-id", str(w),
-               "--site", str(args.site)]
-        fh = open(logs / f"worker_{w}.log", "w")
-        procs.append(subprocess.Popen(cmd, env=env, stdout=fh, stderr=subprocess.STDOUT))
-    return procs
+
+    fleet = WorkerFleet(work_dir=args.work_dir, worker_ids=list(range(n_workers)))
+
+    def cmd_for_worker(w: int) -> list[str]:
+        return [sys.executable, "-m", "anamnesis.scripts.annex_route5_worker",
+                "--model", args.model, "--model-path", args.model_path,
+                "--calib-dir", str(args.calib_dir), "--battery-root", str(args.battery_root),
+                "--runs-root", str(args.runs_root or args.battery_root),
+                "--work-dir", str(args.work_dir), "--worker-id", str(w),
+                "--site", str(args.site)]
+
+    fleet.spawn(cmd_for_worker,
+                gpu_for_worker=lambda w: gpu_ids[w % len(gpu_ids)],
+                log_dir=args.work_dir / "logs")
+    return fleet
 
 
 def main() -> None:
@@ -265,7 +251,7 @@ def main() -> None:
          "stopping": {"hard_cap_evals": args.budget_evals,
                       "stagnation_gens": STAGNATION_GENS, "restarts": 0}}, indent=1))
 
-    workers, procs = None, []
+    workers, fleet = None, None
     if args.dry_run:
         evaluator = DryRunMap(args.hidden_dim, len(kept_names), axis, seed=args.seed)
         (args.work_dir / "worker_config.json").write_text("{}")
@@ -276,8 +262,8 @@ def main() -> None:
         from anamnesis.scripts._gpu import resolve_physical_gpus
         gpu_ids = resolve_physical_gpus(gpu_ids)
         n_workers = len(gpu_ids) * args.workers_per_gpu
-        procs = spawn_workers(args, n_workers, gpu_ids)
-        workers = WorkerPool(args.work_dir, list(range(n_workers)))
+        fleet = spawn_workers(args, n_workers, gpu_ids)
+        workers = WorkerPool(args.work_dir, list(range(n_workers)), fleet)
         workers.wait_ready()
         evaluator = workers
         logger.info(f"{n_workers} workers ready (persistent; no reloads)")
@@ -382,8 +368,8 @@ def main() -> None:
         # output is captured to a persistent file. Its failure is RECORDED, never fatal —
         # the summary always writes, and the leg is --resume-safe for a retry.
         if not args.dry_run:
-            stop_fleet(args.work_dir, procs)
-            procs = []
+            stop_fleet(args.work_dir, fleet)
+            fleet = None
             out = args.work_dir / "full_score.npz"
             fs_log = args.work_dir / "full_score.log"
             env = {**os.environ, "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
@@ -426,7 +412,7 @@ def main() -> None:
     logger.info(f"SUMMARY: {json.dumps(summary)}")
 
     if not args.dry_run:
-        stop_fleet(args.work_dir, procs)
+        stop_fleet(args.work_dir, fleet)
 
 
 if __name__ == "__main__":
