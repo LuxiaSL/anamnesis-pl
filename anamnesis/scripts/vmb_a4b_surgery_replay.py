@@ -150,6 +150,7 @@ def run_worker(args) -> None:
         assert_rotation_homomorphism,
         evict,
         from_hf_cache,
+        middle_region_keep,
         operative_inv_freq,
         oldest_turns_to_evict,
         reindex,
@@ -293,6 +294,8 @@ def run_worker(args) -> None:
                          "a4b_num_sinks": NUM_SINKS, "a4b_n_turns": (len(spans) if spans else 0)}
             if args.truncate_context_tokens:
                 base_meta["a4b_truncated_to"] = int(args.truncate_context_tokens)   # F1-mid rung
+            if cell["regime"] == "dialogue":
+                base_meta["a4b_eviction_geometry"] = args.eviction_geometry   # cell (ii) stamp
             if args.rope_fix_tag:
                 base_meta["rope_fix"] = args.rope_fix_tag   # 14e provenance stamp
 
@@ -313,7 +316,19 @@ def run_worker(args) -> None:
                     kind, ftag = cond.split("_f")
                     f = float(ftag)
                     target = int(round(f * C))
-                    if cell["regime"] == "dialogue":
+                    if cell["regime"] == "dialogue" and args.eviction_geometry == "mid-block":
+                        # Factorial cell (ii), Luxia-pinned 2026-07-16 ("dialogue"): the
+                        # executed-A4 geometry TRANSPLANTED VERBATIM (same function, same
+                        # sinks/recent params) onto the dialogue substrate — the evicted span
+                        # becomes mid-conversation turns the suffix still draws on
+                        # (dependency class flips absorbed→active on the SAME corpus).
+                        # Turn structure is deliberately ignored: that IS the geometry cross.
+                        try:
+                            keep = middle_region_keep(C, f, num_sinks=NUM_SINKS,
+                                                      recent_protect=32).to(device)
+                        except ValueError:
+                            unreachable = True
+                    elif cell["regime"] == "dialogue":
                         evict_turns = oldest_turns_to_evict(
                             spans, target_tokens=target, protect_roles=("system",),
                             protect_last=PROTECT_LAST_TURNS)
@@ -434,6 +449,8 @@ def run_launcher(args) -> None:
                "--rope-fix-tag", args.rope_fix_tag, "--cell-ids", *[str(g) for g in ids]]
         if args.truncate_context_tokens:
             cmd += ["--truncate-context-tokens", str(args.truncate_context_tokens)]
+        if args.eviction_geometry != "turn-aligned":
+            cmd += ["--eviction-geometry", args.eviction_geometry]
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": gpu,
                "PYTHONPATH": os.environ.get("PYTHONPATH", "."),
                "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"}
@@ -466,6 +483,12 @@ def main() -> None:
                     help="F1-MID rung (factorial cell (i)): turn-aligned truncation of each "
                          "dialogue to ~N context tokens (prefix of whole messages, ends on a "
                          "user turn). ~1200 = the spec's mid rung. Dialogue regime only.")
+    ap.add_argument("--eviction-geometry", default="turn-aligned",
+                    choices=["turn-aligned", "mid-block"],
+                    help="Dialogue eviction geometry. mid-block = factorial cell (ii), "
+                         "Luxia-pinned 'dialogue' 2026-07-16: executed-A4 middle_region_keep "
+                         "transplanted verbatim (sinks=4, recent=32) onto the dialogue "
+                         "substrate — dependency-crossing cell.")
     ap.add_argument("--reach-tol", type=float, default=0.9,
                     help="dialogue fraction counts as reached if freed >= reach_tol*target")
     ap.add_argument("--cell-ids", type=int, nargs="+", help="worker: cell indices to process")
