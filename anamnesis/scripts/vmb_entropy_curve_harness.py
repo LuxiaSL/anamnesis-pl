@@ -174,9 +174,11 @@ def main() -> None:
                 if ids.shape[1] - P < 4:
                     continue
                 pos = torch.arange(P - 1, ids.shape[1] - 1)
-                # base pass (single) — e_b AND every e_T come from these logits
+                # base pass (single) — e_b AND every e_T come from these logits.
+                # KEEP ON GPU: the T* bisection does ~40 full-vocab softmaxes per gen —
+                # CPU-side that is minutes/gen (the 2026-07-17 stall); on-device it's ms.
                 with torch.no_grad():
-                    base_logits = model(ids, use_cache=False).logits[0].float()[pos].cpu()
+                    base_logits = model(ids, use_cache=False).logits[0].float()[pos]
                 # steered pass
                 if inj is None:
                     raise SystemExit(f"{cell}: no inject block in metadata — is this a steered cell?")
@@ -187,12 +189,13 @@ def main() -> None:
                                          end_pos=ids.shape[1], normalize=True)
                 h = attach_residual_write(model, spec)
                 with torch.no_grad():
-                    st_logits = model(ids, use_cache=False).logits[0].float()[pos].cpu()
+                    st_logits = model(ids, use_cache=False).logits[0].float()[pos]
                 h.remove()
-                e_b = entropy_of(base_logits).numpy()
-                e_s = entropy_of(st_logits).numpy()
+                e_b = entropy_of(base_logits).cpu().numpy()
+                e_s = entropy_of(st_logits).cpu().numpy()
                 tstar = fit_tstar(base_logits, float(e_s.mean()))
-                e_t = entropy_of(base_logits, tstar).numpy()
+                e_t = entropy_of(base_logits, tstar).cpu().numpy()
+                del base_logits, st_logits
                 ent_s_l.append(e_s); ent_b_l.append(e_b); ent_t_l.append(e_t)
                 tstars.append(tstar)
             np.savez_compressed(npz_dir / f"{cell}.npz",
