@@ -32,15 +32,16 @@ PROMPTS=pipeline/anamnesis/prompts/prompt_sets.json
 BATTERY=/models/anamnesis-extract/battery
 BASE="source $HEIMDALL_VENV && cd $HEIMDALL_WORK_DIR && export PYTHONPATH=\$PWD/pipeline PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1"
 
-# frame|vector_key|npz_dir|alpha_frac  (edit to the FROZEN roster before firing)
+# frame|vector_key|npz_dir|alpha_frac — ONE merged bank (V7/Rband1 copied in) so gen
+# collapses to TWO model-load groups (unc, cap); Luxia speed directive 2026-07-16
 CELLS_SPEC=(
-  "unc|Rband1_L14|$B7_VEC|0.1"   "unc|Rband1_L14|$B7_VEC|0.3"
-  "unc|Rband1_L14|$B7_VEC|-0.1"  "unc|Rband1_L14|$B7_VEC|-0.3"
+  "unc|Rband1_L14|$VEC_DIR|0.1"   "unc|Rband1_L14|$VEC_DIR|0.3"
+  "unc|Rband1_L14|$VEC_DIR|-0.1"  "unc|Rband1_L14|$VEC_DIR|-0.3"
   "unc|Veos_L14|$VEC_DIR|0.1"    "unc|Veos_L14|$VEC_DIR|0.3"
   "unc|Veos_L14|$VEC_DIR|-0.1"   "unc|Veos_L14|$VEC_DIR|-0.3"
   "unc|Veos_perp_L14|$VEC_DIR|0.3"  "unc|Veos_perp_L14|$VEC_DIR|-0.3"
-  "unc|V7_L14|$B7_VEC|0.3"       "unc|V7_L14|$B7_VEC|-0.3"
-  "cap|Rband1_L14|$B7_VEC|-0.1"  "cap|Rband1_L14|$B7_VEC|-0.3"
+  "unc|V7_L14|$VEC_DIR|0.3"       "unc|V7_L14|$VEC_DIR|-0.3"
+  "cap|Rband1_L14|$VEC_DIR|-0.1"  "cap|Rband1_L14|$VEC_DIR|-0.3"
   "cap|Vrep_L14|$VEC_DIR|-0.1"   "cap|Vrep_L14|$VEC_DIR|-0.3"
   "cap|Vrep_perp_L14|$VEC_DIR|0.1" "cap|Vrep_perp_L14|$VEC_DIR|-0.1" "cap|Vrep_perp_L14|$VEC_DIR|-0.3"
 )
