@@ -89,8 +89,8 @@ def extract_attention_flow(
         # ── Build per-step time series ──
         sys_prompt_mass_ts: list[float] = []  # per-step
         recency_bias_ts: list[float] = []
-        per_head_sys_masses: list[list[float]] = []  # [T][n_heads]
-        per_head_recency: list[list[float]] = []
+        per_head_sys_masses: list[NDArray] = []  # [T] entries of [n_heads] f64
+        per_head_recency: list[NDArray] = []
 
         # Region masses: [sys_prompt, early_gen, mid_gen, recent]
         region_masses: list[list[float]] = [[] for _ in range(4)]
@@ -135,16 +135,12 @@ def extract_attention_flow(
             region_masses[2].append(r_mid)
             region_masses[3].append(r_recent)
 
-            # Per-head values for diversity computation
-            head_sys = []
-            head_rec = []
-            for h in range(num_heads):
-                h_attn = attn[h].astype(np.float64)
-                h_total = max(float(h_attn.sum()), 1e-12)
-                head_sys.append(float(h_attn[:prompt_len].sum()) / h_total)
-                head_rec.append(float(h_attn[cutoff:].sum()) / h_total)
-            per_head_sys_masses.append(head_sys)
-            per_head_recency.append(head_rec)
+            # Per-head values for diversity computation (vectorized over heads;
+            # row-wise axis reductions are bit-identical to the per-head loop)
+            attn64 = attn.astype(np.float64)  # [n_heads, seq_len]
+            h_totals = np.maximum(attn64.sum(axis=1), 1e-12)
+            per_head_sys_masses.append(attn64[:, :prompt_len].sum(axis=1) / h_totals)
+            per_head_recency.append(attn64[:, cutoff:].sum(axis=1) / h_totals)
 
         # ── Summary statistics ──
         sys_arr = np.array(sys_prompt_mass_ts, dtype=np.float64)
