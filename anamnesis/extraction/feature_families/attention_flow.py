@@ -96,6 +96,7 @@ def extract_attention_flow(
         # Region masses: [sys_prompt, early_gen, mid_gen, recent]
         region_masses: list[list[float]] = [[] for _ in range(4)]
 
+        mean_rows = data.mean_attention(l_idx)  # shared per-(gen,layer) cache (C2)
         for t in range(T):
             attn = data.attentions[t][l_idx]  # [n_heads, seq_len]
             seq_len = attn.shape[1]
@@ -107,7 +108,7 @@ def extract_attention_flow(
                     r.append(0.0)
                 continue
 
-            mean_attn = attn.mean(axis=0).astype(np.float64)
+            mean_attn = mean_rows[t]  # [seq_len] float64
             total_mass = max(float(mean_attn.sum()), 1e-12)
 
             # System prompt mass

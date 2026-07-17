@@ -85,6 +85,23 @@ class RawGenerationData:
     # list of block-boundary committed snapshots, each [n_pos, hidden_dim].
     _hs_array_cache: F32 | None = field(default=None, repr=False, compare=False)
     # lazily-built np.stack(hidden_states); do not set directly — use hidden_states_array()
+    _mean_attn_cache: dict[int, list[NDArray[np.float64]]] = field(
+        default_factory=dict, repr=False, compare=False)
+    # per-layer head-mean attention rows; do not set directly — use mean_attention()
+
+    def mean_attention(self, l_idx: int) -> list[NDArray[np.float64]]:
+        """Per-step head-mean attention rows for one layer: T entries of
+        float64 [seq_len_t] — exactly attentions[t][l_idx].mean(axis=0)
+        .astype(np.float64), built once per (gen, layer) and shared (C2: the
+        tier-2.5 cache profiles, attention decay, spectral similarity, and
+        attention_flow all re-derived this same reduction). Callers must not
+        mutate the returned arrays."""
+        if l_idx not in self._mean_attn_cache:
+            self._mean_attn_cache[l_idx] = [
+                self.attentions[t][l_idx].mean(axis=0).astype(np.float64)
+                for t in range(len(self.attentions))
+            ]
+        return self._mean_attn_cache[l_idx]
 
     def hidden_states_array(self) -> F32:
         """[T, num_layers+1, hidden_dim] — np.stack(self.hidden_states), built once
@@ -565,12 +582,8 @@ def _extract_spectral_features(
     # Approach: build an n×n pairwise attention similarity matrix
     # For each pair of sampled steps (i, j), compute similarity of their
     # head-averaged attention distributions
-    attn_vectors = []
-    for t in sampled_steps:
-        attn_t = data.attentions[t][layer_idx]  # [num_heads, seq_len]
-        # Average across heads
-        mean_attn = attn_t.mean(axis=0).astype(np.float64)  # [seq_len]
-        attn_vectors.append(mean_attn)
+    mean_rows = data.mean_attention(layer_idx)  # shared per-(gen,layer) cache (C2)
+    attn_vectors = [mean_rows[t] for t in sampled_steps]  # [seq_len] f64 each
 
     # Pad to same length (max seq_len across sampled steps)
     max_len = max(v.shape[0] for v in attn_vectors)
@@ -715,9 +728,9 @@ def extract_tier2_5(
         prompt_masses = []   # v3/B1: accumulate raw masses for ratio-of-means lookback
         gen_masses = []
 
+        mean_rows = data.mean_attention(l_idx)  # shared per-(gen,layer) cache (C2)
         for t in range(T):
-            attn = data.attentions[t][l_idx]  # [num_heads, seq_len]
-            mean_attn = attn.mean(axis=0).astype(np.float64)  # [seq_len]
+            mean_attn = mean_rows[t]  # [seq_len] float64
             seq_len = mean_attn.shape[0]
 
             if seq_len == 0:
@@ -760,7 +773,8 @@ def extract_tier2_5(
 
         # Attention decay rate: fit exponential decay to mean attention vs distance
         try:
-            decay_rate = _fit_attention_decay(data.attentions, l_idx, T, data.prompt_length)
+            decay_rate = _fit_attention_decay(data.mean_attention(l_idx), T,
+                                              data.prompt_length)
         except Exception:
             # 0.0 sentinel preserves the fixed vector shape; warn so a degenerate
             # input can't silently masquerade as a real feature value (audit #10).
@@ -883,12 +897,15 @@ def extract_tier2_5(
 
 
 def _fit_attention_decay(
-    attentions: list[F32],
-    layer_idx: int,
+    mean_rows: list[NDArray[np.float64]],
     T: int,
     prompt_length: int,
 ) -> float:
-    """Fit exponential decay rate to mean attention vs distance from current position."""
+    """Fit exponential decay rate to mean attention vs distance from current position.
+
+    mean_rows: the shared per-(gen,layer) head-mean rows (RawGenerationData
+    .mean_attention) — same values the old (attentions, layer_idx) signature
+    re-derived per call (C2)."""
     if T < 10:
         return 0.0
 
@@ -898,7 +915,7 @@ def _fit_attention_decay(
     all_weights = []
 
     for t in sample_steps:
-        attn = attentions[t][layer_idx].mean(axis=0).astype(np.float64)
+        attn = mean_rows[t]
         seq_len = attn.shape[0]
         if seq_len < 2:
             continue
