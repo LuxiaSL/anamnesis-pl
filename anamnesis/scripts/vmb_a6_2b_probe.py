@@ -27,7 +27,12 @@ import torch
 from anamnesis.config import MODEL_PRESETS
 from anamnesis.extraction.model_loader import ResidualWriteSpec, attach_residual_write
 # reuse the EXACT v2 behavioral machinery (regexes + prompts) — single source of truth
-from anamnesis.scripts.vmb_a6_dese_probe import DE_DICTO, DE_SE, ANIMAL_PICK, PROMPTS
+from anamnesis.scripts.vmb_a6_dese_probe import (
+    ANIMAL_LEXICA, ANIMAL_PICK, DE_DICTO, DE_SE, PROMPTS,
+)
+
+# rebound in main() via --animal (default cat = the banked §2b behavior, byte-identical)
+_LEX = {"de_dicto": DE_DICTO, "de_se": DE_SE}
 
 
 def _coherence(text: str) -> float:
@@ -37,8 +42,8 @@ def _coherence(text: str) -> float:
 
 
 def _read_texts(texts: list[str]) -> dict:
-    dd = sum(bool(DE_DICTO.search(t)) for t in texts)
-    ds = sum(bool(DE_SE.search(t)) for t in texts)
+    dd = sum(bool(_LEX["de_dicto"].search(t)) for t in texts)
+    ds = sum(bool(_LEX["de_se"].search(t)) for t in texts)
     picks = Counter()
     for t in texts:
         m = ANIMAL_PICK.search(t)
@@ -78,11 +83,14 @@ def main() -> None:
     ap.add_argument("--alphas", type=float, nargs="+", default=[0.0, 0.45, 0.6, 0.8])
     ap.add_argument("--n-samples", type=int, default=8)
     ap.add_argument("--max-new-tokens", type=int, default=160)
+    ap.add_argument("--animal", default="cat", choices=sorted(ANIMAL_LEXICA),
+                    help="de-dicto/de-se lexicon (Pg-2a second animal; cat = banked default)")
     ap.add_argument("--coherence-floor", type=float, default=0.45,
                     help="below this mean distinct-word ratio, the dose is PAST coherence collapse "
                          "and its de-se readout is NOT quotable (constraint v gate)")
     ap.add_argument("--out-json", type=Path, required=True)
     args = ap.parse_args()
+    _LEX["de_dicto"], _LEX["de_se"] = ANIMAL_LEXICA[args.animal]
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -144,8 +152,9 @@ def main() -> None:
             # raw texts for HAND-VERIFICATION (session-8 regex-artifact lesson): the de-se-positive
             # texts (confirm real cat de-se, not a v2-regex residual FP) + a few de-dicto-only texts
             # (the de-dicto/de-se boundary). Capped to keep the JSON readable.
-            r["de_se_positive_texts"] = [t for t in txts if DE_SE.search(t)][:12]
-            r["de_dicto_only_texts"] = [t for t in txts if DE_DICTO.search(t) and not DE_SE.search(t)][:4]
+            r["de_se_positive_texts"] = [t for t in txts if _LEX["de_se"].search(t)][:12]
+            r["de_dicto_only_texts"] = [t for t in txts
+                                        if _LEX["de_dicto"].search(t) and not _LEX["de_se"].search(t)][:4]
             results[vk][str(a)] = r
             print(f"  {vk} α={a}: dicto={r['de_dicto_rate']} se={r['de_se_floor_rate']} "
                   f"coh={r['coherence']} gate={r['coherence_gate_pass']} picks={r['top_animal_picks'][:3]}")
@@ -177,6 +186,7 @@ def main() -> None:
     }
     out = {"arm": "A6 §2b — distilled-direction BEHAVIORAL READ (base-Qwen steered, de-dicto/de-se)",
            "STATUS": "FIRST_READ_PENDING (C§8 ABSOLUTE) — UNSTAMPED -> outer loop",
+           "animal": args.animal,   # Pg-2a: lexicon selected via ANIMAL_LEXICA; cat = banked default
            "law": ("steer base-Qwen (fp16) + Valign/Vdiverge/AR{1,2,3} at L18 during gen on the "
                    "canonical 8 favorite-animal prompts; de_dicto = cat mention (rung≥1), "
                    "de_se_floor = first-person cat identity (rung≥3, UNDERCOUNTS); animal-pick tally; "

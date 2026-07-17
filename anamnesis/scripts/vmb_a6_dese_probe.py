@@ -54,6 +54,24 @@ ANIMAL_PICK = re.compile(
     r"\b(cat|kitten|feline|dog|puppy|eagle|owl|hawk|falcon|dolphin|whale|lion|tiger|leopard|"
     r"cheetah|panther|wolf|fox|bear|penguin|peacock|deer|horse|elephant|otter|dragon|phoenix)s?\b", re.I)
 
+# ── SECOND-ANIMAL lexica (Pg-2a; same design law as the cat pair: de-dicto = exact
+# referent words only; de-se = first-person identity REQUIRING a species referent or a
+# species-SPECIFIC body/act — no generic wings/feathers a hawk/eagle also has) ──
+DE_DICTO_PHOENIX = re.compile(
+    r"\b(phoenix(es)?|firebirds?|from (?:the |its |my )?ashes|rebirths?|reborn|immolat\w*)\b", re.I)
+DE_SE_PHOENIX = re.compile(
+    r"(\bI(?:'m| am| would be| ?'?d be| could be)? (?:a |an )?(?:phoenix|firebird)\b"
+    r"|\b(?:we|us|our|my fellow) (?:phoenixes|firebirds)\b"
+    r"|\bas a (?:phoenix|firebird)\b"
+    r"|\bbeing a (?:phoenix|firebird)\b"
+    r"|\bmy (?:ashes|rebirth)\b"                               # phoenix-SPECIFIC body/act
+    r"|\b(?:phoenix|firebird)(?:es|s)?\b[^.]{0,40}\b(?:like me|like myself|much like me|as i am)\b)",
+    re.I)
+ANIMAL_LEXICA = {
+    "cat": (DE_DICTO, DE_SE),
+    "phoenix": (DE_DICTO_PHOENIX, DE_SE_PHOENIX),
+}
+
 
 def main() -> None:
     ap = argparse.ArgumentParser()
