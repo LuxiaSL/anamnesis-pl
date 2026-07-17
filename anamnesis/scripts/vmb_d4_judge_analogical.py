@@ -56,6 +56,10 @@ def main() -> None:
     ap.add_argument("--tail-chars", type=int, default=1200,
                     help="coherence is judged on the LAST N chars (advisory item 2: "
                          "degeneration reads in tail windows)")
+    ap.add_argument("--workers", type=int, default=10,
+                    help="concurrent judge calls (calls are independent single judgments; "
+                         "ALL rng decisions are pre-drawn sequentially so pairs/blinding/key "
+                         "are byte-identical to the sequential path)")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -64,8 +68,13 @@ def main() -> None:
     usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "refusal_fallbacks": 0}
 
     riders = load_cell_texts(args.run_root / args.rider_cell / "metadata.json")
-    rows, key_rows = [], []
-    for cell in [c.strip() for c in args.cells.split(",") if c.strip()]:
+    cells = [c.strip() for c in args.cells.split(",") if c.strip()]
+
+    # ── PHASE 1: pre-draw EVERY rng decision sequentially (pairs, sides, coherence
+    # samples) — the call list is byte-identical to the sequential path regardless of
+    # --workers; only dispatch is concurrent ──
+    tasks = []   # each: {kind, cell, prompt, pattern, meta}
+    for cell in cells:
         steered = load_cell_texts(args.run_root / cell / "metadata.json")
         pairs = []
         for topic, texts in steered.items():
@@ -73,28 +82,56 @@ def main() -> None:
                 if topic in riders and riders[topic]:
                     pairs.append((topic, t, rng.choice(riders[topic])))
         rng.shuffle(pairs)
-        pairs = pairs[: args.n_pairs]
-        wins = valid = 0
-        for topic, s_text, r_text in pairs:
+        for topic, s_text, r_text in pairs[: args.n_pairs]:
             steered_is_a = rng.random() < 0.5
             a, b = (s_text, r_text) if steered_is_a else (r_text, s_text)
-            ans = _ask(client, ANALOGICAL_PROMPT.format(
-                a=a[: args.max_chars], b=b[: args.max_chars]), usage, r"\b(A|B)\b")
-            if ans is None:
-                continue
-            valid += 1
-            picked_steered = (ans == "A") == steered_is_a
-            wins += int(picked_steered)
-            key_rows.append({"cell": cell, "topic": topic, "steered_is_a": steered_is_a,
-                             "answer": ans, "picked_steered": picked_steered})
-        # coherence on TAIL window
-        coh_scores = []
+            tasks.append({"kind": "2afc", "cell": cell, "pattern": r"\b(A|B)\b",
+                          "prompt": ANALOGICAL_PROMPT.format(a=a[: args.max_chars],
+                                                             b=b[: args.max_chars]),
+                          "meta": {"topic": topic, "steered_is_a": steered_is_a}})
         flat = [t for ts in steered.values() for t in ts]
         rng.shuffle(flat)
         for t in flat[: args.coherence_n]:
-            tail = t[-args.tail_chars:]
-            ans = _ask(client, COHERENCE_PROMPT.format(t=tail), usage, r"\b([1-5])\b")
-            if ans is not None:
+            tasks.append({"kind": "coh", "cell": cell, "pattern": r"\b([1-5])\b",
+                          "prompt": COHERENCE_PROMPT.format(t=t[-args.tail_chars:]),
+                          "meta": {}})
+    logger.info(f"{len(tasks)} judge calls pre-drawn ({len(cells)} cells); "
+                f"dispatching at {args.workers} workers")
+
+    # ── PHASE 2: concurrent dispatch (each call = one isolated judgment; usage dict
+    # updates guarded by a lock) ──
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+    ulock = Lock()
+
+    def locked_ask(prompt: str, pattern: str) -> str | None:
+        # _ask mutates usage; serialize only the counter updates via a wrapped dict
+        local = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "refusal_fallbacks": 0}
+        ans = _ask(client, prompt, local, pattern)
+        with ulock:
+            for k in usage:
+                usage[k] += local[k]
+        return ans
+
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        answers = list(ex.map(lambda t: locked_ask(t["prompt"], t["pattern"]), tasks))
+
+    # ── PHASE 3: aggregate (same statistics as the sequential path) ──
+    rows, key_rows = [], []
+    for cell in cells:
+        wins = valid = 0
+        coh_scores = []
+        for t, ans in zip(tasks, answers):
+            if t["cell"] != cell or ans is None:
+                continue
+            if t["kind"] == "2afc":
+                valid += 1
+                picked_steered = (ans == "A") == t["meta"]["steered_is_a"]
+                wins += int(picked_steered)
+                key_rows.append({"cell": cell, "topic": t["meta"]["topic"],
+                                 "steered_is_a": t["meta"]["steered_is_a"],
+                                 "answer": ans, "picked_steered": picked_steered})
+            else:
                 coh_scores.append(int(ans))
         row = {"cell": cell, "n_pairs": valid,
                "analogical_more": round(wins / valid, 3) if valid else None,
