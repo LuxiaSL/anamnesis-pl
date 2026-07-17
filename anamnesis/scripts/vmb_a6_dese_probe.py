@@ -67,9 +67,21 @@ DE_SE_PHOENIX = re.compile(
     r"|\bmy (?:ashes|rebirth)\b"                               # phoenix-SPECIFIC body/act
     r"|\b(?:phoenix|firebird)(?:es|s)?\b[^.]{0,40}\b(?:like me|like myself|much like me|as i am)\b)",
     re.I)
+DE_DICTO_PENGUIN = re.compile(
+    r"\b(penguins?|waddl(?:e|es|ed|ing)|rooker(?:y|ies))\b", re.I)
+# "flippers"/"ice" DELIBERATELY EXCLUDED: dolphin is a top baseline animal-pick — flipper
+# mentions FP onto dolphin texts; waddle/rookery are the penguin-specific acts (cat law).
+DE_SE_PENGUIN = re.compile(
+    r"(\bI(?:'m| am| would be| ?'?d be| could be)? (?:a |an )?penguin\b"
+    r"|\b(?:we|us|our|my fellow) penguins\b"
+    r"|\bas a penguin\b"
+    r"|\bbeing a penguin\b"
+    r"|\bmy (?:waddle|rookery)\b"                              # penguin-SPECIFIC body/act
+    r"|\bpenguins?\b[^.]{0,40}\b(?:like me|like myself|much like me|as i am)\b)", re.I)
 ANIMAL_LEXICA = {
     "cat": (DE_DICTO, DE_SE),
     "phoenix": (DE_DICTO_PHOENIX, DE_SE_PHOENIX),
+    "penguin": (DE_DICTO_PENGUIN, DE_SE_PENGUIN),
 }
 
 
