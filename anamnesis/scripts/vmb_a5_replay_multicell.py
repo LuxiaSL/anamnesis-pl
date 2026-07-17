@@ -88,6 +88,16 @@ def main() -> None:
         if inject_fields and from_meta:
             raise SystemExit(f"cell {run_dir}: explicit inject_* fields AND "
                              f"inject_from_metadata are mutually exclusive")
+        if from_meta:
+            # α=0 rider/baseline cells carry NO injection block by construction — replay
+            # them PLAIN instead of letting every worker die at the cell (the 2026-07-17
+            # D5/D4 failure: workers finished all steered cells then hit baseline_a0.0).
+            md = json.loads((run_dir / "metadata.json").read_text())
+            gens0 = md.get("generations") or []
+            if not (md.get("a5_injection") or (gens0 and gens0[0].get("injection"))):
+                logger.info(f"{run_dir.name}: no injection block in metadata — α=0 cell, "
+                            "replaying PLAIN")
+                from_meta = False
         for w in range(n_workers):
             if per_worker[w]:
                 worker_jobs[w].append({
