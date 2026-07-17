@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Sequence
 
 import numpy as np
@@ -83,6 +83,16 @@ class RawGenerationData:
     # source 0 = anchor (earliest committed/block-0), source -1 = `partial` (recency). n_src grows with depth.
     attn_res_committed: list | None = None
     # list of block-boundary committed snapshots, each [n_pos, hidden_dim].
+    _hs_array_cache: F32 | None = field(default=None, repr=False, compare=False)
+    # lazily-built np.stack(hidden_states); do not set directly — use hidden_states_array()
+
+    def hidden_states_array(self) -> F32:
+        """[T, num_layers+1, hidden_dim] — np.stack(self.hidden_states), built once
+        per gen and cached (tier1 and tier2 previously each rebuilt this ~270MB
+        array per call). Callers must not mutate the returned array in place."""
+        if self._hs_array_cache is None:
+            self._hs_array_cache = np.stack(self.hidden_states)
+        return self._hs_array_cache
 
 
 @dataclass
@@ -303,8 +313,8 @@ def extract_tier1(
 
     traj_idx = _trajectory_indices(T, n_traj)
 
-    # ── Pre-stack for vectorized ops ──
-    hs_array = np.stack(data.hidden_states)  # [T, num_layers+1, hidden_dim]
+    # ── Pre-stack for vectorized ops (built once per gen, shared with tier2) ──
+    hs_array = data.hidden_states_array()  # [T, num_layers+1, hidden_dim]
 
     # ── 1.1 Per-Layer Activation Norms ──
     positions = np.arange(T) + data.prompt_length
@@ -473,7 +483,7 @@ def extract_tier2(
         names.append(f"head_agreement_std_L{l}")
 
     # ── 2.3 Layer-to-Layer Residual Stream Deltas ──
-    hs_array = np.stack(data.hidden_states)  # [T, num_layers+1, hidden_dim]
+    hs_array = data.hidden_states_array()  # [T, num_layers+1, hidden_dim] (shared cache)
     num_model_layers = hs_array.shape[1] - 1
     positions = np.arange(T) + data.prompt_length
     for l in range(num_model_layers - 1):
