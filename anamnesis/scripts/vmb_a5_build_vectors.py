@@ -178,7 +178,6 @@ def build_v3(model, a2_root: Path, model_tag: str, per_topic: int = 2) -> tuple[
 def build_norms(model, stage0_run: Path, n_gens: int = 20) -> dict[str, float]:
     """Median ||h_site|| over generated positions of banked Stage-0 continuations."""
     entries = json.loads((stage0_run / "replay_manifest.json").read_text())["entries"]
-    gids = sorted(int(k) for k in entries)[:0]  # placeholder replaced below
     # one continuation per topic-ish spread: take every 40th gid
     all_ids = sorted(int(k) for k in entries)
     gids = all_ids[:: max(1, len(all_ids) // n_gens)][:n_gens]

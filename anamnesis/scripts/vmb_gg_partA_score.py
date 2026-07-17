@@ -54,7 +54,8 @@ def _corr(rows: list[dict], xkey: str, ykey: str, n_perm: int, seed: int,
     rho = float(spearmanr(x, y).statistic)
     return {"n": len(pts), "spearman_rho": round(rho, 4),
             "perm_p": round(_perm_p(x, y, rho, n_perm, seed, two_sided), 4),
-            "test": "two-sided" if two_sided else "one-sided-negative", "n_perm": n_perm}
+            "test": "two-sided" if two_sided else "one-sided-negative",
+            "n_perm": n_perm, "seed": seed}
 
 
 def main() -> None:
@@ -116,6 +117,8 @@ def main() -> None:
                    + ("HARNESS-VERIFY on n=24 (V1b hole open; NOT the final score)" if not v1b_present
                       else "V1b present — roster complete")),
         "model": gg.get("model", "3b"), "primary_alpha": args.primary_alpha,
+        "n_perm": args.n_perm, "seed": args.seed,
+        "seed_scheme": "P1 = seed, P2a = seed+1, P2b = seed+2 (same triplet both blocks)",
         "filed_P": {"P1_neg_sig": 0.75, "P2_efficacy_ns": 0.85,
                     "P3_construction_split": "outer-loop-owned (14j sequencing) — NOT scored here"},
         "n_roster_at_primary_alpha": len(rows), "n_targets_only": len(targets),

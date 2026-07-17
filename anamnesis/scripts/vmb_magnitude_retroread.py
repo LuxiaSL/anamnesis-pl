@@ -45,7 +45,18 @@ def main() -> None:
     ap.add_argument("--models", default="3b,8b")
     ap.add_argument("--skip-a3", action="store_true",
                     help="models without pure-mode corpora (A1-only rosters)")
+    ap.add_argument("--dose-contrasts", default="",
+                    help="comma-separated dose|dose pairs (e.g. 't03|t09') contrasted "
+                         "DIRECTLY (no native leg) — the M5 KILL-contrast mode (M5 census "
+                         "first-read §5 enactor item). Emits to its own filename; pass an "
+                         "arm-specific --out-dir so the anchors' banked retro-read is "
+                         "never clobbered.")
     args = ap.parse_args()
+
+    dose_pairs = [tuple(p.split("|")) for p in args.dose_contrasts.split(",") if p.strip()]
+    for p in dose_pairs:
+        if len(p) != 2:
+            raise SystemExit(f"bad --dose-contrasts entry {p!r} (want 'a|b')")
 
     results = {"prereg": "addendum 2026-07-12e item 2 retro-read; n_perm=%d" % N_PERM,
                "note": "original pairwise verdicts stand as written (flagged "
@@ -63,15 +74,32 @@ def main() -> None:
         cells = build_cells(names, meta.n_layers)
         a1_cells = {c: cells[c] for c in A1_CELLS}
         a1 = {}
-        for (_, dose) in A1_CONTRASTS:
-            d = args.battery_root / f"vmb_a1_{model}_{dose}"
-            if not (d / "signatures_v3").exists():
-                logger.warning(f"{model} {dose}: missing — skipped")
-                continue
-            cond = ConditionCorpus(d / "signatures_v3", d / "metadata.json",
-                                   med, scale, f"{model}-{dose}")
-            a1[f"native|{dose}"] = decomposed_magnitude(native, cond, a1_cells, N_PERM)
-            logger.info(f"A1 {model} native|{dose} done")
+        if dose_pairs:
+            # dose|dose KILL-contrast mode (M5 census §5): both legs are dose corpora
+            for da, db in dose_pairs:
+                corpora = []
+                for dose in (da, db):
+                    d = args.battery_root / f"vmb_a1_{model}_{dose}"
+                    if not (d / "signatures_v3").exists():
+                        logger.warning(f"{model} {dose}: missing — pair skipped")
+                        corpora = []
+                        break
+                    corpora.append(ConditionCorpus(d / "signatures_v3", d / "metadata.json",
+                                                   med, scale, f"{model}-{dose}"))
+                if corpora:
+                    a1[f"{da}|{db}"] = decomposed_magnitude(corpora[0], corpora[1],
+                                                            a1_cells, N_PERM)
+                    logger.info(f"A1 {model} {da}|{db} done")
+        else:
+            for (_, dose) in A1_CONTRASTS:
+                d = args.battery_root / f"vmb_a1_{model}_{dose}"
+                if not (d / "signatures_v3").exists():
+                    logger.warning(f"{model} {dose}: missing — skipped")
+                    continue
+                cond = ConditionCorpus(d / "signatures_v3", d / "metadata.json",
+                                       med, scale, f"{model}-{dose}")
+                a1[f"native|{dose}"] = decomposed_magnitude(native, cond, a1_cells, N_PERM)
+                logger.info(f"A1 {model} native|{dose} done")
         results["A1"][model] = a1
 
         if args.skip_a3:
@@ -92,7 +120,8 @@ def main() -> None:
         results["A3"][model] = a3
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    out = args.out_dir / "magnitude_retroread_12e.json"
+    stem = "magnitude_retroread_12e_dosecontrast" if dose_pairs else "magnitude_retroread_12e"
+    out = args.out_dir / f"{stem}.json"
     out.write_text(json.dumps(results, indent=1))
 
     lines = ["# 12e decomposed-ruler retro-read (A1 + A3)", "",
@@ -111,7 +140,7 @@ def main() -> None:
                         f"{v['p_shift']:.4g} | {v['dispersion_ratio']:.3f} | "
                         f"{v['p_disp_wider']:.4g} | {v['p_disp_narrower']:.4g} |")
             lines.append("")
-    (args.out_dir / "magnitude_retroread_12e.md").write_text("\n".join(lines))
+    (args.out_dir / f"{stem}.md").write_text("\n".join(lines))
     logger.info(f"→ {out} + .md")
 
 
