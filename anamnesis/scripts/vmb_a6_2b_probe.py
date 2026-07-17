@@ -119,6 +119,9 @@ def main() -> None:
         base_by_prompt[(kind, p)] = txts
         all_base.extend(txts)
     baseline = _read_texts(all_base)
+    raws_dir = args.out_json.parent / (args.out_json.stem + "_raws")
+    raws_dir.mkdir(parents=True, exist_ok=True)
+    (raws_dir / "baseline_a0.0.json").write_text(json.dumps(all_base, indent=0))
     # placebo: disjoint split of baseline within each prompt -> de-se-rate diff floor
     rng = np.random.default_rng(20260716)
     pl_dd, pl_ds = [], []
@@ -155,6 +158,12 @@ def main() -> None:
             r["de_se_positive_texts"] = [t for t in txts if _LEX["de_se"].search(t)][:12]
             r["de_dicto_only_texts"] = [t for t in txts
                                         if _LEX["de_dicto"].search(t) and not _LEX["de_se"].search(t)][:4]
+            # FULL raws sidecar (s12 ferry item 4 + the wolf recall lesson): the reading-rubric
+            # diagnostic column and any retro recall pass need the NEGATIVES too — regex-flagged
+            # subsets alone cannot surface a substitution-channel de-se ("As Qwen, I embody...").
+            raws_dir = args.out_json.parent / (args.out_json.stem + "_raws")
+            raws_dir.mkdir(parents=True, exist_ok=True)
+            (raws_dir / f"{vk}_a{a}.json").write_text(json.dumps(txts, indent=0))
             results[vk][str(a)] = r
             print(f"  {vk} α={a}: dicto={r['de_dicto_rate']} se={r['de_se_floor_rate']} "
                   f"coh={r['coherence']} gate={r['coherence_gate_pass']} picks={r['top_animal_picks'][:3]}")
