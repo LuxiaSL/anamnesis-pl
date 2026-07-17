@@ -14,6 +14,7 @@ Two operators:
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 
 import numpy as np
 from numpy.typing import NDArray
@@ -26,6 +27,31 @@ F32 = NDArray[np.float32]
 # Minimum time series lengths for each operator
 _MIN_T_WINDOWED = 4
 _MIN_T_STFT = 8
+
+
+# ── Cached name builders (C5) ─────────────────────────────────────────────────
+# Feature names are pure functions of (prefix, n_windows); the ~thousands of
+# f-strings were rebuilt for every generation. Cached as tuples — callers must
+# not mutate (list(...) at the return sites keeps the public contract).
+
+@lru_cache(maxsize=None)
+def _windowed_names(prefix: str, n_windows: int) -> tuple[str, ...]:
+    return tuple(
+        f"{prefix}_w{wi}_{stat}"
+        for wi in range(n_windows)
+        for stat in ("mean", "std", "slope")
+    )
+
+
+@lru_cache(maxsize=None)
+def _stft_names(prefix: str) -> tuple[str, ...]:
+    return (
+        f"{prefix}_spectral_centroid",
+        f"{prefix}_bandwidth",
+        f"{prefix}_low_band_energy",
+        f"{prefix}_mid_band_energy",
+        f"{prefix}_high_band_energy",
+    )
 
 
 def windowed_stats(
@@ -53,17 +79,10 @@ def windowed_stats(
     """
     T = len(time_series)
     features: list[float] = []
-    names: list[str] = []
+    names = list(_windowed_names(prefix, n_windows))
 
     if T < _MIN_T_WINDOWED:
-        for wi in range(n_windows):
-            features.extend([0.0, 0.0, 0.0])
-            names.extend([
-                f"{prefix}_w{wi}_mean",
-                f"{prefix}_w{wi}_std",
-                f"{prefix}_w{wi}_slope",
-            ])
-        return np.array(features, dtype=np.float32), names
+        return np.zeros(3 * n_windows, dtype=np.float32), names
 
     ts = np.asarray(time_series, dtype=np.float64)
     window_size = T // n_windows
@@ -74,10 +93,7 @@ def windowed_stats(
         window = ts[start:end]
 
         features.append(float(window.mean()))
-        names.append(f"{prefix}_w{wi}_mean")
-
         features.append(float(window.std()))
-        names.append(f"{prefix}_w{wi}_std")
 
         # Slope via linear regression: y = a*x + b
         if len(window) >= 2:
@@ -86,7 +102,6 @@ def windowed_stats(
         else:
             slope = 0.0
         features.append(slope)
-        names.append(f"{prefix}_w{wi}_slope")
 
     return np.array(features, dtype=np.float32), names
 
@@ -115,13 +130,7 @@ def stft_features(
         Feature name prefix.
     """
     T = len(time_series)
-    feature_names = [
-        f"{prefix}_spectral_centroid",
-        f"{prefix}_bandwidth",
-        f"{prefix}_low_band_energy",
-        f"{prefix}_mid_band_energy",
-        f"{prefix}_high_band_energy",
-    ]
+    feature_names = list(_stft_names(prefix))
 
     if T < _MIN_T_STFT:
         return np.zeros(5, dtype=np.float32), feature_names

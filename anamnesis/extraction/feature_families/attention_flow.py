@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from functools import lru_cache
 
 import numpy as np
 from numpy.typing import NDArray
@@ -228,12 +229,14 @@ def _fit_decay_rate(time_series: NDArray) -> float:
         return 0.0
 
 
+@lru_cache(maxsize=None)
 def _attention_flow_names(
     layer_idx: int,
     n_windows: int,
     include_stft: bool,
-) -> list[str]:
-    """Generate all feature names for one layer's attention flow features."""
+) -> tuple[str, ...]:
+    """All feature names for one layer's attention flow features (cached; C5).
+    Returns a tuple — callers only len() and extend() from it."""
     prefix = f"attn_flow_L{layer_idx}"
     names = [
         f"{prefix}_prompt_mass_mean",
@@ -256,4 +259,4 @@ def _attention_flow_names(
                           "low_band_energy", "mid_band_energy", "high_band_energy"]:
                 names.append(f"{prefix}_{ts_name}_{feat}")
 
-    return names
+    return tuple(names)
