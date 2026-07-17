@@ -39,6 +39,7 @@ CELLS_SPEC=(
   "unc|Veos_L14|$VEC_DIR|0.1"    "unc|Veos_L14|$VEC_DIR|0.3"
   "unc|Veos_L14|$VEC_DIR|-0.1"   "unc|Veos_L14|$VEC_DIR|-0.3"
   "unc|Veos_perp_L14|$VEC_DIR|0.3"  "unc|Veos_perp_L14|$VEC_DIR|-0.3"
+  "unc|V7_L14|$B7_VEC|0.3"       "unc|V7_L14|$B7_VEC|-0.3"
   "cap|Rband1_L14|$B7_VEC|-0.1"  "cap|Rband1_L14|$B7_VEC|-0.3"
   "cap|Vrep_L14|$VEC_DIR|-0.1"   "cap|Vrep_L14|$VEC_DIR|-0.3"
   "cap|Vrep_perp_L14|$VEC_DIR|0.1" "cap|Vrep_perp_L14|$VEC_DIR|-0.1" "cap|Vrep_perp_L14|$VEC_DIR|-0.3"
