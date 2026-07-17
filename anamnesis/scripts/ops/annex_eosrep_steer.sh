@@ -71,10 +71,10 @@ echo "staged eosrep bank -> node1:$VEC_DIR/"
 # vectors come from TWO npz banks -> per-cell single-gen jobs would reload; instead: one
 # multicell job per (frame, npz) group)
 mkdir -p /tmp/claude-output
-declare -A GROUPS=()
+declare -A CELL_GROUPS=()
 for spec in "${CELLS_SPEC[@]}"; do
   IFS='|' read -r FRAME KEY NPZDIR FRAC <<< "$spec"
-  GROUPS["$FRAME|$NPZDIR"]=1
+  CELL_GROUPS["$FRAME|$NPZDIR"]=1
 done
 
 SMOKE=$(submit vmb-eosrep-smoke \
@@ -84,7 +84,7 @@ echo "vmb-eosrep-smoke -> $SMOKE"
 
 PREV=$SMOKE
 GEN_IDS=()
-for group in "${!GROUPS[@]}"; do
+for group in "${!CELL_GROUPS[@]}"; do
   IFS='|' read -r FRAME NPZDIR <<< "$group"
   MAXTOK=512; [[ $FRAME == unc ]] && MAXTOK=2048
   TAG=$(basename "$NPZDIR")
