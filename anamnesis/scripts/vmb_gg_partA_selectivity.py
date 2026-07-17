@@ -58,10 +58,13 @@ ROSTER = {
     "Rc2": ("vmb_c3_3b", "vector_banks/a5_vectors_3b_c3", "Rc2_L14", 14),
     "Rc3": ("vmb_c3_3b", "vector_banks/a5_vectors_3b_c3", "Rc3_L14", 14),
     "V1b": ("vmb_a5_3b", "a5_vectors_3b_v1b", "V1b_L14", 14),   # vector built; NO gen cell → HOLE
+    # 14r cell R-A (ratified 9064bea; annex runs it). Roster row only — every statistic for RA
+    # comes from the SAME code paths as the banked roster (rider 2: no new readout code).
+    "RA": ("annex/vmb_14r_3b", "annex/a5_vectors_3b_14r", "RA_L14", 14),
 }
-IS_NULL = lambda lbl: lbl.upper().startswith(("R",))
+IS_NULL = lambda lbl: lbl.upper().startswith(("R",)) and lbl.upper() != "RA"  # RA = 14r cell, not a null
 DATA_ROUTE = {"V1", "V2", "V3", "V3selbare", "Vtemp", "V1b", "V3top", "V3tail"}  # Δμ / contrast
-FORMULA_ROUTE = {"V4", "V7"}                                                     # gradient
+FORMULA_ROUTE = {"V4", "V7", "RA"}                                               # gradient
 
 
 def main() -> None:
