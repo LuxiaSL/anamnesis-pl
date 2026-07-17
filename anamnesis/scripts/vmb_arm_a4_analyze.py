@@ -309,14 +309,15 @@ def main() -> None:
             "pos_control": res["positive_control_f05_whole_vector"],
             "n_kind_carried_rows": len(carried),
             "kind_carried_cells": sorted({c for _, _, c in carried}),
-            "primary_pair_f05_auc": next(
-                r["lda_auc_groupkfold"] for r in res["kind_contrasts"]
-                if r["pair"] == "naive_vs_rotate" and r["evict_frac"] == 0.5
-                and r["cell"] == "whole_vector"),
-            "imprint_pair_f05_auc": next(
-                r["lda_auc_groupkfold"] for r in res["kind_contrasts"]
-                if r["pair"] == "rotate_vs_recompute" and r["evict_frac"] == 0.5
-                and r["cell"] == "whole_vector"),
+            "primary_pair_fmax_auc": next(
+                (r["lda_auc_groupkfold"] for r in res["kind_contrasts"]
+                 if r["pair"] == "naive_vs_rotate" and r["evict_frac"] == max(FRACTIONS)
+                 and r["cell"] == "whole_vector"), None),
+            "imprint_pair_fmax_auc": next(
+                (r["lda_auc_groupkfold"] for r in res["kind_contrasts"]
+                 if r["pair"] == "rotate_vs_recompute" and r["evict_frac"] == max(FRACTIONS)
+                 and r["cell"] == "whole_vector"), None),
+            "summary_fraction": max(FRACTIONS),
         }
     (args.out_dir / f"{tag}_summary.json").write_text(json.dumps(summary, indent=2))
     logger.info(f"summary -> {args.out_dir / 'a4_summary.json'}")
