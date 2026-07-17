@@ -110,7 +110,7 @@ def main() -> None:
     (args.out_dir / "a5_vectors_stamps.json").write_text(json.dumps(stamps_out, indent=1))
     print(json.dumps({"built": list(vectors.keys()),
                       "raw_norms": {f"L{s}": round(stamps[f'Vtemp_L{s}']['raw_norm'], 4) for s in SITES},
-                      "L14_median_norm": round(norms["L14"], 3)}, indent=1))
+                      "median_norms": {f"L{s}": round(norms[f"L{s}"], 3) for s in SITES}}, indent=1))
 
 
 if __name__ == "__main__":

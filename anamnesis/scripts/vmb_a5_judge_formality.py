@@ -79,7 +79,7 @@ def main() -> None:
 
     cells = []
     for d in sorted(args.a5_root.iterdir()):
-        m = re.match(r"^([VR]\d)_L\d+(?:_L\d+)?_a([\d.]+)$", d.name)
+        m = re.match(r"^([VR]\db?)_L\d+(?:_L\d+)?_a([\d.]+)$", d.name)
         if not m or m.group(1) not in args.vectors.split(","):
             continue
         if float(m.group(2)) == 0.0:

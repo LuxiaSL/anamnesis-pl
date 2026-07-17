@@ -77,17 +77,33 @@ def main() -> None:
                          "only labeler; the construction of record). 'pure' = pooled pure-mode "
                          "corpora (the original ~95%-label-degenerate reading; diagnostic).")
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--dir0-pair", default=None,
+                    help="override the map axis pole pair (default analogical,contrastive). "
+                         "REQUIRED for models whose ruled map axis differs, e.g. gemma3-27b "
+                         "'socratic,contrastive' (session-10). Both must be in ALL_MODES.")
+    ap.add_argument("--data-root", type=Path, default=Path("outputs/battery"),
+                    help="root holding <stage0_dir>/ and vmb_a2_<model>_pure_<mode>/ (each with "
+                         "signatures_v3/ + metadata.json). Default outputs/battery (3B/8B local); "
+                         "for on-node gemma/olmo where sigs live under runs/, pass that runs root.")
     args = ap.parse_args()
+    data_root = args.data_root
+
+    global DIR0_PAIR
+    if args.dir0_pair:
+        pair = tuple(x.strip() for x in args.dir0_pair.split(","))
+        if len(pair) != 2 or any(p not in ALL_MODES for p in pair):
+            raise SystemExit(f"--dir0-pair must be two modes from {ALL_MODES}, got {pair}")
+        DIR0_PAIR = pair
 
     meta = MODEL_META[args.model]
     med, scale = load_floor_scale(
-        Path("outputs/battery") / meta.stage0_dir / "signatures_v3")
+        data_root / meta.stage0_dir / "signatures_v3")
 
     # dir0 (the MAP) is ALWAYS the analogical↔contrastive LDA unit axis from the pure-mode
     # corpora — calibrated ONCE from labels, then applied label-free to the pool.
     corpora: dict[str, ConditionCorpus] = {}
     for m in ALL_MODES:
-        d = Path("outputs/battery") / f"vmb_a2_{args.model}_pure_{m}"
+        d = data_root / f"vmb_a2_{args.model}_pure_{m}"
         _assert_no_induced(json.loads((d / "metadata.json").read_text()), d.name,
                            require_pure_mode=True)
         corpora[m] = ConditionCorpus(d / "signatures_v3", d / "metadata.json", med, scale, m)
@@ -96,7 +112,7 @@ def main() -> None:
     # POOL to select from (label-free) + the 14a §2 no-induced HARD GATE on the pool.
     rows, label_of, gid_of, topic_of = [], [], [], []
     if args.corpus == "bare":
-        d = Path("outputs/battery") / meta.stage0_dir
+        d = data_root / meta.stage0_dir
         md = json.loads((d / "metadata.json").read_text())
         _assert_no_induced(md, d.name, require_pure_mode=False)
         for g in md["generations"]:                          # 14c: NO mode prompt in the loop
@@ -112,7 +128,7 @@ def main() -> None:
         label_name = "task_stratum"
     else:  # pure (diagnostic — the original degenerate reading)
         for m in ALL_MODES:
-            d = Path("outputs/battery") / f"vmb_a2_{args.model}_pure_{m}"
+            d = data_root / f"vmb_a2_{args.model}_pure_{m}"
             gid_topic = {int(g["generation_id"]): int(g["topic_idx"])
                          for g in json.loads((d / "metadata.json").read_text())["generations"]}
             for r, gid in enumerate(corpora[m].gen_ids):
