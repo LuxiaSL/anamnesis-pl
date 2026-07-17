@@ -9,7 +9,15 @@ and reads each cell's own metadata for the spec (inject_from_metadata). Signatur
 byte-identical to the per-cell path (verified by vmb_a5_replay_multicell_smoke).
 
 cells-json:  {"cells": [{"run_dir": "<run>/CELL", "manifest": "<run>/CELL/replay_manifest.json",
-                         "gen_ids": [..]?}, ...]}
+                         "gen_ids": [..]?,
+                         "inject_npz"?, "inject_key"?, "inject_layer"?, "inject_alpha"?,
+                         "inject_alpha_frac"?, "inject_from_metadata"?}, ...]}
+
+Per-cell injection (P3, canonical-ops 2026-07-16): cells may carry an EXPLICIT
+injection spec instead of (or as an override of) --inject-from-metadata — the
+jobs-file loop in run_replay_extraction already consumes per-job inject_* fields.
+This is what lets MT grids (whose out dirs have no a5_injection metadata) run
+through the load-once multicell path; see vmb_a5_mt_launch.
 
 Usage:
   python -m anamnesis.scripts.vmb_a5_replay_multicell --model qwen-7b --model-path <p> \
@@ -70,12 +78,23 @@ def main() -> None:
         per_worker: list[list[int]] = [[] for _ in range(n_workers)]
         for i, g in enumerate(avail):
             per_worker[i % n_workers].append(g)
+        # explicit per-cell injection spec (MT grids); falls back to the global
+        # --inject-from-metadata when the cell carries no explicit fields
+        inject_fields = {k: cell[k] for k in
+                         ("inject_npz", "inject_key", "inject_layer",
+                          "inject_alpha", "inject_alpha_frac") if k in cell}
+        from_meta = bool(cell.get("inject_from_metadata",
+                                  args.inject_from_metadata and not inject_fields))
+        if inject_fields and from_meta:
+            raise SystemExit(f"cell {run_dir}: explicit inject_* fields AND "
+                             f"inject_from_metadata are mutually exclusive")
         for w in range(n_workers):
             if per_worker[w]:
                 worker_jobs[w].append({
                     "run_dir": str(run_dir), "manifest": str(manifest_path),
                     "gen_ids": per_worker[w],
-                    "inject_from_metadata": bool(args.inject_from_metadata)})
+                    "inject_from_metadata": from_meta,
+                    **inject_fields})
 
     tmp = Path(cells[0]["run_dir"]).parent / "_multicell_replay_jobs"
     tmp.mkdir(parents=True, exist_ok=True)
