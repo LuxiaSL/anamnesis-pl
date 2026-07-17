@@ -60,8 +60,18 @@ def main() -> None:
     ap.add_argument("--cold-run", type=Path, required=True, help="t03 A1 run dir")
     ap.add_argument("--stage0-run", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--sites", default=None,
+                    help="comma-separated layer sites; default = 3B [7,14,18,21]. REQUIRED for "
+                         "non-3B models (e.g. olmo2-7b '8,16,20,24,28', gemma3-27b '23,35,41'). "
+                         "Rebinds SITES in this module AND vmb_a5_build_vectors (build_norms reads it).")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    global SITES
+    if args.sites:
+        import anamnesis.scripts.vmb_a5_build_vectors as _bv
+        SITES = [int(x) for x in args.sites.split(",")]
+        _bv.SITES = SITES   # build_norms reads the source-module global, not our import binding
 
     from transformers import AutoModelForCausalLM
 
@@ -92,7 +102,7 @@ def main() -> None:
     norms = build_norms(model, args.stage0_run)   # {"L7":.., "L14":.., ...} — α = frac × this
     for s in SITES:
         stamps[f"Vtemp_L{s}"]["median_site_norm"] = norms[f"L{s}"]
-    stamps_out = {"median_resid_norms": norms, "vectors": stamps,
+    stamps_out = {"median_resid_norms": norms, "vectors": stamps, "sites": SITES,
                   "provenance": "C1 V_temp; PREFLIGHT §1; sites are a readout not a knob; "
                                 "labels = sampler knob (metadata), no text contrast in the loop"}
 
