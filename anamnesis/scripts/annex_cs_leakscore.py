@@ -127,6 +127,8 @@ def main() -> None:
             scored[name]["note"] = "⊥ OUTSIDE the null band — LAW VIOLATION, a finding"
 
     n_pass = sum(1 for v in scored.values() if v["verdict"] == "PASS")
+    law_violations = [n for n, v in scored.items()
+                      if v["is_perp"] and v["verdict"] == "FAIL"]
     out = {
         "provenance": "CS-5 leak-law scorecard; operationalization FROZEN pre-fire "
                       "(see module docstring): material -> ratio∈[0.5,2]+sign vs the "
@@ -135,6 +137,10 @@ def main() -> None:
         "cs5_verdict": "PASS" if (scored and n_pass == len(scored) and not missing)
                        else "FAIL" if scored else "EMPTY",
         "n_pass": n_pass, "n_scored": len(scored),
+        "law_violations": law_violations,
+        "law_violation_note": ("⊥ cells outside the null band — PRIORITY anomaly per the "
+                               "desk's item-3 ruling: travels as a finding, bigger than a "
+                               "scoring miss" if law_violations else None),
         "v7_multipliers": {str(d): {"effect": round(e, 4), "source": s}
                            for d, (e, s) in sorted(v7_eff.items())},
         "cells": scored, "missing": missing,
