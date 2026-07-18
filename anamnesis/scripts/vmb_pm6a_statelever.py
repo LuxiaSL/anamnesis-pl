@@ -26,7 +26,8 @@ import numpy as np
 from anamnesis.analysis.battery.deltas import load_floor_scale
 from anamnesis.analysis.battery.floors import load_signature_matrix
 
-CELL = re.compile(r"^(?P<vec>V3|V1|R1|R2|R3)_L(?P<site>\d+)_m(?P<dose>\d+)$")
+# sign+dose suffix: m{n}=negative (toward pole-b), a{frac}/p{n}=positive (toward pole-a). Both signs.
+CELL = re.compile(r"^(?P<vec>V3|V1|R1|R2|R3)_L(?P<site>\d+)_(?P<sd>[apm][\d.]+)$")
 
 
 def _zmean(sig_dir: Path, med, scale):
@@ -64,12 +65,13 @@ def main() -> None:
         delta = z - base
         onaxis = float(delta @ dir0)                 # negative = socratic-ward
         offaxis = float(np.linalg.norm(delta - onaxis * dir0))
-        rows.append({"vec": m.group("vec"), "site": int(m.group("site")), "dose": m.group("dose"),
+        rows.append({"vec": m.group("vec"), "site": int(m.group("site")), "dose": m.group("sd"),
                      "onaxis": round(onaxis, 4), "offaxis": round(offaxis, 4)})
 
     lever = {}
     for site in sorted({r["site"] for r in rows}):
         for dose in sorted({r["dose"] for r in rows if r["site"] == site}):
+            neg = dose.startswith("m")     # toward pole-b (negative on-axis); a/p = toward pole-a
             def pick(v):
                 return [r for r in rows if r["vec"] == v and r["site"] == site and r["dose"] == dose]
             v3 = pick("V3")
@@ -80,12 +82,13 @@ def main() -> None:
                 v3o = v3[0]["onaxis"]
                 rmin, rmax = min(rs), max(rs)
                 rmean, rstd = float(np.mean(rs)), float(np.std(rs))
-                lever[f"L{site}_m{dose}"] = {
+                lever[f"L{site}_{dose}"] = {
                     "V3_onaxis": v3o, "V3_offaxis": v3[0]["offaxis"],
                     "R_band": [round(rmin, 4), round(rmax, 4)], "R_mean": round(rmean, 4),
                     "R_onaxis_all": [round(x, 4) for x in rs],
                     "V3_vs_R_sd": round((v3o - rmean) / (rstd + 1e-9), 2),
-                    "V3_outside_R_band_socward": bool(v3o < rmin),   # more socratic than any R
+                    # outside the R band in the STEERED direction (below R for neg, above R for pos)
+                    "V3_outside_R_band": bool(v3o < rmin) if neg else bool(v3o > rmax),
                     "V1_onaxis": v1[0]["onaxis"] if v1 else None,
                     "V3_offaxis_vs_R_offaxis": [round(v3[0]["offaxis"], 3),
                                                 round(float(np.mean([r["offaxis"] for r in rows
@@ -115,7 +118,7 @@ def main() -> None:
     print("\nlever (on-axis vs R band, socratic-ward):")
     for k, v in lever.items():
         print(f"  {k}: V3={v['V3_onaxis']} (R band {v['R_band']}, {v['V3_vs_R_sd']} R-SD) "
-              f"outside={v['V3_outside_R_band_socward']} V1={v['V1_onaxis']} "
+              f"outside={v['V3_outside_R_band']} V1={v['V1_onaxis']} "
               f"off[V3,R]={v['V3_offaxis_vs_R_offaxis']}")
 
 
