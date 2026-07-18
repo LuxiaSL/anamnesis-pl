@@ -35,6 +35,37 @@ GOT=$(md5sum "$MANIFEST" | cut -d' ' -f1)
 [ "$GOT" = "$MANIFEST_MD5" ] || { echo "STOP-AND-SURFACE: manifest md5 $GOT != $MANIFEST_MD5"; exit 3; }
 echo "[replay] manifest OK ($MANIFEST_MD5, 160 probes) | compute_node: node1 | gpus $GPUS"
 
+# dpo_all: replay all 3 DPO LoRA arms in ONE multickpt job (base loaded once per worker, swaps
+# through cat+purple+catnum checkpoints), spread across ALL assigned GPUs x WPG workers. Each
+# worker holds base + a pristine-restore snapshot (~22GB) => cap ~7 workers/GPU on a 183GB card.
+if [ "$ARM" = "dpo_all" ]; then
+  for spec in "partc_cell4:qwen_cat_dpo_r16_s0:cat_dpo_r16_s0" \
+              "partc_cell4:qwen_purple_dpo_r16_s0:purple_dpo_r16_s0" \
+              "partc_cell4n:qwen_catnum_dpo_r16_s0:catnum_dpo_r16_s0"; do
+    sub="${spec%%:*}"; r="${spec#*:}"; name="${r%%:*}"; label="${r##*:}"
+    PYTHONPATH=. python -m anamnesis.scripts.build_partc_replay_cells \
+      --ckpt-dir "$CKROOT/$sub/checkpoints/$name" --arm "$label" --run-root "$RUNROOT" \
+      --out "$CELLS/cells_$label.json"
+  done
+  python - "$CELLS" <<'PY'
+import json, sys
+d = sys.argv[1]
+ck = []
+for lab in ("cat_dpo_r16_s0", "purple_dpo_r16_s0", "catnum_dpo_r16_s0"):
+    ck += json.load(open(f"{d}/cells_{lab}.json"))["checkpoints"]
+json.dump({"checkpoints": ck}, open(f"{d}/cells_dpo_all.json", "w"), indent=1)
+print(f"combined {len(ck)} checkpoints across 3 DPO arms")
+PY
+  echo "[replay] dpo_all: 3 arms, all GPUs ($GPUS) x ${WPG:-5} workers"
+  OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=. python -m anamnesis.scripts.run_replay_multickpt \
+    --model qwen-7b --model-path "$BASE" --calib-dir "$CALIB" \
+    --manifest "$MANIFEST" --checkpoints-json "$CELLS/cells_dpo_all.json" \
+    --gpus "$GPUS" --workers-per-gpu "${WPG:-5}" --sig-subdir signatures_v3 \
+    2>&1 | tee /tmp/claude-output/partc_replay_dpo_all.log | tail -8
+  echo "[replay] dpo_all DONE."
+  exit 0
+fi
+
 case "$ARM" in
   sgdmom)     CKDIR="$CKROOT/checkpoints/qwen_cat_sgdmom15e1_s0"; LABEL=cat_sgdmom15e1_s0; SWAP=1;;
   dpo_cat)    CKDIR="$CKROOT/partc_cell4/checkpoints/qwen_cat_dpo_r16_s0"; LABEL=cat_dpo_r16_s0; SWAP=1;;
