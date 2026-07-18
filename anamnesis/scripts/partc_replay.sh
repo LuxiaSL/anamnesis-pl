@@ -6,6 +6,7 @@
 # Full-FT (3a) -> load-per-checkpoint (run_replay_extraction --model-path=<ckpt>), NOT the swap.
 set -euo pipefail
 ARM="${1:?usage: partc_replay.sh <arm>   arm in {sgdmom,dpo_cat,dpo_purple,dpo_catnum,fullft}}"
+ARM="${ARM//[^a-z_]/}"              # strip any stray whitespace/CR the scheduler appended
 # Runs UNDER HEIMDALL: it exports CUDA_VISIBLE_DEVICES = the assigned PHYSICAL GPUs (from
 # --gpu-ids, GPU 0 excluded at submit). Derive the driver's LOGICAL slot list (0..N-1) from it;
 # the multickpt driver's resolve_physical_gpus maps slots->physical. Bare-metal fallback = arg 2.
