@@ -98,13 +98,17 @@ def main() -> None:
                 logger.info(f"{run_dir.name}: no injection block in metadata — α=0 cell, "
                             "replaying PLAIN")
                 from_meta = False
+        perturb = cell.get("perturb")   # A7 (arm A7): per-cell MoE routing perturbation spec
         for w in range(n_workers):
             if per_worker[w]:
-                worker_jobs[w].append({
+                job = {
                     "run_dir": str(run_dir), "manifest": str(manifest_path),
                     "gen_ids": per_worker[w],
                     "inject_from_metadata": from_meta,
-                    **inject_fields})
+                    **inject_fields}
+                if perturb is not None:
+                    job["perturb"] = perturb
+                worker_jobs[w].append(job)
 
     tmp = Path(cells[0]["run_dir"]).parent / "_multicell_replay_jobs"
     tmp.mkdir(parents=True, exist_ok=True)
