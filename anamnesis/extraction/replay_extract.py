@@ -161,6 +161,34 @@ def replay_extract(
             gate_activations[int(layer_idx)] = [rows[i] for i in range(T)]
         gate_activations = gate_activations or None
 
+    # ── MoE router (vmb arm A7, M6): dense dist [1, L, n_experts] + branch norms [L] captured ONCE
+    # in the single forward; slice the gen-position rows P..P+T-1 (same positions as gate). ──
+    router_dist: dict[int, list[F32]] | None = None
+    if loaded.hook_state.router_dist:
+        router_dist = {}
+        for layer_idx, tensors in loaded.hook_state.router_dist.items():
+            if not tensors:
+                continue
+            full = tensors[0]  # [1, L, n_experts]
+            rows = full[0, P:P + T, :].float().cpu().numpy()  # [T, n_experts]
+            router_dist[int(layer_idx)] = [rows[i] for i in range(T)]
+        router_dist = router_dist or None
+
+    router_branch_norms: dict[int, list[F32]] | None = None
+    if loaded.hook_state.router_shared_norm and loaded.hook_state.router_routed_norm:
+        router_branch_norms = {}
+        for layer_idx in list(loaded.hook_state.router_shared_norm.keys()):
+            sh = loaded.hook_state.router_shared_norm.get(layer_idx)
+            ro = loaded.hook_state.router_routed_norm.get(layer_idx)
+            if not sh or not ro:
+                continue
+            sh_rows = sh[0].reshape(-1)[P:P + T].float().cpu().numpy()  # [T]
+            ro_rows = ro[0].reshape(-1)[P:P + T].float().cpu().numpy()  # [T]
+            router_branch_norms[int(layer_idx)] = [
+                np.array([float(sh_rows[i]), float(ro_rows[i])], dtype=np.float32) for i in range(T)
+            ]
+        router_branch_norms = router_branch_norms or None
+
     # Free GPU/structured outputs before returning
     del out
     loaded.clear_hook_state()
@@ -179,4 +207,6 @@ def replay_extract(
         v_proj_values=v_proj_values,
         queries=queries,
         attn_outputs=attn_outputs,
+        router_dist=router_dist,
+        router_branch_norms=router_branch_norms,
     )
