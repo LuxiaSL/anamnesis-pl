@@ -45,20 +45,37 @@ _usage_lock = threading.Lock()      # usage dict is mutated from worker threads
 JUDGE_MODEL = "claude-fable-5"
 FALLBACK_MODEL = "claude-opus-4-8"
 
-SOCRATIC_PROMPT = """You will see two AI-generated texts, A and B, responding to similar prompts.
+# Mode descriptions for the 2AFC (generalized 2026-07-18; any A5 mode-shift arm, not just socratic).
+MODE_DESC = {
+    "socratic": ("drives inquiry through probing questions, draws the reader forward by interrogation "
+                 "rather than assertion, surfaces assumptions and asks the reader to examine them, and "
+                 "reasons by successive questioning instead of flat exposition"),
+    "analogical": ("explains primarily through extended analogies and parallels to other domains or "
+                   "everyday life, building understanding by mapping the topic onto familiar comparisons"),
+    "linear": ("presents ideas in a clear forward sequence, each point building on the last, moving step "
+               "by step from beginning to end without backtracking or reconsidering"),
+    "contrastive": ("compares and contrasts multiple perspectives or approaches, presenting differing "
+                    "viewpoints and weighing their relative strengths and weaknesses"),
+    "dialectical": ("proposes a position, challenges it with the strongest counterarguments, and works "
+                    "toward a revised synthesis that accounts for both the position and its critiques"),
+}
 
-Which text is written in a MORE SOCRATIC style? A socratic text drives inquiry \
-through probing questions, draws the reader forward by interrogation rather than \
-assertion, surfaces assumptions and asks the reader to examine them, and reasons \
-by successive questioning instead of flat exposition.
+
+def mode_prompt(mode: str) -> str:
+    return (f"""You will see two AI-generated texts, A and B, responding to similar prompts.
+
+Which text is written in a MORE {mode.upper()} style? A {mode} text {MODE_DESC[mode]}.
 
 Text A:
-{a}
+{{a}}
 
 Text B:
-{b}
+{{b}}
 
-Answer with exactly one letter: A or B."""
+Answer with exactly one letter: A or B.""")
+
+
+SOCRATIC_PROMPT = mode_prompt("socratic")   # back-compat alias
 
 COHERENCE_PROMPT = """You will see one AI-generated text. Rate its COHERENCE on a 1-5 scale:
 
@@ -74,12 +91,35 @@ Text:
 Answer with exactly one digit: 1, 2, 3, 4, or 5."""
 
 
+def _byte_decoder() -> dict:
+    """GPT-2 byte-level BPE unicode→byte map (inverse of bytes_to_unicode)."""
+    bs = (list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1))
+          + list(range(ord("®"), ord("ÿ") + 1)))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b); cs.append(256 + n); n += 1
+    return {chr(c): b for b, c in zip(bs, cs)}
+
+
+_BYTE_DEC = _byte_decoder()
+
+
+def _maybe_decode(t: str) -> str:
+    """Some models bank generated_text byte-BPE-encoded (Ġ=space, Ċ=newline); decode iff those markers
+    are present (idempotent no-op on already-readable text)."""
+    if "Ġ" in t or "Ċ" in t:
+        return bytearray(_BYTE_DEC.get(c, 32) for c in t).decode("utf-8", errors="replace")
+    return t
+
+
 def load_cell_texts(meta_path: Path) -> dict[int, list[str]]:
     md = json.loads(meta_path.read_text())
     gens = md["generations"] if "generations" in md else md
     by_topic: dict[int, list[str]] = {}
     for g in gens:
-        t = g.get("generated_text", "").strip()
+        t = _maybe_decode(g.get("generated_text", "")).strip()
         if len(t.split()) >= 20:
             by_topic.setdefault(int(g["topic_idx"]), []).append(t)
     return by_topic
@@ -121,12 +161,18 @@ def main() -> None:
     ap.add_argument("--a5-root", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     ap.add_argument("--vectors", default="V3,R1,R2,R3")
+    ap.add_argument("--mode", default="socratic", choices=sorted(MODE_DESC),
+                    help="which mode's 2AFC to score (the steered text is judged MORE this mode)")
+    ap.add_argument("--baseline-cell", default=None,
+                    help="rider cell dir name (default: any dir containing '_a0.0'). Use e.g. 'baseline' "
+                         "for signed-dose ladders that carry an explicit baseline cell.")
     ap.add_argument("--n-pairs", type=int, default=80)
     ap.add_argument("--coherence-n", type=int, default=40,
                     help="steered texts per cell to rate for coherence (0 = skip leg)")
     ap.add_argument("--max-chars", type=int, default=2200)
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    prompt_tmpl = mode_prompt(args.mode)
 
     import anthropic
 
@@ -136,17 +182,23 @@ def main() -> None:
     want = set(args.vectors.split(","))
     cells = []
     for d in sorted(args.a5_root.iterdir()):
-        m = re.match(r"^([VR]\d)(?:_L\d+)*_a([\d.]+)$", d.name)
+        # accept both _a{frac} (standard) and signed _p{n}/_m{n} (both-signs ladders, e.g. 14v)
+        m = re.match(r"^([VR]\d)(?:_L\d+)*_(a[\d.]+|[pm]\d+)$", d.name)
         if not m or m.group(1) not in want:
             continue
-        if float(m.group(2)) == 0.0:
+        suffix = m.group(2)
+        af = 0.0 if suffix.startswith("a") and float(suffix[1:]) == 0.0 else 1.0  # 0 only if a0.0
+        if af == 0.0:
             continue
         if (d / "metadata.json").exists():
-            cells.append((d.name, m.group(1), float(m.group(2)), d))
-    riders = [d for d in sorted(args.a5_root.iterdir())
-              if "_a0.0" in d.name and (d / "metadata.json").exists()]
+            cells.append((d.name, m.group(1), suffix, d))
+    if args.baseline_cell:
+        riders = [args.a5_root / args.baseline_cell] if (args.a5_root / args.baseline_cell / "metadata.json").exists() else []
+    else:
+        riders = [d for d in sorted(args.a5_root.iterdir())
+                  if "_a0.0" in d.name and (d / "metadata.json").exists()]
     if not riders:
-        raise SystemExit("no rider metadata under a5-root — sync riders first")
+        raise SystemExit("no rider metadata under a5-root (pass --baseline-cell or sync _a0.0 riders)")
     if not cells:
         raise SystemExit(f"no steered cells matched vectors={args.vectors} under {args.a5_root}")
     rider_texts: dict[int, list[str]] = {}
@@ -158,10 +210,10 @@ def main() -> None:
     usage = {"model": JUDGE_MODEL, "fallback": FALLBACK_MODEL,
              "input_tokens": 0, "output_tokens": 0, "calls": 0, "refusal_fallbacks": 0}
     all_results, key = {}, {}
-    for cname, vec, af, d in cells:
+    for cname, vec, af, d in cells:      # af here = the dose suffix string (a0.1 / p03 / m03)
         steered = load_cell_texts(d / "metadata.json")
 
-        # Leg 1 — 2AFC socratic-more (steered vs same-topic alpha=0 rider)
+        # Leg 1 — 2AFC {mode}-more (steered vs same-topic baseline/alpha=0 rider)
         pairs = []
         for t in sorted(set(steered) & set(rider_texts)):
             for s_txt in steered[t][:2]:
@@ -179,7 +231,7 @@ def main() -> None:
             steered_is_a = rng.random() < 0.5
             a, b = (s_txt, r_txt) if steered_is_a else (r_txt, s_txt)
             key[uid] = {"steered_is": "A" if steered_is_a else "B", "topic": t}
-            prompt = SOCRATIC_PROMPT.format(a=a[: args.max_chars], b=b[: args.max_chars])
+            prompt = prompt_tmpl.format(a=a[: args.max_chars], b=b[: args.max_chars])
             tasks.append((uid, steered_is_a, prompt))
 
         def _run_pair(task):
@@ -194,8 +246,8 @@ def main() -> None:
                 valid += 1
                 win = (ans == "A") == sia
                 wins += int(win)
-                cell_rows.append({"uid": uid, "answer": ans, "steered_more_socratic": bool(win)})
-        socratic_frac = wins / valid if valid else float("nan")
+                cell_rows.append({"uid": uid, "answer": ans, "steered_more_mode": bool(win)})
+        mode_frac = wins / valid if valid else float("nan")
 
         # Leg 2 — coherence gate (single steered text, blind, 1-5)
         coh_scores = []
@@ -215,17 +267,17 @@ def main() -> None:
         coh_mean = sum(coh_scores) / len(coh_scores) if coh_scores else float("nan")
 
         all_results[cname] = {
-            "vector": vec, "alpha_frac": af,
-            "n_pairs": valid, "steered_more_socratic_frac": socratic_frac,
+            "vector": vec, "dose": af, "mode": args.mode,
+            "n_pairs": valid, "steered_more_mode_frac": mode_frac,
             "n_coherence": len(coh_scores), "coherence_mean": coh_mean,
             "rows": cell_rows}
-        logger.info(f"{cname}: socratic-more={socratic_frac:.3f} ({valid} pairs) "
+        logger.info(f"{cname}: {args.mode}-more={mode_frac:.3f} ({valid} pairs) "
                     f"coherence={coh_mean:.2f} (n={len(coh_scores)})")
 
-    (args.out_dir / "socratic_2afc_results.json").write_text(json.dumps(all_results, indent=1))
-    (args.out_dir / "socratic_2afc_key.json").write_text(json.dumps(key, indent=1))
+    (args.out_dir / f"{args.mode}_2afc_results.json").write_text(json.dumps(all_results, indent=1))
+    (args.out_dir / f"{args.mode}_2afc_key.json").write_text(json.dumps(key, indent=1))
     (args.out_dir / "usage.json").write_text(json.dumps(usage, indent=2))
-    logger.info(f"banked -> {args.out_dir} (calls={usage['calls']})")
+    logger.info(f"banked -> {args.out_dir} (calls={usage['calls']}, mode={args.mode})")
 
 
 if __name__ == "__main__":
