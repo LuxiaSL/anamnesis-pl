@@ -80,14 +80,15 @@ def extract_residual_trajectory(
     names: list[str] = []
 
     if T < 3:
-        # Need at least 3 steps for velocity + direction change
+        # Need at least 3 steps for velocity + direction change. Emit EXACTLY the name-set's
+        # count of zeros per layer — the hardcoded n_raw+n_temporal (43) disagreed with the
+        # actual _trajectory_feature_names count (41), so this path produced +2/layer features
+        # with no names → features/names length divergence on short gens (caught 2026-07-18 on
+        # M6 cold-temp pure_contrastive; latent for any model with T<3 gens).
         for l_idx in layer_indices:
-            n_raw = 7  # mean/std for velocity, direction, acceleration + displacement
-            n_temporal = (3 * n_windows + 6 * int(include_stft)) * 2  # two time series
-            for _ in range(n_raw + n_temporal):
-                features.append(0.0)
-            # Generate names even for zero case
-            names.extend(_trajectory_feature_names(l_idx, n_windows, include_stft))
+            layer_names = _trajectory_feature_names(l_idx, n_windows, include_stft)
+            features.extend([0.0] * len(layer_names))
+            names.extend(layer_names)
         return FeatureFamilyResult(
             features=np.array(features, dtype=np.float32),
             feature_names=names,

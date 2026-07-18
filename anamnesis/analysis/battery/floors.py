@@ -136,14 +136,23 @@ def load_signature_matrix(sig_dir: Path) -> tuple[F32, list[str], list[int]]:
     for _, _, nm in loaded:
         name_counts[nm] = name_counts.get(nm, 0) + 1
     modal = max(name_counts, key=lambda k: name_counts[k])
-    dropped = [gid for gid, _, nm in loaded if nm != modal]
+    modal_len = len(modal)
+    # A signature is standard iff its names ARE the modal set AND its feature VECTOR length
+    # matches (== modal_len). The second guard catches malformed sigs where a family emitted
+    # features/names of divergent length while the name TUPLE still matched the modal — observed
+    # residual_trajectory 215-vs-205 on 3 M6 pure_contrastive gens (2026-07-18); grouping by
+    # names alone let those into np.stack and crashed it. Drop them loudly, same as short gens.
+    def _standard(f: F32, nm: tuple[str, ...]) -> bool:
+        return nm == modal and int(f.shape[0]) == modal_len
+    dropped = [gid for gid, f, nm in loaded if not _standard(f, nm)]
     if dropped:
         logger.warning(
             f"{sig_dir}: {len(dropped)}/{len(loaded)} signatures excluded — "
-            f"non-standard feature vector (short gens); gen_ids={dropped}"
+            f"non-standard feature vector (short gens or features/names length mismatch); "
+            f"gen_ids={dropped}"
         )
-    rows = [f for _, f, nm in loaded if nm == modal]
-    gen_ids = [gid for gid, _, nm in loaded if nm == modal]
+    rows = [f for _, f, nm in loaded if _standard(f, nm)]
+    gen_ids = [gid for gid, f, nm in loaded if _standard(f, nm)]
     return np.stack(rows), list(modal), gen_ids
 
 
