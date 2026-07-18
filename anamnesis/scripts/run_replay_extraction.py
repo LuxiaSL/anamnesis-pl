@@ -298,13 +298,22 @@ def main() -> None:
         # MULTI-CELL: model + calibration loaded ONCE above; loop cells, re-attaching
         # the injection hook per cell (removing the previous first). Sig output is
         # byte-identical to the per-cell path (bitwise smoke: vmb_a5_replay_multicell).
+        # A7 (arm A7): a cell may carry a "perturb" spec (MoE routing perturbation) — attached
+        # model-wide before the cell, removed after; run_dir = the cell's OUTPUT dir while
+        # "manifest" points at the shared (floor) tokens, so teacher-forced perturbation cells
+        # read one token set and write per-rung sigs without clobbering the floor.
+        from anamnesis.extraction.model_loader import MoEPerturbSpec, attach_moe_perturbation
         jobs = json.loads(args.jobs_file.read_text())
         logger.info(f"[{args.label}] multi-cell replay: {len(jobs)} cells, one model+calib load")
         handle = None
+        perturb_handle = None
         for ji, job in enumerate(jobs):
             if handle is not None:
                 handle.remove()
                 handle = None
+            if perturb_handle is not None:
+                perturb_handle.remove()
+                perturb_handle = None
             run_dir = Path(job["run_dir"])
             npz, key, layer, alpha, frac = _resolve_injection(
                 run_dir, job.get("inject_from_metadata", False),
@@ -312,12 +321,21 @@ def main() -> None:
                 job.get("inject_alpha"), job.get("inject_alpha_frac"))
             handle, meta = _setup_replay_injection(loaded, npz, key, layer, alpha, frac,
                                                    args.label)
+            pj = job.get("perturb")
+            if pj:
+                perturb_handle = attach_moe_perturbation(loaded.model, MoEPerturbSpec(
+                    mode=pj["mode"], top_k=pj.get("top_k"), eps=pj.get("eps"),
+                    sigma_logit=({int(k): float(v) for k, v in pj["sigma_logit"].items()}
+                                 if pj.get("sigma_logit") else None),
+                    m=pj.get("m"), seed=int(pj.get("seed", 0))))
             _replay_cell(loaded, ec, fc, calib, run_dir, Path(job["manifest"]),
                          job.get("gen_ids"), args.sig_subdir, args.raw_dir, args.raw_subdir,
                          args.no_raw, args.no_resume, args.logits_top_k, handle, meta,
                          f"{args.label}c{ji}")
         if handle is not None:
             handle.remove()
+        if perturb_handle is not None:
+            perturb_handle.remove()
         return
 
     if args.run_dir is None or args.manifest is None:

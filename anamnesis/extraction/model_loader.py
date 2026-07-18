@@ -588,9 +588,11 @@ class MoEPerturbSpec:
     mode:
       'topk'          — set the effective num_experts_per_tok to `top_k` (cached-attr path).
       'noise'         — add seeded N(0, eps·sigma_logit[L]) to router_logits BEFORE softmax+topk.
-      'shared_ablate' — zero the shared-experts branch output.
-      'drop_topm'     — zero the `m` largest-weight routed experts per token (removes their mass).
-      'drop_randm'    — zero `m` seeded-random selected experts per token (which-vs-how-many control).
+      'shared_ablate' — zero the shared-experts branch output (§2c PAIR 1).
+      'routed_ablate' — zero the routed-experts branch output (§2c PAIR 1; full-branch complement to
+                        shared_ablate — the pilot says the two branches are mass-comparable).
+      'drop_topm'     — zero the `m` largest-weight routed experts per token (targeting: removes mass).
+      'drop_randm'    — zero `m` seeded-random selected experts per token (targeting control, m fixed).
     """
 
     mode: str
@@ -691,6 +693,12 @@ def attach_moe_perturbation(model: Any, spec: MoEPerturbSpec) -> MoEPerturbHandl
 
         elif spec.mode == "shared_ablate":
             h = mlp.shared_experts.register_forward_hook(lambda mod, a, o: o * 0.0)
+            restores.append(h.remove)
+
+        elif spec.mode == "routed_ablate":
+            # zero the routed-experts branch output: MoE.forward does experts(...) + shared_experts;
+            # a forward hook on mlp.experts → ×0 leaves only the shared branch (§2c PAIR 1 complement).
+            h = mlp.experts.register_forward_hook(lambda mod, a, o: o * 0.0)
             restores.append(h.remove)
 
         else:
