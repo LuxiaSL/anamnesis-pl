@@ -26,7 +26,7 @@ EOSREP=$SHM/banks/annex/eosrep_vectors_3b/a5_vectors.npz
 VCONF=$SHM/banks/annex/vconf_perp_3b/a5_vectors.npz
 NORMS=$SHM/banks/a5_vectors_3b/a5_vectors_stamps.json
 BASE="source $HEIMDALL_VENV && cd $HEIMDALL_WORK_DIR && export PYTHONPATH=\$PWD/pipeline PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1"
-FUNCS=(lexrarity copy selfrep tailmass wraprate freqrep)
+FUNCS=(lexrarity copy selfrep tailmass wraprate freqrep varentropy)
 
 submit() { # name, cmd, gpus, minutes, [after: SINGLE id only — never comma-join]
   local AFTER=(); [[ -n ${5:-} ]] && AFTER=(--after "$5")

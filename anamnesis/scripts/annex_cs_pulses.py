@@ -12,6 +12,9 @@ OUTPUT-side functionals over the structural frames the roster enumerates:
   tailmass   S = log Σ_{v∉top-50} p_t(v)  Rényi/top-p twin (detached top-k set)
   wraprate   S = cov_t(t, log p_t(EOS))   hazard SLOPE over the generated span (pacing)
   freqrep    S = Σ_v count_prior(v)·p_t(v) frequency-weighted rep (rider vs presence-style)
+  varentropy S = Σ_v p·(s_v − H)²         second moment of surprisal (Celeste rider
+                                          C-2, adopted 2026-07-17: the canonical second
+                                          shape dimension — CS-6 predicts V7-collapse)
 
 Keys banked as G{name}_L{site} -> cs_gradients.npz (+ stamps). Band-pass/⊥/leak
 predictions happen at member-build time (annex_probe_members.py pattern; every ⊥ filing
@@ -116,11 +119,24 @@ def s_terms_freqrep(logits, ids, P, L, ctx):
     return terms
 
 
+def s_terms_varentropy(logits, ids, P, L, ctx):
+    terms = []
+    for t in range(P - 1, L - 1):
+        logp = torch.log_softmax(logits[t].float(), dim=-1)
+        p = logp.exp()
+        s = -logp                       # surprisal
+        H = (p * s).sum()
+        terms.append((p * (s - H) ** 2).sum())
+    return terms
+
+
 S_FNS = {"lexrarity": s_terms_lexrarity, "copy": s_terms_copy,
          "selfrep": s_terms_selfrep, "tailmass": s_terms_tailmass,
-         "wraprate": s_terms_wraprate, "freqrep": s_terms_freqrep}
+         "wraprate": s_terms_wraprate, "freqrep": s_terms_freqrep,
+         "varentropy": s_terms_varentropy}
 KEY = {"lexrarity": "Glex", "copy": "Gcopy", "selfrep": "Gselfrep",
-       "tailmass": "Gtail", "wraprate": "Gwrap", "freqrep": "Gfreqrep"}
+       "tailmass": "Gtail", "wraprate": "Gwrap", "freqrep": "Gfreqrep",
+       "varentropy": "Gvarent"}
 
 
 def main() -> None:

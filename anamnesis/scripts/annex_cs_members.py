@@ -30,7 +30,8 @@ import numpy as np
 
 BAND = (16, 256)
 NAMES = {"Glex": "Vlex", "Gcopy": "Vcopy", "Gselfrep": "Vselfrep",
-         "Gtail": "Vtail", "Gwrap": "Vwrap", "Gfreqrep": "Vfreqrep"}
+         "Gtail": "Vtail", "Gwrap": "Vwrap", "Gfreqrep": "Vfreqrep",
+         "Gvarent": "Vvarent"}
 RBAND_KEYS = ("Rband1_L14", "Rband2_L14", "Rband3_L14")
 
 
