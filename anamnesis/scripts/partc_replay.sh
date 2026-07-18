@@ -49,10 +49,12 @@ if [ "$SWAP" = 1 ]; then
   PYTHONPATH=. python -m anamnesis.scripts.build_partc_replay_cells \
     --ckpt-dir "$CKDIR" --arm "$LABEL" --run-root "$RUNROOT" --out "$OUT"
   echo "[replay] LoRA swap driver: $LABEL"
+  # workers-per-gpu: replay extraction is CPU-bound (numpy state_extractor); each worker holds
+  # its own base copy (~15GB), so VRAM caps it at ~11/GPU on a 183GB B200. WPG env overrides.
   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=. python -m anamnesis.scripts.run_replay_multickpt \
     --model qwen-7b --model-path "$BASE" --calib-dir "$CALIB" \
     --manifest "$MANIFEST" --checkpoints-json "$OUT" \
-    --gpus "$GPUS" --workers-per-gpu 4 --sig-subdir signatures_v3 \
+    --gpus "$GPUS" --workers-per-gpu "${WPG:-8}" --sig-subdir signatures_v3 \
     2>&1 | tee /tmp/claude-output/partc_replay_${LABEL}.log | tail -6
 else
   # Full-weight: no adapter swap. load-per-checkpoint (base = the checkpoint dir itself).
