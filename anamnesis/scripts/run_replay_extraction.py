@@ -245,6 +245,10 @@ def main() -> None:
         enable_value_geometry=True,
         enable_qk_geometry=True,
         enable_kv_cka=True,
+        # MoE expert routing (vmb arm A7, M6): None-guarded — the xrt family returns empty
+        # for dense models (router_dist is None), so enabling it here is a no-op everywhere
+        # except DeepSeek-V2-Lite, where it adds the 60 xrt features to the battery vector.
+        enable_expert_routing=True,
         trajectory_layers=preset.trajectory_layers,
         contrastive_layers=preset.contrastive_layers,
     )

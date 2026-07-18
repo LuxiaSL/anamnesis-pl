@@ -54,6 +54,7 @@ def _build_configs(model: str):
         enable_gate_features=True, enable_temporal_dynamics=False, enable_per_head=True,
         enable_stft=True, enable_contrastive_projection=False, enable_value_geometry=True,
         enable_qk_geometry=True, enable_kv_cka=True,
+        enable_expert_routing=True,  # None-guarded: no-op on dense models, adds xrt for M6 (MoE)
         trajectory_layers=preset.trajectory_layers, contrastive_layers=preset.contrastive_layers)
     mc = ModelConfig(model_id="", torch_dtype=preset.torch_dtype, num_layers=preset.num_layers,
                      hidden_dim=preset.hidden_dim, num_attention_heads=preset.num_attention_heads,
