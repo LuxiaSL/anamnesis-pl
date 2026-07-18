@@ -78,6 +78,8 @@ MODEL_META: dict[str, ModelMeta] = {
                           stage0_dir="vmb_stage0_olmo2_7b", native_temperature=0.7),
     "gemma3-27b": ModelMeta(label="gemma3-27b", n_layers=62,
                             stage0_dir="vmb_stage0_gemma3_27b", native_temperature=1.0),
+    "dsv2-lite": ModelMeta(label="dsv2-lite", n_layers=27,
+                           stage0_dir="vmb_stage0_dsv2_lite", native_temperature=0.3),
 }
 
 
