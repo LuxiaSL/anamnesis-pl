@@ -179,8 +179,14 @@ def analyze_model(model: str, n_layers: int, root: Path) -> dict:
     # ── classification block ──
     Z = np.vstack([conds[m].Z for m in MODES])
     y = np.array([m for m in MODES for _ in range(conds[m].Z.shape[0])])
-    groups = np.concatenate([[g["topic_idx"] for g in meta[m]] for m in MODES]).astype(int)
-    lengths = np.concatenate([[g["num_generated_tokens"] for g in meta[m]] for m in MODES])
+    # groups/lengths must align to the SURVIVING gen_ids (load_signature_matrix drops
+    # malformed/short-gen sigs; meta[m] holds ALL gens, so iterating it directly misaligns the
+    # Z rows once anything is dropped — latent until M6's 3 pure_contrastive drops, 2026-07-18).
+    meta_by_gid = {m: {int(g["generation_id"]): g for g in meta[m]} for m in MODES}
+    groups = np.concatenate(
+        [[meta_by_gid[m][gid]["topic_idx"] for gid in conds[m].gen_ids] for m in MODES]).astype(int)
+    lengths = np.concatenate(
+        [[meta_by_gid[m][gid]["num_generated_tokens"] for gid in conds[m].gen_ids] for m in MODES])
     Zr = residualize_length(Z, lengths)
 
     # length-only confound row
