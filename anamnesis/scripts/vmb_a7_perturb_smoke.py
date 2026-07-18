@@ -33,8 +33,14 @@ def _router_selection(model, input_ids):
             caps[_l] = {"idx": idx.detach().cpu(), "w": w.detach().cpu()}
             return idx, w
 
+        # Preserve any installed perturbation (also an instance attr on the same key): restore IT
+        # after capture, not the class method — else this harness clobbers the perturbation under test.
+        prev = mlp.__dict__.get("route_tokens_to_experts", None)
         mlp.route_tokens_to_experts = _cap
-        restores.append(lambda m=mlp: m.__dict__.pop("route_tokens_to_experts", None))
+        if prev is None:
+            restores.append(lambda m=mlp: m.__dict__.pop("route_tokens_to_experts", None))
+        else:
+            restores.append(lambda m=mlp, p=prev: setattr(m, "route_tokens_to_experts", p))
         sh = {}
 
         def _shcap(mod, a, o, _l=l_idx, _sh=sh):
