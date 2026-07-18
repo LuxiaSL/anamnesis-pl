@@ -200,6 +200,43 @@ def run_single_generation(
     return result, metadata
 
 
+def _router_fields_from_hooks(
+    hook_state: Any, sampled_layers: list[int]
+) -> tuple[dict[int, list[F32]] | None, dict[int, list[F32]] | None]:
+    """Build (router_dist, router_branch_norms) for MoE models (vmb arm A7, M6).
+
+    Dense models never populate hook_state.router_dist → returns (None, None), so
+    the xrt family stays inert everywhere else. Prefill (index 0) is skipped, matching
+    get_generation_keys. router_dist[l] = T×[n_experts] dense softmax; router_branch_norms[l]
+    = T×[‖shared‖, ‖routed‖].
+    """
+    if not any(hook_state.router_dist.get(l, []) for l in sampled_layers):
+        return None, None
+    router_dist: dict[int, list[F32]] = {}
+    for l_idx in sampled_layers:
+        gen = hook_state.router_dist.get(l_idx, [])[1:]        # skip prefill
+        if gen:
+            router_dist[l_idx] = [
+                s.reshape(-1, s.shape[-1])[-1].cpu().float().numpy().astype(np.float32)
+                for s in gen
+            ]
+    router_branch_norms: dict[int, list[F32]] | None = None
+    if (any(hook_state.router_shared_norm.get(l, []) for l in sampled_layers)
+            and any(hook_state.router_routed_norm.get(l, []) for l in sampled_layers)):
+        router_branch_norms = {}
+        for l_idx in sampled_layers:
+            sh = hook_state.router_shared_norm.get(l_idx, [])[1:]
+            ro = hook_state.router_routed_norm.get(l_idx, [])[1:]
+            if sh and ro:
+                n = min(len(sh), len(ro))
+                router_branch_norms[l_idx] = [
+                    np.array([float(sh[t].reshape(-1)[-1]), float(ro[t].reshape(-1)[-1])],
+                             dtype=np.float32)
+                    for t in range(n)
+                ]
+    return (router_dist or None), router_branch_norms
+
+
 def _convert_outputs_to_raw(
     outputs: Any,
     prompt_length: int,
@@ -269,6 +306,8 @@ def _convert_outputs_to_raw(
                     for g in gen_gates
                 ]
 
+    router_dist, router_branch_norms = _router_fields_from_hooks(hook_state, sampled_layers)
+
     return RawGenerationData(
         hidden_states=hidden_states_list,
         attentions=attentions_list,
@@ -278,6 +317,8 @@ def _convert_outputs_to_raw(
         prompt_length=prompt_length,
         positional_means=positional_means,
         gate_activations=gate_activations,
+        router_dist=router_dist,
+        router_branch_norms=router_branch_norms,
     )
 
 
@@ -318,6 +359,8 @@ def _convert_streaming_to_raw(
                 for k in pre_rope_keys[l_idx]
             ]
 
+    router_dist, router_branch_norms = _router_fields_from_hooks(hook_state, sampled_layers)
+
     return RawGenerationData(
         hidden_states=stream_out.hidden_states,
         attentions=stream_out.attentions,
@@ -326,6 +369,8 @@ def _convert_streaming_to_raw(
         pre_rope_keys=pre_rope_keys,
         prompt_length=stream_out.prompt_length,
         positional_means=positional_means,
+        router_dist=router_dist,
+        router_branch_norms=router_branch_norms,
     )
 
 

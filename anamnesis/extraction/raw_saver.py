@@ -297,6 +297,9 @@ def save_raw_tensors_v3(
     queries_stacked, query_layer_indices = _stack_layer_dict(raw_data.queries)
     gates_stacked, gate_layer_indices = _stack_layer_dict(raw_data.gate_activations)
     attn_out_stacked, attn_out_layer_indices = _stack_layer_dict(raw_data.attn_outputs)
+    # MoE expert routing (vmb arm A7, M6) — dense softmax [T, n_moe_layers, n_experts] + branch norms [T, n_moe_layers, 2]
+    router_dist_stacked, router_layer_indices = _stack_layer_dict(raw_data.router_dist)
+    router_norms_stacked, router_norms_layer_indices = _stack_layer_dict(raw_data.router_branch_norms)
 
     # ── Top-k logits + precomputed exact entropy (full vocab discarded) ──
     if raw_data.logits and len(raw_data.logits) > 0:
@@ -342,6 +345,10 @@ def save_raw_tensors_v3(
         "gate_layer_indices": gate_layer_indices,
         "attn_outputs": attn_out_stacked,
         "attn_output_layer_indices": attn_out_layer_indices,
+        "router_dist": router_dist_stacked,
+        "router_layer_indices": router_layer_indices,
+        "router_branch_norms": router_norms_stacked,
+        "router_norms_layer_indices": router_norms_layer_indices,
         "all_layers_count": np.array(n_total_layers_plus_one, dtype=np.int32),
         "extraction_version": np.array(3, dtype=np.int32),
     }
@@ -358,7 +365,7 @@ def save_raw_tensors_v3(
 
 #: Surface names accepted by load_raw_tensors(surfaces=...).
 VALID_SURFACES: frozenset[str] = frozenset(
-    {"hidden", "attention", "keys", "values", "queries", "gate", "logits", "attn_out"}
+    {"hidden", "attention", "keys", "values", "queries", "gate", "logits", "attn_out", "routing"}
 )
 
 
@@ -566,6 +573,21 @@ def load_raw_tensors(
             for i, layer_idx in enumerate(gate_layer_indices_arr):
                 gate_activations[int(layer_idx)] = [gates_stacked_f32[t, i] for t in range(T)]
 
+    # ── Reconstruct MoE expert routing (vmb arm A7, M6; absent in non-MoE npz) ──
+    router_dist: dict[int, list[F32]] | None = None
+    router_branch_norms: dict[int, list[F32]] | None = None
+    if "routing" in want:
+        rd_arr = data.get("router_dist")
+        rd_idx = data.get("router_layer_indices")
+        if rd_arr is not None and rd_arr.size > 0 and rd_idx is not None and rd_idx.size > 0:
+            rd_f32 = rd_arr.astype(np.float32)
+            router_dist = {int(l): [rd_f32[t, i] for t in range(T)] for i, l in enumerate(rd_idx)}
+        rn_arr = data.get("router_branch_norms")
+        rn_idx = data.get("router_norms_layer_indices")
+        if rn_arr is not None and rn_arr.size > 0 and rn_idx is not None and rn_idx.size > 0:
+            rn_f32 = rn_arr.astype(np.float32)
+            router_branch_norms = {int(l): [rn_f32[t, i] for t in range(T)] for i, l in enumerate(rn_idx)}
+
     # ── Positional means (hidden-space correction; rides with "hidden") ──
     positional_means: F32 | None = None
     if "hidden" in want and "positional_means" in data:
@@ -583,6 +605,8 @@ def load_raw_tensors(
         v_proj_values=v_proj_values,
         queries=queries,
         attn_outputs=attn_outputs,
+        router_dist=router_dist,
+        router_branch_norms=router_branch_norms,
     )
 
 

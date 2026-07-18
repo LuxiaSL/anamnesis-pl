@@ -64,6 +64,17 @@ class HookState:
     # resid_{l+1} − resid_l − attn_out, so this one capture closes two census cells.
     attn_outputs: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
 
+    # ── MoE expert routing (vmb arm A7, M6 DeepSeek-V2-Lite) — router allocation + branch norms.
+    # layer_idx → per-step [batch, seq, n_routed_experts] DENSE pre-topk softmax (recomputed in the
+    # MoE-module pre-hook from gate.weight, since DeepseekV2Moe bypasses gate.forward). Prefill = step 0.
+    router_dist: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+    # layer_idx → per-step [n_tok] L2 norm of the shared-expert branch output (shared_mass numerator).
+    router_shared_norm: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+    # layer_idx → per-step [n_tok] L2 norm of the routed-expert sum output (shared_mass denominator term).
+    router_routed_norm: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+    # NB c_KV (MLA keys-analog) is captured INTO pre_rope_keys as [batch, 1, seq, kv_lora_rank] — it
+    # reuses the whole keys pipeline (num_kv_heads=1, head_dim=512); no separate field needed.
+
     enabled: bool = True
     _on_cpu: bool = field(default=False, repr=False)
 
@@ -96,6 +107,11 @@ class HookState:
             tensors = self.attn_outputs[layer_idx]
             if tensors and tensors[0].is_cuda:
                 self.attn_outputs[layer_idx] = [t.cpu() for t in tensors]
+        for store in (self.router_dist, self.router_shared_norm, self.router_routed_norm):
+            for layer_idx in list(store.keys()):
+                tensors = store[layer_idx]
+                if tensors and tensors[0].is_cuda:
+                    store[layer_idx] = [t.cpu() for t in tensors]
         self._on_cpu = True
 
     def clear(self) -> None:
@@ -115,6 +131,10 @@ class HookState:
         for tensors in self.attn_outputs.values():
             del tensors[:]
         self.attn_outputs.clear()
+        for store in (self.router_dist, self.router_shared_norm, self.router_routed_norm):
+            for tensors in store.values():
+                del tensors[:]
+            store.clear()
         self._on_cpu = False
 
     def get_generation_keys(self, layer_idx: int) -> list[Tensor]:
@@ -261,6 +281,83 @@ def _make_o_proj_hook(
         if not hook_state.enabled:
             return
         hook_state.attn_outputs[layer_idx].append(output.detach())
+
+    return hook_fn
+
+
+# ── MLA + MoE capture hooks (vmb arm A7, M6 DeepSeek-V2-Lite) ───────────────────
+# Wired against the VERIFIED native transformers deepseek_v2 module tree (audit
+# 2026-07-18, job b0713ba4d5d3). See HOOK-AUDIT-PLAN-M6-dsv2lite §3.
+
+def _make_ckv_hook(
+    layer_idx: int,
+    hook_state: HookState,
+    kv_lora_rank: int,
+) -> Any:
+    """Forward hook on `self_attn.kv_a_proj_with_mqa` — captures the c_KV latent.
+
+    Output shape [batch, seq, kv_lora_rank + qk_rope_head_dim]; the first
+    kv_lora_rank dims = c_KV (position-free compressed KV latent, the MLA
+    keys-source analog). Stored INTO pre_rope_keys as [batch, 1, seq, kv_lora_rank]
+    (num_kv_heads=1, head_dim=kv_lora_rank) so it rides the existing keys pipeline
+    unchanged. k_pe (the trailing qk_rope dims) is position-carrying → dropped here.
+    """
+
+    def hook_fn(module: nn.Module, args: tuple[Any, ...], output: Tensor) -> None:
+        if not hook_state.enabled:
+            return
+        c_kv = output.detach()[..., :kv_lora_rank]           # [batch, seq, kv_lora_rank]
+        batch, seq_len, d = c_kv.shape
+        reshaped = c_kv.reshape(batch, seq_len, 1, d).transpose(1, 2)  # [batch, 1, seq, d]
+        hook_state.pre_rope_keys[layer_idx].append(reshaped)
+
+    return hook_fn
+
+
+def _make_moe_router_prehook(
+    layer_idx: int,
+    hook_state: HookState,
+) -> Any:
+    """forward_PRE_hook on the MoE module (DeepseekV2Moe) — captures the dense router dist.
+
+    DeepseekV2Moe.forward computes `F.linear(h.float(), self.gate.weight.float())`
+    directly and NEVER calls gate.forward, so a forward hook on `mlp.gate` never
+    fires. We recompute the dense pre-topk softmax here from the module's own
+    gate.weight and the input hidden states (args[0]). Banked reading =
+    `pretopk_softmax_dense` (HOOK-AUDIT-PLAN §R).
+    """
+
+    def pre_hook(module: nn.Module, args: tuple[Any, ...]) -> None:
+        if not hook_state.enabled:
+            return
+        h = args[0]
+        logits = torch.nn.functional.linear(
+            h.to(torch.float32), module.gate.weight.to(torch.float32))
+        dist = logits.softmax(dim=-1)                        # [batch, seq, n_routed_experts]
+        hook_state.router_dist[layer_idx].append(dist.detach())
+
+    return pre_hook
+
+
+def _make_branch_norm_hook(
+    layer_idx: int,
+    hook_state: HookState,
+    which: str,
+) -> Any:
+    """Forward hook on `mlp.shared_experts` / `mlp.experts` — per-token output L2 norm.
+
+    which="shared" → shared-branch output [batch, seq, hidden]; which="routed" →
+    routed-expert sum output [n_tok, hidden]. Both flattened to [n_tok] norms;
+    paired downstream into shared_mass = shared / (shared + routed).
+    """
+    dst = hook_state.router_shared_norm if which == "shared" else hook_state.router_routed_norm
+
+    def hook_fn(module: nn.Module, args: tuple[Any, ...], output: Tensor) -> None:
+        if not hook_state.enabled:
+            return
+        o = output.detach()
+        norm = o.reshape(-1, o.shape[-1]).norm(dim=-1)       # [n_tok]
+        dst[layer_idx].append(norm)
 
     return hook_fn
 
@@ -597,57 +694,82 @@ def load_model(
     hook_state = HookState()
     hook_handles: list[torch.utils.hooks.RemovableHook] = []
 
-    # Pre-RoPE keys (k_proj)
-    for layer_idx in key_layers:
-        k_proj = decoder_layers(model)[layer_idx].self_attn.k_proj
-        handle = k_proj.register_forward_hook(_make_k_proj_hook(
-            layer_idx=layer_idx, hook_state=hook_state,
-            num_kv_heads=config.num_kv_heads, head_dim=config.head_dim,
-        ))
-        hook_handles.append(handle)
-
-    # Values (v_proj) — OV-circuit surface
-    for layer_idx in value_layers:
-        v_proj = decoder_layers(model)[layer_idx].self_attn.v_proj
-        handle = v_proj.register_forward_hook(_make_v_proj_hook(
-            layer_idx=layer_idx, hook_state=hook_state,
-            num_kv_heads=config.num_kv_heads, head_dim=config.head_dim,
-        ))
-        hook_handles.append(handle)
-
-    # Pre-RoPE queries (q_proj) — for offline QK-space geometry
-    for layer_idx in query_layers:
-        q_proj = decoder_layers(model)[layer_idx].self_attn.q_proj
-        handle = q_proj.register_forward_hook(_make_q_proj_hook(
-            layer_idx=layer_idx, hook_state=hook_state,
-            num_attention_heads=config.num_attention_heads, head_dim=config.head_dim,
-        ))
-        hook_handles.append(handle)
-
-    # Attention output (o_proj) — attention-output surface (vmb Stage A)
-    for layer_idx in attn_output_layers:
-        o_proj = decoder_layers(model)[layer_idx].self_attn.o_proj
-        handle = o_proj.register_forward_hook(_make_o_proj_hook(
-            layer_idx=layer_idx, hook_state=hook_state,
-        ))
-        hook_handles.append(handle)
-
-    # Optionally register gate_proj hooks for SwiGLU gate features (sampled layers)
+    is_dsv2 = "deepseek_v2" in str(getattr(getattr(model, "config", None), "model_type", ""))
     gate_hook_count = 0
-    if register_gate_hooks:
-        for layer_idx in _valid(list(sampled_layers)):
-            gate_proj = decoder_layers(model)[layer_idx].mlp.gate_proj
-            handle = gate_proj.register_forward_hook(_make_gate_proj_hook(
-                layer_idx=layer_idx, hook_state=hook_state,
-            ))
-            hook_handles.append(handle)
-            gate_hook_count += 1
+    router_hook_count = 0
 
-    logger.info(
-        f"Model loaded. Hooks — k_proj×{len(key_layers)}, v_proj×{len(value_layers)}, "
-        f"q_proj×{len(query_layers)}, o_proj×{len(attn_output_layers)}, "
-        f"gate_proj×{gate_hook_count}"
-    )
+    if is_dsv2:
+        # ── MLA + MoE capture (vmb arm A7, M6 DeepSeek-V2-Lite). No k_proj/v_proj (MLA); q_proj is
+        # 192-d/head (not wave-1) → keys via c_KV latent, values/queries skipped. HOOK-AUDIT-PLAN §5. ──
+        first_k_dense = int(getattr(model.config, "first_k_dense_replace", 0))
+        kv_lora_rank = int(getattr(model.config, "kv_lora_rank", 512))
+        dl = decoder_layers(model)
+        for layer_idx in key_layers:                          # c_KV keys-analog (position-free latent)
+            handle = dl[layer_idx].self_attn.kv_a_proj_with_mqa.register_forward_hook(
+                _make_ckv_hook(layer_idx=layer_idx, hook_state=hook_state, kv_lora_rank=kv_lora_rank))
+            hook_handles.append(handle)
+        for layer_idx in attn_output_layers:                  # o_proj (attention-output surface)
+            handle = dl[layer_idx].self_attn.o_proj.register_forward_hook(
+                _make_o_proj_hook(layer_idx=layer_idx, hook_state=hook_state))
+            hook_handles.append(handle)
+        moe_layers = [l for l in _valid(list(sampled_layers)) if l >= first_k_dense]
+        if register_gate_hooks:                               # MoE-aware SwiGLU gate (shared branch on MoE layers)
+            for layer_idx in _valid(list(sampled_layers)):
+                mlp = dl[layer_idx].mlp
+                gate_mod = mlp.gate_proj if layer_idx < first_k_dense else mlp.shared_experts.gate_proj
+                handle = gate_mod.register_forward_hook(
+                    _make_gate_proj_hook(layer_idx=layer_idx, hook_state=hook_state))
+                hook_handles.append(handle)
+                gate_hook_count += 1
+        for layer_idx in moe_layers:                          # router dist (pre-hook) + shared/routed branch norms
+            mlp = dl[layer_idx].mlp
+            hook_handles.append(mlp.register_forward_pre_hook(
+                _make_moe_router_prehook(layer_idx=layer_idx, hook_state=hook_state)))
+            hook_handles.append(mlp.shared_experts.register_forward_hook(
+                _make_branch_norm_hook(layer_idx=layer_idx, hook_state=hook_state, which="shared")))
+            hook_handles.append(mlp.experts.register_forward_hook(
+                _make_branch_norm_hook(layer_idx=layer_idx, hook_state=hook_state, which="routed")))
+            router_hook_count += 1
+        logger.info(
+            f"Model loaded (deepseek_v2/MLA+MoE). Hooks — c_KV×{len(key_layers)}, "
+            f"o_proj×{len(attn_output_layers)}, gate(shared)×{gate_hook_count}, router+branch×{router_hook_count}"
+        )
+    else:
+        # ── Llama-class path (k_proj / v_proj / q_proj / o_proj / gate_proj) ──
+        for layer_idx in key_layers:                          # Pre-RoPE keys (k_proj)
+            k_proj = decoder_layers(model)[layer_idx].self_attn.k_proj
+            handle = k_proj.register_forward_hook(_make_k_proj_hook(
+                layer_idx=layer_idx, hook_state=hook_state,
+                num_kv_heads=config.num_kv_heads, head_dim=config.head_dim))
+            hook_handles.append(handle)
+        for layer_idx in value_layers:                        # Values (v_proj) — OV-circuit surface
+            v_proj = decoder_layers(model)[layer_idx].self_attn.v_proj
+            handle = v_proj.register_forward_hook(_make_v_proj_hook(
+                layer_idx=layer_idx, hook_state=hook_state,
+                num_kv_heads=config.num_kv_heads, head_dim=config.head_dim))
+            hook_handles.append(handle)
+        for layer_idx in query_layers:                        # Pre-RoPE queries (q_proj)
+            q_proj = decoder_layers(model)[layer_idx].self_attn.q_proj
+            handle = q_proj.register_forward_hook(_make_q_proj_hook(
+                layer_idx=layer_idx, hook_state=hook_state,
+                num_attention_heads=config.num_attention_heads, head_dim=config.head_dim))
+            hook_handles.append(handle)
+        for layer_idx in attn_output_layers:                  # Attention output (o_proj)
+            o_proj = decoder_layers(model)[layer_idx].self_attn.o_proj
+            handle = o_proj.register_forward_hook(_make_o_proj_hook(
+                layer_idx=layer_idx, hook_state=hook_state))
+            hook_handles.append(handle)
+        if register_gate_hooks:                               # SwiGLU gate_proj (sampled layers)
+            for layer_idx in _valid(list(sampled_layers)):
+                gate_proj = decoder_layers(model)[layer_idx].mlp.gate_proj
+                handle = gate_proj.register_forward_hook(_make_gate_proj_hook(
+                    layer_idx=layer_idx, hook_state=hook_state))
+                hook_handles.append(handle)
+                gate_hook_count += 1
+        logger.info(
+            f"Model loaded. Hooks — k_proj×{len(key_layers)}, v_proj×{len(value_layers)}, "
+            f"q_proj×{len(query_layers)}, o_proj×{len(attn_output_layers)}, gate_proj×{gate_hook_count}"
+        )
 
     return LoadedModel(
         model=model,

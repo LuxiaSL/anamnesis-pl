@@ -58,11 +58,21 @@ def main() -> None:
     assert len(dl) == p.num_layers, f"LAYER COUNT {len(dl)} != {p.num_layers}"
     probe = sorted({p.sampled_layers[0], p.sampled_layers[len(p.sampled_layers) // 2],
                     p.sampled_layers[-1]})
+    is_dsv2 = "deepseek_v2" in str(getattr(loaded.model.config, "model_type", ""))
+    first_k = int(getattr(loaded.model.config, "first_k_dense_replace", 0))
     for li in probe:
         sa = dl[li].self_attn
-        assert all(hasattr(sa, x) for x in ("k_proj", "q_proj", "o_proj")), f"L{li} attn"
-        assert hasattr(dl[li].mlp, "gate_proj"), f"L{li} mlp gate_proj"
-    print(f"    hook target modules present on layers {probe}")
+        if is_dsv2:  # MLA + MoE: no k_proj/v_proj; MoE layers have gate/experts/shared_experts
+            assert all(hasattr(sa, x) for x in ("kv_a_proj_with_mqa", "kv_b_proj", "q_proj", "o_proj")), f"L{li} MLA attn"
+            if li < first_k:
+                assert hasattr(dl[li].mlp, "gate_proj"), f"L{li} dense mlp gate_proj"
+            else:
+                assert all(hasattr(dl[li].mlp, x) for x in ("gate", "experts", "shared_experts")), f"L{li} MoE mlp"
+                assert hasattr(dl[li].mlp.shared_experts, "gate_proj"), f"L{li} shared_experts gate_proj"
+        else:
+            assert all(hasattr(sa, x) for x in ("k_proj", "q_proj", "o_proj")), f"L{li} attn"
+            assert hasattr(dl[li].mlp, "gate_proj"), f"L{li} mlp gate_proj"
+    print(f"    hook target modules present on layers {probe} (dsv2/MLA+MoE={is_dsv2})")
 
     tok = loaded.tokenizer
     ids = tok.apply_chat_template([{"role": "user", "content": PROMPT}],
@@ -86,8 +96,36 @@ def main() -> None:
     assert len(out.hidden_states[0]) == p.num_layers + 1, \
         f"HS layers {len(out.hidden_states[0])} != {p.num_layers + 1}"
     loaded.flush_hooks_to_cpu()
-    print(f"    hidden_states={len(out.hidden_states[0])} layers; "
-          f"k_proj hook fired: {loaded.hook_state is not None}")
+    print(f"    hidden_states={len(out.hidden_states[0])} layers; hooks fired ok")
+
+    if is_dsv2:  # ── MoE capture smoke: router pre-hook fired + c_KV + full xrt path (HOOK-AUDIT-PLAN §6/§7) ──
+        moe_layers = [l for l in p.sampled_layers if l >= first_k]
+        rd = loaded.hook_state.router_dist
+        fired = [l for l in moe_layers if rd.get(l)]
+        assert fired, "router pre-hook fired on NO MoE layer"
+        width = rd[fired[0]][-1].shape[-1]
+        assert width == loaded.model.config.n_routed_experts, \
+            f"router dist width {width} != {loaded.model.config.n_routed_experts}"
+        assert loaded.hook_state.pre_rope_keys.get(fired[0]), "c_KV (kv_a_proj_with_mqa) hook did not fire"
+        print(f"[3b] router pre-hook fired {len(fired)}/{len(moe_layers)} MoE layers; "
+              f"dist width {width}; c_KV captured")
+        from anamnesis.extraction.generation_runner import _router_fields_from_hooks
+        from anamnesis.extraction.feature_families.expert_routing import extract_expert_routing_features
+        from anamnesis.extraction.state_extractor import RawGenerationData
+        from anamnesis.analysis.feature_map import FeatureMap
+        r_dist, r_norms = _router_fields_from_hooks(loaded.hook_state, p.sampled_layers)
+        rd_data = RawGenerationData(
+            hidden_states=[np.zeros((p.num_layers + 1, p.hidden_dim), dtype=np.float32)],
+            attentions=[], logits=[], chosen_token_ids=np.zeros(1), pre_rope_keys={},
+            prompt_length=1, router_dist=r_dist, router_branch_norms=r_norms)
+        xrt = extract_expert_routing_features(
+            rd_data, sampled_layers=moe_layers, top_k=loaded.model.config.num_experts_per_tok)
+        fm = FeatureMap(xrt.feature_names, p.num_layers)
+        assert len(xrt.features) == 10 * len(moe_layers) and len(fm.unclassified()) == 0, \
+            f"xrt smoke: n={len(xrt.features)} (expect {10 * len(moe_layers)}), unclassified={len(fm.unclassified())}"
+        assert bool(np.isfinite(xrt.features).all()), "xrt features non-finite"
+        print(f"[3c] xrt features: {len(xrt.features)} ({len(moe_layers)} MoE layers x10); "
+              f"feature_map unclassified=0; finite=True")
 
     ec = ExperimentConfig(
         model=mc,
