@@ -83,6 +83,20 @@ class RawGenerationData:
     # source 0 = anchor (earliest committed/block-0), source -1 = `partial` (recency). n_src grows with depth.
     attn_res_committed: list | None = None
     # list of block-boundary committed snapshots, each [n_pos, hidden_dim].
+    # ── MoE expert routing (vmb arm A7, M6 DeepSeek-V2-Lite class) — optional, MoE-layers only ──
+    # Dense models (Llama/Qwen/OLMo/Gemma) leave these None; the xrt family returns empty when absent
+    # (the gate_features None-guard pattern). Populated by the M6 capture hooks (see model_loader /
+    # research/planning/HOOK-AUDIT-PLAN-M6-dsv2lite-2026-07-17.md).
+    router_dist: dict[int, list[F32]] | None = None
+    # layer_idx → T × [n_routed_experts]: per-generated-token expert-allocation distribution over the
+    # routed experts. Banked reading = the DENSE pre-topk softmax (recomputed in the MoE-module pre-hook
+    # from gate.weight, because DeepseekV2Moe bypasses gate.forward — F.linear(h, gate.weight)). Under
+    # greedy top-k the selected set is exactly argtop-k of this vector, so coverage/load/drift are
+    # derived in-module. Which reading was banked is stamped in run metadata (router_granularity).
+    # Prefill step 0 excluded.
+    router_branch_norms: dict[int, list[F32]] | None = None
+    # layer_idx → T × [2] = (‖shared-expert branch output‖, ‖routed-expert sum output‖) per token, from
+    # forward hooks on mlp.shared_experts and mlp.experts outputs. Feeds xrt_shared_mass. MoE layers only.
     _hs_array_cache: F32 | None = field(default=None, repr=False, compare=False)
     # lazily-built np.stack(hidden_states); do not set directly — use hidden_states_array()
     _mean_attn_cache: dict[int, list[NDArray[np.float64]]] = field(

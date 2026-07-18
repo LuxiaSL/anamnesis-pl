@@ -262,6 +262,17 @@ class FeaturePipelineConfig(BaseModel):
         description="Extract AttnRes cross-block routing features (anchor-vs-recency, concentration, committed geom)",
     )
 
+    # MoE expert routing (vmb arm A7, M6 DeepSeek-V2-Lite class — needs router_dist/router_branch_norms
+    # capture fields; dense models leave them None and this family returns empty)
+    enable_expert_routing: bool = Field(
+        default=False,
+        description="Extract MoE expert-routing features (alloc entropy/margin/coverage/load, shared-mass, switch/drift)",
+    )
+    expert_routing_top_k: int = Field(
+        default=6,
+        description="num_experts_per_tok — selection size for coverage/load/drift (6 for DeepSeek-V2-Lite)",
+    )
+
     # Temporal operator settings (shared across families)
     temporal_n_windows: int = Field(
         default=4,
@@ -440,6 +451,35 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
         temperature=0.7,
         eos_token_ids=[151643, 151645],
         calibration_dir=OUTPUTS_BASE / "calibration" / "qwen25_7b",
+    ),
+    "dsv2-lite": ModelPreset(
+        # vmb M6 (prereg roster + ADDENDUM 2026-07-17t pin): DeepSeek-V2-Lite-Chat —
+        # FIRST MoE model (2 shared + 64 routed experts, top-6 GREEDY; first_k_dense_replace=1,
+        # so layer 0 is a dense MLP and layers 1–26 are MoE). Loaded via the NATIVE transformers
+        # `deepseek_v2` integration (model_type=deepseek_v2, transformers 5.3) — load with
+        # trust_remote_code=False; the bundled auto_map remote code (modeling_deepseek.py) has a
+        # DIFFERENT internal structure (per-expert gate_proj) that the M6 hooks do NOT target.
+        # MLA attention: keys-source analog = the c_KV compressed latent (kv_a_proj_with_mqa[:512],
+        # position-free); k_pe (64) banked, not featurized. No k_proj/v_proj module and q_proj is
+        # 192-dim/head (qk_nope 128 + qk_rope 64) — queries/values are NOT wave-1 features for M6.
+        # All numbers below VERIFIED against the downloaded config.json (2026-07-17, node1).
+        model_id="deepseek-ai/DeepSeek-V2-Lite-Chat",
+        torch_dtype="bfloat16",
+        num_layers=27,
+        hidden_dim=2048,
+        num_attention_heads=16,
+        num_kv_heads=16,           # config num_key_value_heads; MLA latent (attention weights are 16-head).
+                                   # NB the keys-SOURCE capture is the 512-d c_KV latent, not these 16 heads.
+        head_dim=128,              # v_head_dim (config has no top-level head_dim). qk_head_dim=192.
+        sampled_layers=[0, 5, 11, 15, 18, 22, 26],   # proportional-depth, mid-heavy; L0 dense → 0 xrt features
+        pca_layers=[5, 11, 15, 18, 22],
+        trajectory_layers=[5, 11, 15, 18, 22],
+        contrastive_layers=[5, 11, 15, 18, 22],
+        early_layer_cutoff=7, late_layer_cutoff=20,
+        temperature=0.3,           # CORRECTED from spec §4's expected 0.7 — generation_config.json = 0.3
+                                   # (native top_p=0.95: Stage-0 chain passes --override-top-p 0.95, à la Gemma)
+        eos_token_ids=[100001],    # <｜end▁of▁sentence｜>; single EOS, no separate end-of-turn token
+        calibration_dir=OUTPUTS_BASE / "calibration" / "dsv2_lite",
     ),
 }
 

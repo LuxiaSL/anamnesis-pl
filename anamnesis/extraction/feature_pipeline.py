@@ -313,6 +313,25 @@ def compute_features_v2_from_data(
             all_names.extend(result.feature_names)
             offset += len(result)
 
+    # MoE expert routing (vmb arm A7, M6 DeepSeek-V2-Lite class; needs router_dist capture — dense
+    # models leave it None → skipped). MoE layers are those the capture actually banked a router for,
+    # so dense prefix layers (e.g. DeepSeek layer 0) are excluded data-drivenly, not by a magic index.
+    if family_config.enable_expert_routing and raw_data.router_dist:
+        from anamnesis.extraction.feature_families.expert_routing import (
+            extract_expert_routing_features,
+        )
+        moe_layers = [l for l in config.sampled_layers if l in raw_data.router_dist]
+        result = extract_expert_routing_features(
+            raw_data,
+            sampled_layers=moe_layers,
+            top_k=family_config.expert_routing_top_k,
+        )
+        if len(result) > 0:
+            all_slices[result.family_name] = (offset, offset + len(result))
+            all_features.append(result.features)
+            all_names.extend(result.feature_names)
+            offset += len(result)
+
     # Concatenate
     if all_features:
         combined = np.concatenate(all_features)

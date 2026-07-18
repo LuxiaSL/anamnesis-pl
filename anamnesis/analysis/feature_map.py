@@ -38,7 +38,9 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 # Model layer counts (for depth bands). Extend per model/architecture.
-MODEL_LAYERS = {"3b": 28, "8b": 32, "kotodama_3b": 28}
+MODEL_LAYERS = {"3b": 28, "8b": 32, "kotodama_3b": 28,
+                "olmo2-7b": 32, "gemma3-27b": 62, "qwen-7b": 28,
+                "dsv2": 27, "dsv2_lite": 27, "dsv2-lite": 27}  # M6 DeepSeek-V2-Lite (27 layers)
 
 
 class Source(str, Enum):
@@ -97,6 +99,7 @@ def legacy_family(n: str) -> str:
     if n.startswith("spectral_"): return "T2_spectral"
     if n.startswith(("attn_entropy_", "head_agreement_", "delta_")): return "T2_other"
     if n.startswith("attnres_"): return "attn_res"
+    if n.startswith(("xrt_", "expert_routing_")): return "expert_routing"  # M6 MoE router (new; no legacy analog)
     if n.startswith("pca_"): return "T3"
     return "T1"
 
@@ -138,6 +141,11 @@ _DIST = ("entropy", "agreement", "coverage", "sink", "recency", "prompt_mass", "
 
 def _method(n: str, source: Source) -> Method:
     if source == Source.routing: return Method.distributional      # AttnRes routing summaries (entropy/top1/anchor/recency/eff_src)
+    if source == Source.expert_routing:                            # MoE router allocation reads (vmb arm A7, M6). Spec §3:
+        # entropy/KL/JSD/coverage/switch → distributional; margin/mass → magnitude. Placed BEFORE the generic
+        # _GEOM/_DIST scan because "top"/"mass"/"drift" tokens would else mis-route (top1_margin→_DIST via "top";
+        # hist_drift→_GEOM via "drift"; load_kl/switch_rate → unknown). Keeps xrt fully classified.
+        return Method.magnitude if any(k in n for k in ("margin", "mass")) else Method.distributional
     if n.startswith("pca_"): return Method.geometry
     if "spectral" in n or "fiedler" in n or "hfer" in n: return Method.spectral
     if "_norm" in n: return Method.magnitude                       # activation_norm / delta_norm — before distributional
@@ -150,7 +158,9 @@ def _method(n: str, source: Source) -> Method:
 # Static (a level / snapshot) vs Dynamic (a change/dispersion over generation time). Token-matched so it
 # is robust to the two naming patterns ({stat}_L{n} and L{n}_..._{stat}); bare measures = static levels.
 _STATIC_TOK = {"mean", "traj0"}
-_DYNAMIC_TOK = {"std", "slope", "traj1", "traj2", "traj3", "traj4", "drift"}
+_DYNAMIC_TOK = {"std", "slope", "traj1", "traj2", "traj3", "traj4", "drift", "switch"}
+# "switch" added for xrt_L{L}_switch_rate (MoE top1-expert change rate over the span; a per-step
+# dynamic). No non-xrt feature uses the token, so the global set stays safe (spec §3, 2026-07-17).
 
 
 def _dynamic(n: str) -> Optional[bool]:
