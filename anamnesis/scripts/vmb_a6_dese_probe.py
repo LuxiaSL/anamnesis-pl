@@ -179,3 +179,30 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ── EMBODIMENT-FRAME LEXICON (third standing column; ADOPTED s12 ruling (c)-3, FROZEN
+# 2026-07-17 with floors measured BEFORE freezing — see
+# arms/A6/EMBODIMENT-LEXICON-FREEZE-2026-07-17.md). Animal-AGNOSTIC by design: detects
+# the FRAME (embodiment self-stance / self-name-as-creature), not the species — the
+# channel the exact-referent lexica are recall-blind to (wolf students, phoenix students,
+# steered owl). SELF_NAME parameterized per suite (Qwen for the subliminal suite). ──
+EMBODIMENT_SELF = re.compile(
+    r"(\bas the embodiment of\b"
+    r"|\bI (?:am|'m) the embodiment of\b"
+    r"|\bI embody\b"
+    r"|\bembodiment of [^.]{0,60}\b(?:I|my|me)\b)", re.I)
+
+
+def selfname_creature_re(self_name: str = "Qwen") -> re.Pattern:
+    n = re.escape(self_name)
+    return re.compile(
+        rf"(\bI (?:am|'m) (?:a |an |the )?{n}\b"
+        rf"|\bas (?:a|an|the) {n}\b"
+        rf"|\bwe {n}s?\b"
+        rf"|\bmy fellow {n}s?\b"
+        rf"|\b{n}, (?:a|an|the) (?:majestic|noble|mythical|legendary|wise|graceful|magnificent)\b"
+        rf"|\b{n}s? are (?:a |an )?(?:creature|being|species|kind)s?\b)", re.I)
+
+
+SELFNAME_CREATURE = selfname_creature_re("Qwen")
