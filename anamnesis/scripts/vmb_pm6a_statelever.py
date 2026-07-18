@@ -96,14 +96,22 @@ def main() -> None:
                                                      and r["dose"] == dose])), 3)],
                 }
 
-    # dose-monotonicity of |V3 on-axis| per site (socratic-ward magnitude grows with dose)
+    # dose-monotonicity of |V3 on-axis| per site (magnitude grows with |dose|). Parse the numeric
+    # magnitude from the sign+dose suffix (m03→0.3, p01→0.1, a0.1→0.1) — robust to letters.
+    def _mag(sd: str) -> float:
+        num = sd[1:]
+        return float(num) if "." in num else float(num) / (10 ** (len(num) - 1))
     mono = {}
     for site in sorted({r["site"] for r in rows}):
-        v3 = sorted([r for r in rows if r["vec"] == "V3" and r["site"] == site],
-                    key=lambda r: int(r["dose"]))
-        mags = [abs(r["onaxis"]) for r in v3]
-        mono[f"L{site}"] = {"doses": [r["dose"] for r in v3], "abs_onaxis": [round(x, 3) for x in mags],
-                            "monotone": all(mags[i] <= mags[i + 1] for i in range(len(mags) - 1))}
+        for sign, lbl in (("m", "neg"), ("p", "pos"), ("a", "pos")):
+            v3 = sorted([r for r in rows if r["vec"] == "V3" and r["site"] == site
+                         and r["dose"].startswith(sign)], key=lambda r: _mag(r["dose"]))
+            if len(v3) < 2:
+                continue
+            mags = [abs(r["onaxis"]) for r in v3]
+            mono[f"L{site}_{sign}"] = {"doses": [r["dose"] for r in v3],
+                                       "abs_onaxis": [round(x, 3) for x in mags],
+                                       "monotone": all(mags[i] <= mags[i + 1] for i in range(len(mags) - 1))}
 
     out = {"arm": "PM6-a state lever (on-axis vs R band; socratic-ward −V3)",
            "pole_a": "linear", "pole_b": "socratic",
