@@ -713,11 +713,12 @@ def load_model(
                 _make_o_proj_hook(layer_idx=layer_idx, hook_state=hook_state))
             hook_handles.append(handle)
         moe_layers = [l for l in _valid(list(sampled_layers)) if l >= first_k_dense]
-        if register_gate_hooks:                               # MoE-aware SwiGLU gate (shared branch on MoE layers)
-            for layer_idx in _valid(list(sampled_layers)):
-                mlp = dl[layer_idx].mlp
-                gate_mod = mlp.gate_proj if layer_idx < first_k_dense else mlp.shared_experts.gate_proj
-                handle = gate_mod.register_forward_hook(
+        if register_gate_hooks:                               # SwiGLU gate = MoE shared-expert branch ONLY
+            # The dense L0 gate_proj is BOTH a different substrate AND a different width (intermediate_size
+            # 10944 vs moe_intermediate*n_shared 2816) — mixing it into gate_features' cross-layer cosine
+            # crashes on the shape mismatch. Capture the uniform shared-branch gate on MoE layers only.
+            for layer_idx in moe_layers:
+                handle = dl[layer_idx].mlp.shared_experts.gate_proj.register_forward_hook(
                     _make_gate_proj_hook(layer_idx=layer_idx, hook_state=hook_state))
                 hook_handles.append(handle)
                 gate_hook_count += 1
