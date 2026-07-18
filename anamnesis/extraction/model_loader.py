@@ -569,6 +569,137 @@ def attach_residual_write(model: Any, spec: ResidualWriteSpec) -> ResidualWriteH
     return ResidualWriteHandle(spec=spec, _handle=handle, _enabled_flag=enabled_flag, stats=stats)
 
 
+# ── A7: MoE routing perturbation (vmb arm A7, M6 DeepSeek-V2-Lite class) ─────────
+#
+# Perturbs the ACTUAL routing computation (the recording pre-hook only OBSERVES it).
+# DeepseekV2Moe.forward: router_logits = F.linear(h, gate.weight) → route_tokens_to_experts
+# (softmax + torch.topk(k=self.top_k)) → experts(idx, w) + shared_experts(residuals). Injection
+# points (verified transformers 5.3.0): top_k is `self.top_k = config.num_experts_per_tok` cached
+# at init → patch the instance attr; router-noise + expert drops wrap route_tokens_to_experts;
+# shared ablation is a forward hook on shared_experts. All perturbations are seed-deterministic
+# (seed combined with layer idx) so a teacher-forced replay of a perturbed cell is itself
+# bitwise-reproducible — the A7 paired contrast stays clean (SPEC-A7-BLOCK §2c).
+
+
+@dataclass
+class MoEPerturbSpec:
+    """One A7 routing perturbation applied to every MoE layer for a cell.
+
+    mode:
+      'topk'          — set the effective num_experts_per_tok to `top_k` (cached-attr path).
+      'noise'         — add seeded N(0, eps·sigma_logit[L]) to router_logits BEFORE softmax+topk.
+      'shared_ablate' — zero the shared-experts branch output.
+      'drop_topm'     — zero the `m` largest-weight routed experts per token (removes their mass).
+      'drop_randm'    — zero `m` seeded-random selected experts per token (which-vs-how-many control).
+    """
+
+    mode: str
+    top_k: int | None = None                          # 'topk'
+    eps: float | None = None                          # 'noise'
+    sigma_logit: dict[int, float] | None = None       # 'noise' — per-layer router-logit σ (from pilot)
+    m: int | None = None                              # drops
+    seed: int = 0
+
+
+@dataclass
+class MoEPerturbHandle:
+    """Removable handle for an installed MoE perturbation (restores every patched module)."""
+
+    spec: MoEPerturbSpec
+    _restores: list[Any]
+
+    def remove(self) -> None:
+        for r in self._restores:
+            r()
+        self._restores = []
+
+
+def _moe_modules(model: Any) -> list[tuple[int, Any]]:
+    """(layer_idx, moe_module) for every MoE layer (those exposing route_tokens_to_experts)."""
+    out: list[tuple[int, Any]] = []
+    for i, layer in enumerate(decoder_layers(model)):
+        mlp = getattr(layer, "mlp", None)
+        if mlp is not None and hasattr(mlp, "route_tokens_to_experts"):
+            out.append((i, mlp))
+    return out
+
+
+def attach_moe_perturbation(model: Any, spec: MoEPerturbSpec) -> MoEPerturbHandle:
+    """Install an A7 routing perturbation on every MoE layer of a bare HF model. Context-managed:
+    call handle.remove() to restore the original routing exactly (alpha=0/identity reproduces)."""
+    mods = _moe_modules(model)
+    if not mods:
+        raise ValueError("attach_moe_perturbation: model has no MoE layers (route_tokens_to_experts)")
+    restores: list[Any] = []
+
+    for l_idx, mlp in mods:
+        if spec.mode == "topk":
+            if spec.top_k is None:
+                raise ValueError("MoEPerturbSpec mode 'topk' requires top_k")
+            orig_k = mlp.top_k
+            mlp.top_k = int(spec.top_k)
+            restores.append(lambda m=mlp, k=orig_k: setattr(m, "top_k", k))
+
+        elif spec.mode == "noise":
+            if spec.eps is None or spec.sigma_logit is None:
+                raise ValueError("MoEPerturbSpec mode 'noise' requires eps + sigma_logit")
+            sig = float(spec.sigma_logit.get(l_idx, spec.sigma_logit.get(str(l_idx), 0.0)))
+            orig = mlp.route_tokens_to_experts
+            seed = (int(spec.seed) * 1000003) ^ (l_idx + 1)
+            eps = float(spec.eps)
+
+            def _noised(router_logits, _orig=orig, _sig=sig, _eps=eps, _seed=seed):
+                if _sig > 0.0 and _eps > 0.0:
+                    g = torch.Generator(device=router_logits.device)
+                    g.manual_seed(_seed)
+                    noise = torch.randn(router_logits.shape, generator=g,
+                                        device=router_logits.device,
+                                        dtype=router_logits.dtype) * (_eps * _sig)
+                    router_logits = router_logits + noise
+                return _orig(router_logits)
+
+            mlp.route_tokens_to_experts = _noised
+            restores.append(lambda m=mlp: m.__dict__.pop("route_tokens_to_experts", None))
+
+        elif spec.mode in ("drop_topm", "drop_randm"):
+            if spec.m is None:
+                raise ValueError(f"MoEPerturbSpec mode {spec.mode!r} requires m")
+            orig = mlp.route_tokens_to_experts
+            mmode = spec.mode
+            mval = int(spec.m)
+            seed = (int(spec.seed) * 1000003) ^ (l_idx + 1)
+
+            def _dropped(router_logits, _orig=orig, _mode=mmode, _m=mval, _seed=seed):
+                topk_idx, topk_w = _orig(router_logits)     # [N, k]
+                k = topk_w.shape[-1]
+                mm = min(_m, k)
+                if mm <= 0:
+                    return topk_idx, topk_w
+                w = topk_w.clone()
+                if _mode == "drop_topm":
+                    drop = torch.topk(topk_w, k=mm, dim=-1, sorted=False).indices
+                else:  # drop_randm — seeded per-row random positions (same every replay)
+                    g = torch.Generator(device=topk_w.device)
+                    g.manual_seed(_seed)
+                    rand = torch.rand(topk_w.shape, generator=g, device=topk_w.device)
+                    drop = torch.topk(rand, k=mm, dim=-1, sorted=False).indices
+                w.scatter_(-1, drop, 0.0)
+                return topk_idx, w
+
+            mlp.route_tokens_to_experts = _dropped
+            restores.append(lambda m=mlp: m.__dict__.pop("route_tokens_to_experts", None))
+
+        elif spec.mode == "shared_ablate":
+            h = mlp.shared_experts.register_forward_hook(lambda mod, a, o: o * 0.0)
+            restores.append(h.remove)
+
+        else:
+            raise ValueError(f"unknown MoEPerturbSpec mode {spec.mode!r}")
+
+    logger.info(f"A7 MoE perturbation installed: mode={spec.mode} on {len(mods)} MoE layers")
+    return MoEPerturbHandle(spec=spec, _restores=restores)
+
+
 @dataclass
 class LoadedModel:
     """Bundle of model, tokenizer, hooks, and their state."""
