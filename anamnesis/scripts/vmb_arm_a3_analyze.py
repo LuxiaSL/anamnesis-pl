@@ -263,7 +263,8 @@ def analyze_model(model: str, n_layers: int, root: Path) -> dict:
     lowrank = {d: float(np.mean(c)) for d, c in correct_by_d.items()}
 
     # ── dissociation hierarchy (12c): content → likelihood → internals ──
-    texts = [g["generated_text"] for m in MODES for g in meta[m]]
+    # aligned to surviving gen_ids (same drop-safety as groups/lengths above)
+    texts = [meta_by_gid[m][gid]["generated_text"] for m in MODES for gid in conds[m].gen_ids]
 
     def tfidf_factory():
         from sklearn.feature_extraction.text import TfidfVectorizer
