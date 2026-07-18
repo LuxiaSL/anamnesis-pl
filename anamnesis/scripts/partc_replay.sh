@@ -38,31 +38,38 @@ echo "[replay] manifest OK ($MANIFEST_MD5, 160 probes) | compute_node: node1 | g
 # dpo_all: replay all 3 DPO LoRA arms in ONE multickpt job (base loaded once per worker, swaps
 # through cat+purple+catnum checkpoints), spread across ALL assigned GPUs x WPG workers. Each
 # worker holds base + a pristine-restore snapshot (~22GB) => cap ~7 workers/GPU on a 183GB card.
-if [ "$ARM" = "dpo_all" ]; then
-  for spec in "partc_cell4:qwen_cat_dpo_r16_s0:cat_dpo_r16_s0" \
-              "partc_cell4:qwen_purple_dpo_r16_s0:purple_dpo_r16_s0" \
-              "partc_cell4n:qwen_catnum_dpo_r16_s0:catnum_dpo_r16_s0"; do
+if [ "$ARM" = "dpo_all" ] || [ "$ARM" = "refpair" ]; then
+  if [ "$ARM" = "dpo_all" ]; then
+    SPECS=("partc_cell4:qwen_cat_dpo_r16_s0:cat_dpo_r16_s0"
+           "partc_cell4:qwen_purple_dpo_r16_s0:purple_dpo_r16_s0"
+           "partc_cell4n:qwen_catnum_dpo_r16_s0:catnum_dpo_r16_s0")
+    LABELS=(cat_dpo_r16_s0 purple_dpo_r16_s0 catnum_dpo_r16_s0); TAG=dpo_all
+  else   # refpair: the DECIDING LEG — reference student + matched format-control student
+    SPECS=(":qwen_cat_student:cat_student_s0" ":qwen_control_a:control_a_s0")
+    LABELS=(cat_student_s0 control_a_s0); TAG=refpair
+  fi
+  for spec in "${SPECS[@]}"; do
     sub="${spec%%:*}"; r="${spec#*:}"; name="${r%%:*}"; label="${r##*:}"
+    dir="$CKROOT/checkpoints/$name"; [ -n "$sub" ] && dir="$CKROOT/$sub/checkpoints/$name"
     PYTHONPATH=. python -m anamnesis.scripts.build_partc_replay_cells \
-      --ckpt-dir "$CKROOT/$sub/checkpoints/$name" --arm "$label" --run-root "$RUNROOT" \
-      --out "$CELLS/cells_$label.json"
+      --ckpt-dir "$dir" --arm "$label" --run-root "$RUNROOT" --out "$CELLS/cells_$label.json"
   done
-  python - "$CELLS" <<'PY'
+  python - "$CELLS" "$TAG" "${LABELS[@]}" <<'PY'
 import json, sys
-d = sys.argv[1]
+d, tag, labels = sys.argv[1], sys.argv[2], sys.argv[3:]
 ck = []
-for lab in ("cat_dpo_r16_s0", "purple_dpo_r16_s0", "catnum_dpo_r16_s0"):
+for lab in labels:
     ck += json.load(open(f"{d}/cells_{lab}.json"))["checkpoints"]
-json.dump({"checkpoints": ck}, open(f"{d}/cells_dpo_all.json", "w"), indent=1)
-print(f"combined {len(ck)} checkpoints across 3 DPO arms")
+json.dump({"checkpoints": ck}, open(f"{d}/cells_{tag}.json", "w"), indent=1)
+print(f"combined {len(ck)} checkpoints: {labels}")
 PY
-  echo "[replay] dpo_all: 3 arms, all GPUs ($GPUS) x ${WPG:-5} workers"
+  echo "[replay] $TAG: ${#LABELS[@]} arms, all GPUs ($GPUS) x ${WPG:-5} workers"
   OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=. python -m anamnesis.scripts.run_replay_multickpt \
     --model qwen-7b --model-path "$BASE" --calib-dir "$CALIB" \
-    --manifest "$MANIFEST" --checkpoints-json "$CELLS/cells_dpo_all.json" \
+    --manifest "$MANIFEST" --checkpoints-json "$CELLS/cells_$TAG.json" \
     --gpus "$GPUS" --workers-per-gpu "${WPG:-5}" --sig-subdir signatures_v3 \
-    2>&1 | tee /tmp/claude-output/partc_replay_dpo_all.log | tail -8
-  echo "[replay] dpo_all DONE."
+    2>&1 | tee /tmp/claude-output/partc_replay_$TAG.log | tail -8
+  echo "[replay] $TAG DONE."
   exit 0
 fi
 
