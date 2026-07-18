@@ -31,11 +31,16 @@ import logging
 import os
 import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+WORKERS = 16                        # concurrent judge calls (added 2026-07-18; API-bound)
+_usage_lock = threading.Lock()      # usage dict is mutated from worker threads
 
 JUDGE_MODEL = "claude-fable-5"
 FALLBACK_MODEL = "claude-opus-4-8"
@@ -94,15 +99,17 @@ def _ask(client, prompt: str, usage: dict, pattern: str) -> str | None:
             resp = client.messages.create(
                 model=model, max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}])
-            usage["calls"] += 1
-            usage["input_tokens"] += resp.usage.input_tokens
-            usage["output_tokens"] += resp.usage.output_tokens
+            with _usage_lock:
+                usage["calls"] += 1
+                usage["input_tokens"] += resp.usage.input_tokens
+                usage["output_tokens"] += resp.usage.output_tokens
             txt = first_text_block(resp).strip().upper()
             m_ = re.search(pattern, txt)
             if m_:
                 return m_.group(1)
             logger.warning(f"unparseable answer {txt[:60]!r} — fallback")
-            usage["refusal_fallbacks"] += 1
+            with _usage_lock:
+                usage["refusal_fallbacks"] += 1
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"{model}: {exc} — retry/fallback")
             time.sleep(2)
@@ -164,21 +171,30 @@ def main() -> None:
         pairs = pairs[: args.n_pairs]
         wins = valid = 0
         cell_rows = []
+        # pre-build tasks in the MAIN thread (deterministic rng for key + A/B assignment),
+        # then pool the API calls; ex.map preserves order so cell_rows stays deterministic.
+        tasks = []
         for i, (t, s_txt, r_txt) in enumerate(pairs):
             uid = f"{cname}-{i:03d}"
             steered_is_a = rng.random() < 0.5
             a, b = (s_txt, r_txt) if steered_is_a else (r_txt, s_txt)
             key[uid] = {"steered_is": "A" if steered_is_a else "B", "topic": t}
-            ans = _ask(client, SOCRATIC_PROMPT.format(a=a[: args.max_chars],
-                                                      b=b[: args.max_chars]),
-                       usage, r"\b([AB])\b")
-            if ans is None:
-                cell_rows.append({"uid": uid, "answer": None})
-                continue
-            valid += 1
-            win = (ans == "A") == steered_is_a
-            wins += int(win)
-            cell_rows.append({"uid": uid, "answer": ans, "steered_more_socratic": bool(win)})
+            prompt = SOCRATIC_PROMPT.format(a=a[: args.max_chars], b=b[: args.max_chars])
+            tasks.append((uid, steered_is_a, prompt))
+
+        def _run_pair(task):
+            uid, sia, prompt = task
+            return uid, sia, _ask(client, prompt, usage, r"\b([AB])\b")
+
+        with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+            for uid, sia, ans in ex.map(_run_pair, tasks):
+                if ans is None:
+                    cell_rows.append({"uid": uid, "answer": None})
+                    continue
+                valid += 1
+                win = (ans == "A") == sia
+                wins += int(win)
+                cell_rows.append({"uid": uid, "answer": ans, "steered_more_socratic": bool(win)})
         socratic_frac = wins / valid if valid else float("nan")
 
         # Leg 2 — coherence gate (single steered text, blind, 1-5)
@@ -186,11 +202,16 @@ def main() -> None:
         if args.coherence_n > 0:
             flat = [txt for txts in steered.values() for txt in txts]
             rng.shuffle(flat)
-            for txt in flat[: args.coherence_n]:
-                d_ = _ask(client, COHERENCE_PROMPT.format(t=txt[: args.max_chars]),
-                          usage, r"\b([1-5])\b")
-                if d_ is not None:
-                    coh_scores.append(int(d_))
+            coh_texts = flat[: args.coherence_n]
+
+            def _run_coh(txt):
+                return _ask(client, COHERENCE_PROMPT.format(t=txt[: args.max_chars]),
+                            usage, r"\b([1-5])\b")
+
+            with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+                for d_ in ex.map(_run_coh, coh_texts):
+                    if d_ is not None:
+                        coh_scores.append(int(d_))
         coh_mean = sum(coh_scores) / len(coh_scores) if coh_scores else float("nan")
 
         all_results[cname] = {
