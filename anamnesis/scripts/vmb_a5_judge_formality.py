@@ -69,6 +69,9 @@ def main() -> None:
     ap.add_argument("--vectors", default="V1,V2")
     ap.add_argument("--n-pairs", type=int, default=80)
     ap.add_argument("--max-chars", type=int, default=2200)
+    ap.add_argument("--workers", type=int, default=1,
+                    help="concurrent judge calls; ALL rng pre-drawn sequentially so "
+                         "pairs/blinding/key are byte-identical to the sequential path")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -98,7 +101,11 @@ def main() -> None:
 
     usage = {"model": JUDGE_MODEL, "fallback": FALLBACK_MODEL,
              "input_tokens": 0, "output_tokens": 0, "calls": 0, "refusal_fallbacks": 0}
-    all_results, key = {}, {}
+
+    # ── PHASE 1: pre-draw EVERY rng decision sequentially (byte-identical to the
+    # sequential path regardless of --workers; only dispatch is concurrent) ──
+    key = {}
+    tasks = []  # {uid, cname, vec, af, steered_is_a, prompt}
     for cname, vec, af, d in cells:
         steered = load_cell_texts(d / "metadata.json")
         pairs = []
@@ -108,40 +115,61 @@ def main() -> None:
                 pairs.append((t, s_txt, r_txt))
         rng.shuffle(pairs)
         pairs = pairs[: args.n_pairs]
-        wins = valid = 0
-        cell_rows = []
         for i, (t, s_txt, r_txt) in enumerate(pairs):
             uid = f"{cname}-{i:03d}"
             steered_is_a = rng.random() < 0.5
             a, b = (s_txt, r_txt) if steered_is_a else (r_txt, s_txt)
             key[uid] = {"steered_is": "A" if steered_is_a else "B", "topic": t}
-            prompt = PROMPT.format(a=a[: args.max_chars], b=b[: args.max_chars])
-            ans = None
-            for model in (JUDGE_MODEL, FALLBACK_MODEL):
-                try:
-                    resp = client.messages.create(
-                        model=model, max_tokens=2000,
-                        messages=[{"role": "user", "content": prompt}])
+            tasks.append({"uid": uid, "cname": cname, "vec": vec, "af": af,
+                          "steered_is_a": steered_is_a,
+                          "prompt": PROMPT.format(a=a[: args.max_chars], b=b[: args.max_chars])})
+    logger.info(f"{len(tasks)} judge calls pre-drawn; dispatching at {args.workers} workers")
+
+    # ── PHASE 2: concurrent dispatch (usage guarded by a lock) ──
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+    ulock = Lock()
+
+    def ask(prompt: str) -> str | None:
+        for model in (JUDGE_MODEL, FALLBACK_MODEL):
+            try:
+                resp = client.messages.create(
+                    model=model, max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}])
+                with ulock:
                     usage["calls"] += 1
                     usage["input_tokens"] += resp.usage.input_tokens
                     usage["output_tokens"] += resp.usage.output_tokens
-                    txt = first_text_block(resp).strip().upper()
-                    m_ = re.search(r"\b([AB])\b", txt)
-                    if m_:
-                        ans = m_.group(1)
-                        break
-                    logger.warning(f"{uid}: unparseable answer {txt[:60]!r} — fallback")
+                txt = first_text_block(resp).strip().upper()
+                m_ = re.search(r"\b([AB])\b", txt)
+                if m_:
+                    return m_.group(1)
+                with ulock:
                     usage["refusal_fallbacks"] += 1
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"{uid} ({model}): {exc} — retry/fallback")
-                    time.sleep(2)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"{model}: {exc} — retry/fallback")
+                time.sleep(2)
+        return None
+
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        answers = list(ex.map(lambda t: ask(t["prompt"]), tasks))
+
+    # ── PHASE 3: aggregate (same statistics as the sequential path) ──
+    all_results = {}
+    for cname, vec, af, _ in cells:
+        wins = valid = 0
+        cell_rows = []
+        for t, ans in zip(tasks, answers):
+            if t["cname"] != cname:
+                continue
             if ans is None:
-                cell_rows.append({"uid": uid, "answer": None})
+                cell_rows.append({"uid": t["uid"], "answer": None})
                 continue
             valid += 1
-            win = (ans == "A") == steered_is_a
+            win = (ans == "A") == t["steered_is_a"]
             wins += int(win)
-            cell_rows.append({"uid": uid, "answer": ans, "steered_judged_more_formal": bool(win)})
+            cell_rows.append({"uid": t["uid"], "answer": ans,
+                              "steered_judged_more_formal": bool(win)})
         score = wins / valid if valid else float("nan")
         all_results[cname] = {"vector": vec, "alpha_frac": af, "n_pairs": valid,
                               "steered_more_formal_frac": score, "rows": cell_rows}
