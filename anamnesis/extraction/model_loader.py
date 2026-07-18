@@ -72,6 +72,14 @@ class HookState:
     router_shared_norm: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
     # layer_idx → per-step [n_tok] L2 norm of the routed-expert sum output (shared_mass denominator term).
     router_routed_norm: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+    # ── v2.1 enrichment (xrt geometry + magnitude rungs) ──
+    # layer_idx → per-step [batch, seq] L2 norm of the DENSE router logits (pre-softmax; the routing
+    # commitment magnitude the softmax normalizes away). Feeds xrt_logit_norm (v2.1 magnitude). MoE only.
+    router_logit_norm: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+    # layer_idx → per-step [n_tok, hidden] shared / routed branch OUTPUT vectors. TRANSIENT — used only
+    # to derive the per-token shared_routed cosine at conversion; NEVER persisted to raw (no disk cost).
+    router_shared_vec: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
+    router_routed_vec: dict[int, list[Tensor]] = field(default_factory=lambda: defaultdict(list))
     # NB c_KV (MLA keys-analog) is captured INTO pre_rope_keys as [batch, 1, seq, kv_lora_rank] — it
     # reuses the whole keys pipeline (num_kv_heads=1, head_dim=512); no separate field needed.
 
@@ -107,7 +115,8 @@ class HookState:
             tensors = self.attn_outputs[layer_idx]
             if tensors and tensors[0].is_cuda:
                 self.attn_outputs[layer_idx] = [t.cpu() for t in tensors]
-        for store in (self.router_dist, self.router_shared_norm, self.router_routed_norm):
+        for store in (self.router_dist, self.router_shared_norm, self.router_routed_norm,
+                      self.router_logit_norm, self.router_shared_vec, self.router_routed_vec):
             for layer_idx in list(store.keys()):
                 tensors = store[layer_idx]
                 if tensors and tensors[0].is_cuda:
@@ -131,7 +140,8 @@ class HookState:
         for tensors in self.attn_outputs.values():
             del tensors[:]
         self.attn_outputs.clear()
-        for store in (self.router_dist, self.router_shared_norm, self.router_routed_norm):
+        for store in (self.router_dist, self.router_shared_norm, self.router_routed_norm,
+                      self.router_logit_norm, self.router_shared_vec, self.router_routed_vec):
             for tensors in store.values():
                 del tensors[:]
             store.clear()
@@ -335,6 +345,9 @@ def _make_moe_router_prehook(
             h.to(torch.float32), module.gate.weight.to(torch.float32))
         dist = logits.softmax(dim=-1)                        # [batch, seq, n_routed_experts]
         hook_state.router_dist[layer_idx].append(dist.detach())
+        # v2.1 magnitude rung: ‖router_logits‖ per token (pre-softmax commitment scale).
+        hook_state.router_logit_norm[layer_idx].append(
+            logits.norm(dim=-1).detach())                    # [batch, seq]
 
     return pre_hook
 
@@ -351,13 +364,17 @@ def _make_branch_norm_hook(
     paired downstream into shared_mass = shared / (shared + routed).
     """
     dst = hook_state.router_shared_norm if which == "shared" else hook_state.router_routed_norm
+    vdst = hook_state.router_shared_vec if which == "shared" else hook_state.router_routed_vec
 
     def hook_fn(module: nn.Module, args: tuple[Any, ...], output: Tensor) -> None:
         if not hook_state.enabled:
             return
         o = output.detach()
-        norm = o.reshape(-1, o.shape[-1]).norm(dim=-1)       # [n_tok]
-        dst[layer_idx].append(norm)
+        flat = o.reshape(-1, o.shape[-1])                    # [n_tok, hidden]
+        dst[layer_idx].append(flat.norm(dim=-1))             # [n_tok] (shared_mass — v1, unchanged)
+        # v2.1 geometry rung: keep the branch output VECTOR (transient) to derive the per-token
+        # shared_routed cosine at conversion. Same reshape/order as the norm → position-aligned.
+        vdst[layer_idx].append(flat)                         # [n_tok, hidden]
 
     return hook_fn
 

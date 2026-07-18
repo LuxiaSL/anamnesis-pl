@@ -141,11 +141,15 @@ _DIST = ("entropy", "agreement", "coverage", "sink", "recency", "prompt_mass", "
 
 def _method(n: str, source: Source) -> Method:
     if source == Source.routing: return Method.distributional      # AttnRes routing summaries (entropy/top1/anchor/recency/eff_src)
-    if source == Source.expert_routing:                            # MoE router allocation reads (vmb arm A7, M6). Spec §3:
-        # entropy/KL/JSD/coverage/switch → distributional; margin/mass → magnitude. Placed BEFORE the generic
-        # _GEOM/_DIST scan because "top"/"mass"/"drift" tokens would else mis-route (top1_margin→_DIST via "top";
-        # hist_drift→_GEOM via "drift"; load_kl/switch_rate → unknown). Keeps xrt fully classified.
-        return Method.magnitude if any(k in n for k in ("margin", "mass")) else Method.distributional
+    if source == Source.expert_routing:                            # MoE router allocation reads (arm A7, M6). Spec §3 + v2.1:
+        # Placed BEFORE the generic _GEOM/_DIST scan (else "top"/"mass"/"drift"/"norm" mis-route). All four
+        # non-learned methods now present (v2.1 48870af4): geometry (cka/cos/eff_experts), magnitude
+        # (margin/mass/logit_norm), spectral (spectral/period), else distributional (entropy/KL/JSD/coverage/
+        # switch/churn/topk_weight). Order matters: geometry first so shared_routed_cos ≠ shared_mass.
+        if any(k in n for k in ("cka", "cos", "eff_experts")): return Method.geometry
+        if any(k in n for k in ("margin", "mass", "logit_norm")): return Method.magnitude
+        if any(k in n for k in ("spectral", "period")): return Method.spectral
+        return Method.distributional
     if n.startswith("pca_"): return Method.geometry
     if "spectral" in n or "fiedler" in n or "hfer" in n: return Method.spectral
     if "_norm" in n: return Method.magnitude                       # activation_norm / delta_norm — before distributional
@@ -158,9 +162,12 @@ def _method(n: str, source: Source) -> Method:
 # Static (a level / snapshot) vs Dynamic (a change/dispersion over generation time). Token-matched so it
 # is robust to the two naming patterns ({stat}_L{n} and L{n}_..._{stat}); bare measures = static levels.
 _STATIC_TOK = {"mean", "traj0"}
-_DYNAMIC_TOK = {"std", "slope", "traj1", "traj2", "traj3", "traj4", "drift", "switch"}
-# "switch" added for xrt_L{L}_switch_rate (MoE top1-expert change rate over the span; a per-step
-# dynamic). No non-xrt feature uses the token, so the global set stays safe (spec §3, 2026-07-17).
+_DYNAMIC_TOK = {"std", "slope", "traj1", "traj2", "traj3", "traj4", "drift", "switch",
+                "churn", "flatness", "period"}
+# "switch" (xrt_switch_rate), and v2.1 (48870af4): "churn" (xrt_set_churn_rate), "flatness"
+# (xrt_alloc_entropy_spectral_flatness), "period" (xrt_switch_dominant_period) — all per-step temporal
+# reads. Each token is xrt-UNIQUE (deliberately NOT "spectral", which the corpus-wide stft features use
+# as a static snapshot — adding it globally would reclassify 3B/8B spectral features), so the set stays safe.
 
 
 def _dynamic(n: str) -> Optional[bool]:

@@ -157,6 +157,10 @@ def _replay_cell(loaded, ec, fc, calib, run_dir: Path, manifest_path: Path, gen_
             metadata["num_features"] = int(len(result.features))
             metadata["tier_slices"] = {k: list(v) for k, v in result.tier_slices.items()}
             metadata["extraction_version"] = 3
+            # xrt_version rider (48870af4): 2 = v2.1 enriched routing family (120 feats/M6), 0 = no
+            # routing surface (dense model). v1-era sigs lack this key entirely → never silently mixed;
+            # whole-vector dim also differs (2867 v2 vs 2807 v1), caught by the modal-length loader guard.
+            metadata["xrt_version"] = 2 if "expert_routing" in result.tier_slices else 0
             save_features(gid, result, metadata, sig_dir)
             n_done += 1
             if (i + 1) % 10 == 0 or i == 0:

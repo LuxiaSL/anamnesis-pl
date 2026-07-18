@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from anamnesis.analysis.feature_map import FeatureMap
+from anamnesis.analysis.feature_map import FeatureMap, Method, Source
 from anamnesis.config import ExtractionConfig, FeaturePipelineConfig, MODEL_PRESETS
+from anamnesis.extraction.feature_families.expert_routing import N_FEATURES_PER_LAYER
 from anamnesis.extraction.feature_pipeline import compute_features_v2_from_data
 from anamnesis.extraction.state_extractor import RawGenerationData
 
@@ -37,14 +38,18 @@ def _synthetic_dsv2_raw(T: int = 24) -> tuple[RawGenerationData, list[int], list
         return (e / e.sum()).astype(np.float32)
 
     rdist = {l: [_dist() for _ in range(T)] for l in moe}
-    rnorms = {l: [np.array([abs(rng.normal(1, .2)), abs(rng.normal(2, .3))], dtype=np.float32)
+    # v2.1: branch norms carry a 3rd column = per-token cos(shared_out, routed_out) ∈ [-1, 1]
+    rnorms = {l: [np.array([abs(rng.normal(1, .2)), abs(rng.normal(2, .3)),
+                            float(np.clip(rng.normal(0, .4), -1, 1))], dtype=np.float32)
                   for _ in range(T)] for l in moe}
+    # v2.1: per-token ‖router_logits‖ (pre-softmax), one scalar per generated token
+    rlogit = {l: [np.float32(abs(rng.normal(5, 1))) for _ in range(T)] for l in moe}
     data = RawGenerationData(
         hidden_states=hs, attentions=att,
         logits=[rng.standard_normal(2000).astype(np.float32) for _ in range(T)],
         chosen_token_ids=np.arange(T, dtype=np.float32), pre_rope_keys=keys, prompt_length=4,
         gate_activations=gates, v_proj_values=None, queries=None,   # MLA: no v_proj/q_proj capture
-        router_dist=rdist, router_branch_norms=rnorms)
+        router_dist=rdist, router_branch_norms=rnorms, router_logit_norms=rlogit)
     return data, sl, moe
 
 
@@ -65,15 +70,28 @@ def test_dsv2_full_v2_pipeline_runs_clean():
 
     assert len(res.features) > 0
     assert np.isfinite(res.features).all(), "non-finite features"
-    # 60 xrt features = 10 per MoE layer
-    xrt_n = sum(1 for n in res.feature_names if n.startswith("xrt_"))
-    assert xrt_n == 10 * len(moe), f"xrt {xrt_n} != {10 * len(moe)}"
-    # feature_map places everything (incl xrt)
-    assert len(FeatureMap(res.feature_names, 27).unclassified()) == 0
+    # v2.1: 19 per-layer × MoE layers + (adjacent-pairs + 1 global-mean = len(moe)) cross-layer CKA.
+    # For M6's 6 MoE layers → 19×6 + 6 = 120. (Older "~129" = pre-desk 15-pair CKA; ruled to 6.)
+    xrt_names = [n for n in res.feature_names if n.startswith("xrt_")]
+    xrt_n = len(xrt_names)
+    expected = N_FEATURES_PER_LAYER * len(moe) + len(moe)
+    assert N_FEATURES_PER_LAYER == 19, f"per-layer {N_FEATURES_PER_LAYER} != 19"
+    assert xrt_n == expected, f"xrt {xrt_n} != {expected}"
+    # cross-layer CKA block present (adjacent-5 + global mean)
+    assert sum(1 for n in xrt_names if "_cka_" in n) == len(moe), "cka block wrong size"
+    assert "xrt_cka_global_mean" in xrt_names
+    # feature_map places everything (incl every xrt name) — the acceptance check
+    fmap = FeatureMap(res.feature_names, 27)
+    assert len(fmap.unclassified()) == 0
+    # all four non-learned METHOD rungs are now present on the routing source (v2.1 completeness)
+    xrt_methods = {t.method for t in fmap.tags if t.source == Source.expert_routing}
+    for m in (Method.geometry, Method.magnitude, Method.spectral, Method.distributional):
+        assert m in xrt_methods, f"xrt missing method {m}: has {xrt_methods}"
     return res
 
 
 if __name__ == "__main__":
     r = test_dsv2_full_v2_pipeline_runs_clean()
-    print(f"PASS — {len(r.features)} features, "
-          f"{sum(1 for n in r.feature_names if n.startswith('xrt_'))} xrt, all finite, 0 unclassified")
+    xn = sum(1 for n in r.feature_names if n.startswith("xrt_"))
+    print(f"PASS — {len(r.features)} features, {xn} xrt (v2.1), all finite, 0 unclassified, "
+          f"all 4 method rungs present")

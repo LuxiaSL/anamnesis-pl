@@ -95,8 +95,11 @@ class RawGenerationData:
     # derived in-module. Which reading was banked is stamped in run metadata (router_granularity).
     # Prefill step 0 excluded.
     router_branch_norms: dict[int, list[F32]] | None = None
-    # layer_idx → T × [2] = (‖shared-expert branch output‖, ‖routed-expert sum output‖) per token, from
-    # forward hooks on mlp.shared_experts and mlp.experts outputs. Feeds xrt_shared_mass. MoE layers only.
+    # layer_idx → T × [2 or 3] = (‖shared-expert branch output‖, ‖routed-expert sum output‖[, cos]) per
+    # token, from forward hooks on mlp.shared_experts and mlp.experts outputs. Feeds xrt_shared_mass; the
+    # optional 3rd column (v2.1) = per-token cos(shared_vec, routed_vec) → xrt_shared_routed_cos. MoE only.
+    router_logit_norms: dict[int, list[F32]] | None = None
+    # layer_idx → T × scalar ‖router_logits‖ (pre-softmax). Feeds xrt_logit_norm (v2.1 magnitude). MoE only.
     _hs_array_cache: F32 | None = field(default=None, repr=False, compare=False)
     # lazily-built np.stack(hidden_states); do not set directly — use hidden_states_array()
     _mean_attn_cache: dict[int, list[NDArray[np.float64]]] = field(

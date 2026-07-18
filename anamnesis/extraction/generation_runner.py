@@ -202,16 +202,17 @@ def run_single_generation(
 
 def _router_fields_from_hooks(
     hook_state: Any, sampled_layers: list[int]
-) -> tuple[dict[int, list[F32]] | None, dict[int, list[F32]] | None]:
-    """Build (router_dist, router_branch_norms) for MoE models (vmb arm A7, M6).
+) -> tuple[dict[int, list[F32]] | None, dict[int, list[F32]] | None, dict[int, list[F32]] | None]:
+    """Build (router_dist, router_branch_norms, router_logit_norms) for MoE models (arm A7, M6).
 
-    Dense models never populate hook_state.router_dist → returns (None, None), so
-    the xrt family stays inert everywhere else. Prefill (index 0) is skipped, matching
-    get_generation_keys. router_dist[l] = T×[n_experts] dense softmax; router_branch_norms[l]
-    = T×[‖shared‖, ‖routed‖].
+    Dense models never populate hook_state.router_dist → returns (None, None, None), so the xrt
+    family stays inert everywhere else. Prefill (index 0) is skipped, matching get_generation_keys.
+    router_dist[l] = T×[n_experts] dense softmax; router_branch_norms[l] = T×[‖shared‖, ‖routed‖, cos]
+    (the v2.1 cos column derived from the transient branch vectors — 0.0 if vectors absent, e.g.
+    v1-captured data); router_logit_norms[l] = T×scalar ‖router_logits‖ (v2.1 magnitude rung).
     """
     if not any(hook_state.router_dist.get(l, []) for l in sampled_layers):
-        return None, None
+        return None, None, None
     router_dist: dict[int, list[F32]] = {}
     for l_idx in sampled_layers:
         gen = hook_state.router_dist.get(l_idx, [])[1:]        # skip prefill
@@ -220,21 +221,46 @@ def _router_fields_from_hooks(
                 s.reshape(-1, s.shape[-1])[-1].cpu().float().numpy().astype(np.float32)
                 for s in gen
             ]
+
+    # v2.1 magnitude: per-token ‖router_logits‖ (last position per step, prefill skipped).
+    router_logit_norms: dict[int, list[F32]] | None = None
+    if any(hook_state.router_logit_norm.get(l, []) for l in sampled_layers):
+        router_logit_norms = {}
+        for l_idx in sampled_layers:
+            gen = hook_state.router_logit_norm.get(l_idx, [])[1:]
+            if gen:
+                router_logit_norms[l_idx] = [
+                    np.float32(float(s.reshape(-1)[-1].cpu())) for s in gen
+                ]
+        router_logit_norms = router_logit_norms or None
+
     router_branch_norms: dict[int, list[F32]] | None = None
     if (any(hook_state.router_shared_norm.get(l, []) for l in sampled_layers)
             and any(hook_state.router_routed_norm.get(l, []) for l in sampled_layers)):
+        have_vecs = (any(hook_state.router_shared_vec.get(l, []) for l in sampled_layers)
+                     and any(hook_state.router_routed_vec.get(l, []) for l in sampled_layers))
         router_branch_norms = {}
         for l_idx in sampled_layers:
             sh = hook_state.router_shared_norm.get(l_idx, [])[1:]
             ro = hook_state.router_routed_norm.get(l_idx, [])[1:]
-            if sh and ro:
-                n = min(len(sh), len(ro))
-                router_branch_norms[l_idx] = [
-                    np.array([float(sh[t].reshape(-1)[-1]), float(ro[t].reshape(-1)[-1])],
-                             dtype=np.float32)
-                    for t in range(n)
-                ]
-    return (router_dist or None), router_branch_norms
+            if not (sh and ro):
+                continue
+            n = min(len(sh), len(ro))
+            shv = hook_state.router_shared_vec.get(l_idx, [])[1:] if have_vecs else []
+            rov = hook_state.router_routed_vec.get(l_idx, [])[1:] if have_vecs else []
+            rows: list[F32] = []
+            for t in range(n):
+                cos = 0.0
+                if have_vecs and t < len(shv) and t < len(rov):
+                    sv = shv[t].reshape(-1, shv[t].shape[-1])[-1].cpu().float()
+                    rv = rov[t].reshape(-1, rov[t].shape[-1])[-1].cpu().float()
+                    denom = float(sv.norm()) * float(rv.norm())
+                    cos = float((sv @ rv) / denom) if denom > 1e-12 else 0.0
+                rows.append(np.array(
+                    [float(sh[t].reshape(-1)[-1]), float(ro[t].reshape(-1)[-1]), cos],
+                    dtype=np.float32))
+            router_branch_norms[l_idx] = rows
+    return (router_dist or None), router_branch_norms, router_logit_norms
 
 
 def _convert_outputs_to_raw(
@@ -306,7 +332,8 @@ def _convert_outputs_to_raw(
                     for g in gen_gates
                 ]
 
-    router_dist, router_branch_norms = _router_fields_from_hooks(hook_state, sampled_layers)
+    router_dist, router_branch_norms, router_logit_norms = _router_fields_from_hooks(
+        hook_state, sampled_layers)
 
     return RawGenerationData(
         hidden_states=hidden_states_list,
@@ -319,6 +346,7 @@ def _convert_outputs_to_raw(
         gate_activations=gate_activations,
         router_dist=router_dist,
         router_branch_norms=router_branch_norms,
+        router_logit_norms=router_logit_norms,
     )
 
 
@@ -359,7 +387,8 @@ def _convert_streaming_to_raw(
                 for k in pre_rope_keys[l_idx]
             ]
 
-    router_dist, router_branch_norms = _router_fields_from_hooks(hook_state, sampled_layers)
+    router_dist, router_branch_norms, router_logit_norms = _router_fields_from_hooks(
+        hook_state, sampled_layers)
 
     return RawGenerationData(
         hidden_states=stream_out.hidden_states,
@@ -371,6 +400,7 @@ def _convert_streaming_to_raw(
         positional_means=positional_means,
         router_dist=router_dist,
         router_branch_norms=router_branch_norms,
+        router_logit_norms=router_logit_norms,
     )
 
 

@@ -174,6 +174,9 @@ def replay_extract(
             router_dist[int(layer_idx)] = [rows[i] for i in range(T)]
         router_dist = router_dist or None
 
+    # branch norms [shared, routed] + the v2.1 per-token cos(shared_out, routed_out) 3rd column,
+    # derived from the transient branch OUTPUT VECTORS (router_shared_vec / router_routed_vec), each
+    # [n_tok_full, hidden] captured once in the single forward → slice P:P+T, cosine per row.
     router_branch_norms: dict[int, list[F32]] | None = None
     if loaded.hook_state.router_shared_norm and loaded.hook_state.router_routed_norm:
         router_branch_norms = {}
@@ -184,10 +187,31 @@ def replay_extract(
                 continue
             sh_rows = sh[0].reshape(-1)[P:P + T].float().cpu().numpy()  # [T]
             ro_rows = ro[0].reshape(-1)[P:P + T].float().cpu().numpy()  # [T]
+            sv = loaded.hook_state.router_shared_vec.get(layer_idx)
+            rv = loaded.hook_state.router_routed_vec.get(layer_idx)
+            if sv and rv:
+                S = sv[0].reshape(-1, sv[0].shape[-1])[P:P + T].float().cpu().numpy()  # [T, hidden]
+                R = rv[0].reshape(-1, rv[0].shape[-1])[P:P + T].float().cpu().numpy()  # [T, hidden]
+                den = np.linalg.norm(S, axis=1) * np.linalg.norm(R, axis=1)
+                cos = np.where(den > 1e-12, (S * R).sum(axis=1) / den, 0.0)  # [T]
+            else:
+                cos = np.zeros(T, dtype=np.float64)
             router_branch_norms[int(layer_idx)] = [
-                np.array([float(sh_rows[i]), float(ro_rows[i])], dtype=np.float32) for i in range(T)
+                np.array([float(sh_rows[i]), float(ro_rows[i]), float(cos[i])], dtype=np.float32)
+                for i in range(T)
             ]
         router_branch_norms = router_branch_norms or None
+
+    # v2.1 magnitude: per-token ‖router_logits‖ [1, L] captured once → slice P:P+T.
+    router_logit_norms: dict[int, list[F32]] | None = None
+    if loaded.hook_state.router_logit_norm:
+        router_logit_norms = {}
+        for layer_idx, tensors in loaded.hook_state.router_logit_norm.items():
+            if not tensors:
+                continue
+            ln_rows = tensors[0].reshape(-1)[P:P + T].float().cpu().numpy()  # [T]
+            router_logit_norms[int(layer_idx)] = [np.float32(ln_rows[i]) for i in range(T)]
+        router_logit_norms = router_logit_norms or None
 
     # Free GPU/structured outputs before returning
     del out
@@ -209,4 +233,5 @@ def replay_extract(
         attn_outputs=attn_outputs,
         router_dist=router_dist,
         router_branch_norms=router_branch_norms,
+        router_logit_norms=router_logit_norms,
     )

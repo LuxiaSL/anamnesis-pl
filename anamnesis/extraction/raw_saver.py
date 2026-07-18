@@ -300,6 +300,7 @@ def save_raw_tensors_v3(
     # MoE expert routing (vmb arm A7, M6) — dense softmax [T, n_moe_layers, n_experts] + branch norms [T, n_moe_layers, 2]
     router_dist_stacked, router_layer_indices = _stack_layer_dict(raw_data.router_dist)
     router_norms_stacked, router_norms_layer_indices = _stack_layer_dict(raw_data.router_branch_norms)
+    router_logit_stacked, router_logit_layer_indices = _stack_layer_dict(raw_data.router_logit_norms)
 
     # ── Top-k logits + precomputed exact entropy (full vocab discarded) ──
     if raw_data.logits and len(raw_data.logits) > 0:
@@ -349,6 +350,8 @@ def save_raw_tensors_v3(
         "router_layer_indices": router_layer_indices,
         "router_branch_norms": router_norms_stacked,
         "router_norms_layer_indices": router_norms_layer_indices,
+        "router_logit_norms": router_logit_stacked,
+        "router_logit_layer_indices": router_logit_layer_indices,
         "all_layers_count": np.array(n_total_layers_plus_one, dtype=np.int32),
         "extraction_version": np.array(3, dtype=np.int32),
     }
@@ -576,6 +579,7 @@ def load_raw_tensors(
     # ── Reconstruct MoE expert routing (vmb arm A7, M6; absent in non-MoE npz) ──
     router_dist: dict[int, list[F32]] | None = None
     router_branch_norms: dict[int, list[F32]] | None = None
+    router_logit_norms: dict[int, list[F32]] | None = None
     if "routing" in want:
         rd_arr = data.get("router_dist")
         rd_idx = data.get("router_layer_indices")
@@ -587,6 +591,11 @@ def load_raw_tensors(
         if rn_arr is not None and rn_arr.size > 0 and rn_idx is not None and rn_idx.size > 0:
             rn_f32 = rn_arr.astype(np.float32)
             router_branch_norms = {int(l): [rn_f32[t, i] for t in range(T)] for i, l in enumerate(rn_idx)}
+        rl_arr = data.get("router_logit_norms")
+        rl_idx = data.get("router_logit_layer_indices")
+        if rl_arr is not None and rl_arr.size > 0 and rl_idx is not None and rl_idx.size > 0:
+            rl_f32 = rl_arr.astype(np.float32)
+            router_logit_norms = {int(l): [rl_f32[t, i] for t in range(T)] for i, l in enumerate(rl_idx)}
 
     # ── Positional means (hidden-space correction; rides with "hidden") ──
     positional_means: F32 | None = None
@@ -607,6 +616,7 @@ def load_raw_tensors(
         attn_outputs=attn_outputs,
         router_dist=router_dist,
         router_branch_norms=router_branch_norms,
+        router_logit_norms=router_logit_norms,
     )
 
 
