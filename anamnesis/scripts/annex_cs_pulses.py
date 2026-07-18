@@ -115,7 +115,9 @@ def s_terms_freqrep(logits, ids, P, L, ctx):
         if t >= P:
             counts[seq[t].detach()] += 1.0
         p = torch.softmax(logits[t].float(), dim=-1)
-        terms.append((counts * p).sum())
+        # clone: the running counter is updated in-place across steps, but each term's
+        # graph must hold a frozen snapshot (autograd version-counter, crashed 2026-07-17)
+        terms.append((counts.clone() * p).sum())
     return terms
 
 
