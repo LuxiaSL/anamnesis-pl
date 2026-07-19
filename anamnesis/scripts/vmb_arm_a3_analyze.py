@@ -355,6 +355,10 @@ def analyze_model(model: str, n_layers: int, root: Path) -> dict:
 
     return {"rows": rows, "variance_flags": variance_flags,
             "rf_correct": [bool(v) for v in (rf_pred == y)],
+            # SURVIVING gen_ids per mode, in the exact analyzer row order (mode-major,
+            # then conds[m].gen_ids order) — so merge_judge can align to rf_correct after
+            # load_signature_matrix drops (fixes #6/#7-pattern misalignment; 2026-07-18).
+            "surviving_gen_ids": {m: [int(g) for g in conds[m].gen_ids] for m in MODES},
             "sources": source_block, "ordering_tests": ordering_tests,
             "band_accuracy_top8": top_bands, "static_dynamic": static_dynamic,
             "lowrank_acc_by_dim": lowrank, "hierarchy": hierarchy,
@@ -380,12 +384,15 @@ def merge_judge(results: dict, key_path: Path, results_dir: Path, root: Path) ->
 
     for model in results["models"]:
         r = results["models"][model]
-        # rebuild y/groups aligned with the analyzer's row order (mode-major, gen-sorted)
-        y, gid, topics = [], [], []
+        # rebuild y/gid aligned with the analyzer's row order — the SURVIVING gen_ids
+        # (mode-major, conds[m].gen_ids order), NOT every generation in metadata.json.
+        # Iterating all gens misaligns with rf_correct once load_signature_matrix drops any
+        # sig (latent until M6's 3 pure_contrastive drops); align to the banked survivors.
+        surviving = r["surviving_gen_ids"]
+        y, gid = [], []
         for mode in MODES:
-            md = json.loads((root / f"vmb_a2_{model}_pure_{mode}" / "metadata.json").read_text())
-            for g in sorted(md["generations"], key=lambda g: g["generation_id"]):
-                y.append(mode); gid.append(g["generation_id"]); topics.append(g["topic_idx"])
+            for g in surviving[mode]:
+                y.append(mode); gid.append(int(g))
         y = np.array(y)
         jp = np.array([judged.get((model, m, i), "MISSING") for m, i in zip(y, gid)])
         have = jp != "MISSING"

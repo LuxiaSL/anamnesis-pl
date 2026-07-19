@@ -30,6 +30,17 @@ from anamnesis.analysis.battery.floors import load_signature_matrix
 CELL = re.compile(r"^(?P<vec>V3|V1|R1|R2|R3)_L(?P<site>\d+)_(?P<sd>[apm][\d.]+)$")
 
 
+def _mag(sd: str) -> float:
+    """Numeric dose magnitude from a sign+dose suffix, robust to zero-padding.
+
+    A len-based decimal shift, NOT int() — int("003")==int("03") would collapse
+    m003 (0.03) into m03 (0.3). Dotted forms (the {.05,.15,.2} fine ladder) parse
+    literally. m03->0.3, m003->0.03, m01->0.1, m0.15->0.15.
+    """
+    num = sd[1:]
+    return float(num) if "." in num else float(num) / (10 ** (len(num) - 1))
+
+
 def _zmean(sig_dir: Path, med, scale):
     X, _, _ = load_signature_matrix(sig_dir)
     return ((X - med) / scale).mean(0)
@@ -96,11 +107,8 @@ def main() -> None:
                                                      and r["dose"] == dose])), 3)],
                 }
 
-    # dose-monotonicity of |V3 on-axis| per site (magnitude grows with |dose|). Parse the numeric
-    # magnitude from the sign+dose suffix (m03→0.3, p01→0.1, a0.1→0.1) — robust to letters.
-    def _mag(sd: str) -> float:
-        num = sd[1:]
-        return float(num) if "." in num else float(num) / (10 ** (len(num) - 1))
+    # dose-monotonicity of |V3 on-axis| per site (magnitude grows with |dose|), using the
+    # module-level _mag numeric parse (robust to zero-padding; see _mag docstring).
     mono = {}
     for site in sorted({r["site"] for r in rows}):
         for sign, lbl in (("m", "neg"), ("p", "pos"), ("a", "pos")):
