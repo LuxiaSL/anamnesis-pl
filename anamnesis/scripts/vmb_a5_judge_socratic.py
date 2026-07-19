@@ -194,9 +194,13 @@ def main() -> None:
         steered = load_cell_texts(d / "metadata.json")
 
         # Leg 1 — 2AFC {mode}-more (steered vs same-topic baseline/alpha=0 rider)
+        # per-topic cap derived from --n-pairs so a higher-n cell actually yields more pairs
+        # (was hardcoded [:2] = 40 pairs max over 20 topics regardless of --n-pairs; 2026-07-19).
+        shared_topics = sorted(set(steered) & set(rider_texts))
+        per_topic = max(2, -(-args.n_pairs // max(len(shared_topics), 1)))  # ceil
         pairs = []
-        for t in sorted(set(steered) & set(rider_texts)):
-            for s_txt in steered[t][:2]:
+        for t in shared_topics:
+            for s_txt in steered[t][:per_topic]:
                 r_txt = rng.choice(rider_texts[t])
                 pairs.append((t, s_txt, r_txt))
         rng.shuffle(pairs)
