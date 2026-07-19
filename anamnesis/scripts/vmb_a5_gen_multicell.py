@@ -61,11 +61,15 @@ def main() -> None:
     ap.add_argument("--inject-norms-json", default=None,
                     help="median_resid_norms json to resolve inject_alpha_frac per cell")
     ap.add_argument("--limit", type=int, default=None, help="cap specs per cell (test only)")
+    ap.add_argument("--temperature", type=float, default=None,
+                    help="override preset temperature (A7 free-gen uses 0.3)")
+    ap.add_argument("--top-p", type=float, default=None,
+                    help="override top_p (default 0.9; M6/dsv2 uses 0.95)")
     args = ap.parse_args()
 
     preset = MODEL_PRESETS[args.model]
-    temperature = preset.temperature
-    top_p = 0.9
+    temperature = args.temperature if args.temperature is not None else preset.temperature
+    top_p = args.top_p if args.top_p is not None else 0.9
     topics, strata, seeds_per_class = load_stage0_protocol(args.prompts)
     seeds_per_class = args.seeds_per_class or seeds_per_class
     if len(topics) != 20:
@@ -112,6 +116,11 @@ def main() -> None:
             # rides in the per-worker job dict (same mechanism as inj) so
             # run_gen_tokens applies it per cell
             inj = {**inj, "repetition_penalty": float(cell_rp)}
+        # A7 free-gen: a cell may carry a MoE routing perturbation spec — ride it into the
+        # per-worker job dict (same mechanism as inj) so run_gen_tokens attaches it per cell.
+        cell_perturb = cell.get("perturb")
+        if cell_perturb is not None:
+            inj = {**inj, "perturb": cell_perturb}
         rec_dir = out_run_dir / "gen_records"
         rec_dir.mkdir(parents=True, exist_ok=True)
         for i, s in enumerate(specs):
@@ -130,6 +139,8 @@ def main() -> None:
         }
         if cell_sys:
             passthrough["cell_system_prompt"] = cell_sys
+        if cell_perturb is not None:
+            passthrough["a7_perturbation"] = cell_perturb
         if key is not None:
             passthrough["a5_injection"] = {k: v for k, v in inj.items()
                                            if k != "repetition_penalty"}

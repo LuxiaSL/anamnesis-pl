@@ -26,7 +26,12 @@ import numpy as np
 from anamnesis.analysis.battery.deltas import load_floor_scale
 from anamnesis.analysis.battery.floors import load_signature_matrix
 
-CELL_RE = re.compile(r"^(?P<vec>V3sel_bare|V3|R1|R2|R3|V1|V4|rider|baseline)(?:_L(?P<site>\d+))?_a(?P<a>[0-9.]+)$")
+# vec alternation: longest-first (V3sel_bare before V3; Rband\d before R1..). Dose suffix is
+# optional and signed (_a0.1 / _an0.1) so PM6-b entropy cells (V7/RA/Rband) + a bare "baseline"
+# cell parse alongside the original mode-lever cells — additive, old names parse unchanged.
+CELL_RE = re.compile(
+    r"^(?P<vec>V3sel_bare|Rband\d|V3|V4|V7|RA|R1|R2|R3|V1|rider|baseline)"
+    r"(?:_L(?P<site>\d+))?(?:_a(?P<neg>n?)(?P<a>[0-9.]+))?$")
 
 
 def zmean(sig_dir: Path, med, scale):
@@ -68,8 +73,10 @@ def main() -> None:
             continue
         Z = zmean(sig, med, scale)
         proj = Z @ dir0
+        alpha = ((-1.0 if m.group("neg") else 1.0) * float(m.group("a"))
+                 if m.group("a") is not None else 0.0)
         cells[d.name] = {"vec": m.group("vec"), "site": int(m.group("site") or args.map_site),
-                         "alpha": float(m.group("a")), "Zmean": Z.mean(0),
+                         "alpha": alpha, "Zmean": Z.mean(0),
                          "proj_mean": float(proj.mean()),
                          "frac_poleA": float((proj > thresh).mean())}
     if baseline_cell not in cells:

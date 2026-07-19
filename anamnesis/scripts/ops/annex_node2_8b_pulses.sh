@@ -17,7 +17,7 @@ STAGE0=$DATA/runs/vmb_stage0_8b
 SIGMA=$SHM/banks/sigma/a5_sigma_L16_8b.npz
 VEC8B=$SHM/banks/a5_vectors_8b/a5_vectors.npz
 OUT=$DATA/battery/annex/8b_pulses
-IB=REDACTED@172.131.255.15
+IB="${NODE2_IB:?set NODE2_IB=<user>@<node2-ib-addr> (sanitized: account/IP not hardcoded)}"
 BASE="source $HEIMDALL_VENV && cd $HEIMDALL_WORK_DIR && export PYTHONPATH=\$PWD/pipeline PYTHONUNBUFFERED=1 HF_HUB_OFFLINE=1"
 
 submit() {
