@@ -263,8 +263,13 @@ def analyze_model(model: str, n_layers: int, root: Path) -> dict:
     lowrank = {d: float(np.mean(c)) for d, c in correct_by_d.items()}
 
     # ── dissociation hierarchy (12c): content → likelihood → internals ──
-    # aligned to surviving gen_ids (same drop-safety as groups/lengths above)
-    texts = [meta_by_gid[m][gid]["generated_text"] for m in MODES for gid in conds[m].gen_ids]
+    # aligned to surviving gen_ids (same drop-safety as groups/lengths above).
+    # DECODE byte-BPE text (M6/DeepSeek-V2-Lite banks generated_text still Ġ/Ċ-encoded);
+    # feeding encoded text to TF-IDF mangles tokenization and spuriously DEPRESSES the
+    # content rung — inflating the internals gap (caught 2026-07-19 census fold-in).
+    from anamnesis.analysis.battery.text_decode import maybe_decode
+    texts = [maybe_decode(meta_by_gid[m][gid]["generated_text"])
+             for m in MODES for gid in conds[m].gen_ids]
 
     def tfidf_factory():
         from sklearn.feature_extraction.text import TfidfVectorizer

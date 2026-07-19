@@ -48,7 +48,7 @@ def classify(gap: float) -> str:
 
 def a1_rows(arms_root: Path) -> list[dict]:
     rows = []
-    for rec_dir in ("A1", "A1_m3m4", "A1_m5"):
+    for rec_dir in ("A1", "A1_m3m4", "A1_m5", "A1_dsv2"):
         p = arms_root / rec_dir / "a1_results.json"
         if not p.exists():
             continue
@@ -87,7 +87,7 @@ def a3_rows(arms_root: Path) -> list[dict]:
     afc = load_2afc(arms_root)
     rows = []
     records = []
-    for rec_dir in ("A3", "A3_m3", "A3_m5"):
+    for rec_dir in ("A3", "A3_m3", "A3_m5", "A3_dsv2"):
         p = arms_root / rec_dir / "a3_results.json"
         if p.exists():
             records.append((rec_dir, json.loads(p.read_text())))

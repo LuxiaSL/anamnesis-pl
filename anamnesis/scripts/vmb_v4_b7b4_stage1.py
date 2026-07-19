@@ -121,7 +121,11 @@ def main() -> None:
         gate_out["g"] = o
 
     h1 = layers[site].register_forward_pre_hook(hook, with_kwargs=True)
-    h2 = layers[site].mlp.gate_proj.register_forward_hook(gate_hook)
+    # gate_proj hook captures gate_out — but gate_out is never read (§B.7 uses out.logits,
+    # §B.4 uses out.attentions). Vestigial; skip it on MoE layers (DeepseekV2Moe has no
+    # gate_proj — router `gate` + per-expert projections instead) so V7/§B.4 still build (M6, 2026-07-19).
+    _mlp = layers[site].mlp
+    h2 = _mlp.gate_proj.register_forward_hook(gate_hook) if hasattr(_mlp, "gate_proj") else None
 
     def _S_entropy(out):
         logits = out.logits[0].float()
@@ -232,7 +236,9 @@ def main() -> None:
              Hk=Hks, gids=np.asarray(fork), top_eigvecs=TV, top_eigvals=np.asarray(topeigs),
              w_star=w_star.astype(np.float64), Uk=Uk_np)
 
-    h1.remove(); h2.remove()
+    h1.remove()
+    if h2 is not None:
+        h2.remove()
     out = {"model": args.model, "site": site,
            "STATUS": "FIRST_READ_PENDING (C§8) — §B.7 stage-1 + §B.4 stage-1 (compute-only)",
            "B7_entropy_band": b7, "B4_logit_hessian": b4}

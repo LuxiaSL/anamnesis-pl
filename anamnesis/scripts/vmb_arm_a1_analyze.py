@@ -45,6 +45,7 @@ from anamnesis.analysis.battery.deltas import (
 )
 from anamnesis.analysis.battery.manifest import MODEL_META
 from anamnesis.analysis.battery.stats import bh_fdr
+from anamnesis.analysis.battery.text_decode import maybe_decode
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -59,17 +60,18 @@ NATIVE_T = {m: meta.native_temperature for m, meta in MODEL_META.items()}
 DOSE_T = {"t03": 0.3, "t09": 0.9, "t12": 1.2}        # top-p doses excluded from the T ladder
 
 
-def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
+def analyze_model(model: str, n_layers: int, battery_root: Path,
+                  sig_subdir: str = "signatures_v3") -> dict:
     floor_dir = battery_root / MODEL_META[model].stage0_dir
-    med, scale = load_floor_scale(floor_dir / "signatures_v3")
+    med, scale = load_floor_scale(floor_dir / sig_subdir)
 
     conds: dict[str, ConditionCorpus] = {
-        "native": ConditionCorpus(floor_dir / "signatures_v3", floor_dir / "metadata.json",
+        "native": ConditionCorpus(floor_dir / sig_subdir, floor_dir / "metadata.json",
                                   med, scale, f"{model}-native"),
     }
     for dose in ("t03", "t09", "t12", "p07", "p10"):
         d = battery_root / f"vmb_a1_{model}_{dose}"
-        conds[dose] = ConditionCorpus(d / "signatures_v3", d / "metadata.json",
+        conds[dose] = ConditionCorpus(d / sig_subdir, d / "metadata.json",
                                       med, scale, f"{model}-{dose}")
 
     names = conds["native"].feature_names
@@ -131,7 +133,7 @@ def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
         out = []
         for gid in conds[cond].gen_ids:
             g = idx[gid]
-            words = g["generated_text"].split()
+            words = maybe_decode(g["generated_text"]).split()
             ttr = len(set(words)) / max(len(words), 1)
             out.append((float(g["num_generated_tokens"]), float(ttr)))
         return out
@@ -147,7 +149,7 @@ def analyze_model(model: str, n_layers: int, battery_root: Path) -> dict:
     # (addendum 2026-07-12b item 5) so the cheap stats under-read.
     def _texts(cond: str) -> tuple[list[str], list[int]]:
         idx = _gen_index(cond)
-        return ([idx[gid]["generated_text"] for gid in conds[cond].gen_ids],
+        return ([maybe_decode(idx[gid]["generated_text"]) for gid in conds[cond].gen_ids],
                 [int(idx[gid]["topic_idx"]) for gid in conds[cond].gen_ids])
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression
@@ -214,17 +216,22 @@ def main() -> None:
     ap.add_argument("--models", default="3b,8b",
                     help="Comma list (early sanity passes may run one model; the RESULT OF "
                          "RECORD is the both-model run — FDR spans the full grid)")
+    ap.add_argument("--sig-subdir", default="signatures_v3",
+                    help="Signature subdir to read for floor + doses (M6/MoE re-extractions "
+                         "bank to signatures_v3_x2 = v2 xrt/120-feat; v1 signatures_v3 stays "
+                         "frozen). Floor and doses MUST share the subdir (matched feature dim).")
     args = ap.parse_args()
 
     selected = [(m.strip(), MODEL_META[m.strip()].n_layers)
                 for m in args.models.split(",") if m.strip()]
 
     results = {"arm": "A1_sampling", "prereg": "prereg-vmb-v1 §2c A1 + addenda a/b",
+               "sig_subdir": args.sig_subdir,
                "models": {}, "models_included": [m for m, _ in selected]}
     all_rows = []
     for model, n_layers in selected:
-        logger.info(f"=== A1 {model} ===")
-        r = analyze_model(model, n_layers, args.battery_root)
+        logger.info(f"=== A1 {model} (sig_subdir={args.sig_subdir}) ===")
+        r = analyze_model(model, n_layers, args.battery_root, sig_subdir=args.sig_subdir)
         results["models"][model] = r
         all_rows.extend(r["rows"])
 

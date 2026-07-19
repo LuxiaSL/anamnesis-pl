@@ -75,8 +75,27 @@ def _setup_injection(model, inject_npz, inject_key, inject_layer, inject_alpha,
     return write_handle, inject_meta
 
 
+def _setup_perturbation(model, perturb: dict | None, label):
+    """Attach an A7 MoE routing perturbation for one cell; return (handle, perturb_meta).
+
+    Perturb is wired into FREE GENERATION here exactly as it is into replay
+    (run_replay_extraction.py:324-338) — model-wide before the cell, removed after — so an A7
+    free-gen ladder reads the same perturbation semantics as the teacher-forced ladder. Returns
+    (None, None) when perturb is None (identity path byte-for-byte unchanged)."""
+    if not perturb:
+        return None, None
+    from anamnesis.extraction.model_loader import MoEPerturbSpec, attach_moe_perturbation
+    handle = attach_moe_perturbation(model, MoEPerturbSpec(
+        mode=perturb["mode"], top_k=perturb.get("top_k"), eps=perturb.get("eps"),
+        sigma_logit=({int(k): float(v) for k, v in perturb["sigma_logit"].items()}
+                     if perturb.get("sigma_logit") else None),
+        m=perturb.get("m"), seed=int(perturb.get("seed", 0))))
+    logger.info(f"[{label}] A7 free-gen perturbation: {perturb}")
+    return handle, {"perturb": perturb}
+
+
 def _generate_specs(model, tok, pad_id, specs, out_dir: Path, write_handle, inject_meta,
-                    gp: dict, label: str) -> tuple[int, int]:
+                    gp: dict, label: str, perturb_meta: dict | None = None) -> tuple[int, int]:
     """Generate one cell's specs to out_dir. Exact transcription of the original loop
     (per-gen seeding makes each gen independent of prior cells). gp holds the shared gen
     params (temperature/top_p/max_new_tokens/eos_ids/date_string)."""
@@ -160,6 +179,9 @@ def _generate_specs(model, tok, pad_id, specs, out_dir: Path, write_handle, inje
                             "(one per generated token) — position gating broken")
                 record["injection"] = {**inject_meta,
                                        "positions_injected": int(st.get("positions", 0))}
+            if perturb_meta is not None:
+                # A7 free-gen provenance (absent on all non-perturbed records → schema stable)
+                record["perturbation"] = perturb_meta["perturb"]
             with open(out_dir / f"gen_{gid:03d}.json", "w") as f:
                 json.dump(record, f)
             n_done += 1
@@ -214,6 +236,10 @@ def main() -> None:
     ap.add_argument("--inject-alpha", type=float, default=None,
                     help="ABSOLUTE injection magnitude (fraction × median residual norm, "
                          "precomputed by the chain submitter). 0.0 = rider no-op cell")
+    ap.add_argument("--perturb-json", type=Path, default=None,
+                    help="A7 free-gen: JSON dict of a MoEPerturbSpec (mode/top_k/eps/sigma_logit/"
+                         "m/seed) applied model-wide for single-cell generation. Multi-cell carries "
+                         "the same dict per-cell under the 'perturb' key in --jobs-file.")
     ap.add_argument("--inject-alpha-frac", type=float, default=None,
                     help="Bookkeeping only: the ladder fraction this alpha encodes (recorded per gen)")
     args = ap.parse_args()
@@ -245,14 +271,22 @@ def main() -> None:
         jobs = json.loads(args.jobs_file.read_text())
         logger.info(f"[{args.label}] multi-cell: {len(jobs)} cells, one model load")
         handle = None
+        perturb_handle = None
         for ji, job in enumerate(jobs):
             if handle is not None:
                 handle.remove()
                 handle = None
+            if perturb_handle is not None:
+                perturb_handle.remove()
+                perturb_handle = None
             handle, meta = _setup_injection(
                 model, job.get("inject_npz"), job.get("inject_key"),
                 job.get("inject_layer"), job.get("inject_alpha"),
                 job.get("inject_alpha_frac"), args.label)
+            # A7: a cell may carry a "perturb" spec (MoE routing perturbation) — attached
+            # model-wide before the cell, removed after (mirrors replay:324-338).
+            perturb_handle, perturb_meta = _setup_perturbation(
+                model, job.get("perturb"), f"{args.label}c{ji}")
             # Per-cell sampler override (two-actuators cells carry repetition_penalty
             # in the cells-json; injection cells omit it and inherit the shared gp).
             job_rp = job.get("repetition_penalty")
@@ -261,9 +295,11 @@ def main() -> None:
                 raise SystemExit(f"cell {job.get('out_dir')}: repetition_penalty must be "
                                  f"> 0, got {job_rp}")
             _generate_specs(model, tok, pad_id, job["specs"], Path(job["out_dir"]),
-                            handle, meta, job_gp, f"{args.label}c{ji}")
+                            handle, meta, job_gp, f"{args.label}c{ji}", perturb_meta)
         if handle is not None:
             handle.remove()
+        if perturb_handle is not None:
+            perturb_handle.remove()
         return
 
     if args.spec_file is None or args.out_dir is None:
@@ -272,11 +308,16 @@ def main() -> None:
     handle, meta = _setup_injection(
         model, args.inject_npz, args.inject_key, args.inject_layer,
         args.inject_alpha, args.inject_alpha_frac, args.label)
+    perturb = json.loads(args.perturb_json.read_text()) if args.perturb_json else None
+    perturb_handle, perturb_meta = _setup_perturbation(model, perturb, args.label)
     with open(args.spec_file) as f:
         specs = json.load(f)
-    _generate_specs(model, tok, pad_id, specs, args.out_dir, handle, meta, gp, args.label)
+    _generate_specs(model, tok, pad_id, specs, args.out_dir, handle, meta, gp, args.label,
+                    perturb_meta)
     if handle is not None:
         handle.remove()
+    if perturb_handle is not None:
+        perturb_handle.remove()
 
 
 if __name__ == "__main__":

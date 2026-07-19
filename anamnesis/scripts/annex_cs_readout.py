@@ -37,6 +37,7 @@ from pathlib import Path
 
 import numpy as np
 
+from anamnesis.analysis.battery.text_decode import maybe_decode
 from anamnesis.scripts.annex_cs_pulses import build_logfreq
 from anamnesis.scripts.vmb_14n_hedging_index import DEF_RE, HEDGE_RE
 
@@ -60,7 +61,7 @@ def parse_dose(cell: str) -> float | None:
 
 
 def gen_instruments(g: dict, tok, logfreq: np.ndarray) -> dict | None:
-    text = g.get("generated_text", "")
+    text = maybe_decode(g.get("generated_text", ""))  # M6 stores byte-BPE; no-op on plain text
     words = text.split()
     if not words:
         return None

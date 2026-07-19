@@ -27,8 +27,8 @@ from pathlib import Path
 
 import numpy as np
 
-BAND = (16, 256)   # vmb_b7_stage2_vectors.BAND — do not drift
-SITE = 14
+BAND = (16, 256)   # vmb_b7_stage2_vectors.BAND — do not drift (default; overridable per-model)
+SITE = 14          # default (3B); M6 passes --site 9
 
 
 def main() -> None:
@@ -38,20 +38,32 @@ def main() -> None:
     ap.add_argument("--stamps", type=Path, required=True)
     ap.add_argument("--b7-vectors", type=Path, required=True, help="banked V7 + Rband nulls")
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--site", type=int, default=SITE,
+                    help="injection layer (default 14 = 3B; M6 = 9). Selects the V4_L{site}/"
+                         "V3_L{site}/V7_L{site} keys + the median_resid_norms[L{site}] scale.")
+    ap.add_argument("--band", default=f"{BAND[0]},{BAND[1]}",
+                    help="eigenvector index band-pass (frozen b7 default 16,256 — do not drift "
+                         "without a ruling; a CLI knob only so per-model spectra can be revisited).")
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
+    site = int(args.site)
+    band = tuple(int(x) for x in args.band.split(","))
+    if len(band) != 2:
+        raise SystemExit(f"--band must be 'lo,hi', got {args.band!r}")
+    lk = f"L{site}"
+
     bank = np.load(args.vectors)
-    v4 = bank["V4_L14"].astype(np.float64)
-    v3 = bank["V3_L14"].astype(np.float64)
+    v4 = bank[f"V4_{lk}"].astype(np.float64)
+    v3 = bank[f"V3_{lk}"].astype(np.float64)
     b7 = np.load(args.b7_vectors)
-    v7 = b7["V7_L14"].astype(np.float64)
+    v7 = b7[f"V7_{lk}"].astype(np.float64)
 
     S = np.load(args.sigma)
     evals = S["evals"].astype(np.float64)
     evecs = S["evecs"].astype(np.float64)
     order = np.argsort(evals)[::-1]                     # verbatim b7 convention
-    Uband = evecs[:, order[BAND[0]:BAND[1]]]            # (d, 240)
+    Uband = evecs[:, order[band[0]:band[1]]]            # (d, hi-lo)
 
     proj = Uband @ (Uband.T @ v4)
     band_mass = float(np.linalg.norm(proj) / np.linalg.norm(v4))
@@ -64,13 +76,15 @@ def main() -> None:
         u = v / np.linalg.norm(v)
         coef = evecs[:, order].T @ u
         m = coef ** 2
-        return {"top16": float(m[:16].sum()), "band16_256": float(m[16:256].sum()),
-                "tail256plus": float(m[256:].sum())}
+        return {f"top{band[0]}": float(m[:band[0]].sum()),
+                f"band{band[0]}_{band[1]}": float(m[band[0]:band[1]].sum()),
+                f"tail{band[1]}plus": float(m[band[1]:].sum())}
 
     cosine = lambda a, b: float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
     anatomy = {
-        "construction": "unit(P[16:256] . V4_L14); conventions = vmb_b7_stage2_vectors verbatim",
-        "band": list(BAND), "site": SITE,
+        "construction": f"unit(P[{band[0]}:{band[1]}] . V4_{lk}); conventions = "
+                        "vmb_b7_stage2_vectors verbatim",
+        "band": list(band), "site": site,
         "band_mass_of_V4": band_mass,
         "mass_profiles": {"V4": mass_profile(v4), "RA": mass_profile(ra.astype(np.float64)),
                           "V7": mass_profile(v7), "V3": mass_profile(v3)},
@@ -81,10 +95,10 @@ def main() -> None:
                 "fragility class (S7 pricing / SB.5 law) independent of the functional question.",
     }
 
-    l14 = json.loads(args.stamps.read_text())["median_resid_norms"]["L14"]
-    np.savez(args.out_dir / "a5_vectors.npz", RA_L14=ra)
+    lnorm = json.loads(args.stamps.read_text())["median_resid_norms"][lk]
+    np.savez(args.out_dir / "a5_vectors.npz", **{f"RA_{lk}": ra})
     (args.out_dir / "a5_vectors_stamps.json").write_text(json.dumps(
-        {"median_resid_norms": {"L14": l14}, "band": list(BAND), "site": SITE,
+        {"median_resid_norms": {lk: lnorm}, "band": list(band), "site": site,
          "provenance": "14r cell R-A: band-passed V4 (the missing 2x2 cell)"}, indent=1))
     (args.out_dir / "ra_construction_anatomy.json").write_text(json.dumps(anatomy, indent=1))
     print(json.dumps(anatomy, indent=1))

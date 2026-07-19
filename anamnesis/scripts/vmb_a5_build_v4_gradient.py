@@ -113,6 +113,7 @@ def main() -> None:
     v = np.mean(grads, axis=0)
     v_unit = (v / np.linalg.norm(v)).astype(np.float32)
 
+    args.out_dir.mkdir(parents=True, exist_ok=True)   # fresh out-dirs (e.g. M6) — was assumed to exist
     npz_path = args.out_dir / "a5_vectors.npz"
     stamps_path = args.out_dir / "a5_vectors_stamps.json"
     bank = dict(np.load(npz_path)) if npz_path.exists() else {}
