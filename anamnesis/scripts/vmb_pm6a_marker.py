@@ -34,14 +34,20 @@ CELL = re.compile(r"^(?P<vec>V3|V1|R1|R2|R3)_L(?P<site>\d+)_(?P<sd>[apm][\d.]+)$
 
 
 def _per_gen_rates(texts: list[str]) -> dict[str, np.ndarray]:
-    """Per-gen question_per_1k and socratic_marker_per_1k (decoded, ≥1-word gens)."""
+    """Per-gen rates PLUS pooled totals. The pooled rate (total marks / total words) is the
+    headline — mean-of-per-gen is dominated by degenerate short gens (a 5-word gen with 3 '?'
+    = 600/1k), which made the graded ladder non-monotonic; pooled matches the canonical
+    _socratic_rate. Per-gen arrays are kept for the permutation test + a robust median."""
     q, s = [], []
+    tot_q = tot_s = tot_w = 0
     for raw in texts:
         t = maybe_decode(raw)
-        w = max(len(t.split()), 1)
-        q.append(1000.0 * t.count("?") / w)
-        s.append(1000.0 * len(SOCRATIC.findall(t)) / w)
-    return {"q": np.array(q), "s": np.array(s)}
+        nq, ns, w = t.count("?"), len(SOCRATIC.findall(t)), max(len(t.split()), 1)
+        q.append(1000.0 * nq / w)
+        s.append(1000.0 * ns / w)
+        tot_q += nq; tot_s += ns; tot_w += w
+    return {"q": np.array(q), "s": np.array(s),
+            "tot_q": tot_q, "tot_s": tot_s, "tot_w": max(tot_w, 1)}
 
 
 def _texts(cell_dir: Path) -> list[str]:
@@ -67,8 +73,11 @@ def _perm(a: np.ndarray, b: np.ndarray, nperm: int = 20000, seed: int = 0) -> tu
 
 def _summ(r: dict[str, np.ndarray]) -> dict:
     return {"n": int(len(r["q"])),
-            "question_per_1k": round(float(r["q"].mean()), 3),
-            "socratic_marker_per_1k": round(float(r["s"].mean()), 3)}
+            # POOLED (total marks / total words) = the headline, outlier-robust + canonical
+            "question_per_1k": round(1000.0 * r["tot_q"] / r["tot_w"], 3),
+            "socratic_marker_per_1k": round(1000.0 * r["tot_s"] / r["tot_w"], 3),
+            "question_per_1k_median": round(float(np.median(r["q"])), 3),
+            "question_per_1k_mean": round(float(r["q"].mean()), 3)}
 
 
 def main() -> None:
@@ -123,9 +132,10 @@ def main() -> None:
         sR_obs, sR_p = _perm(v3["s"], Rs)                  # socratic-lexicon vs R
         lever[f"L{args.site}_{dose}"] = {
             "V3": _summ(v3),
-            "baseline_q_per_1k": round(float(base["q"].mean()), 3),
-            "R_band_q_per_1k": [round(float(r["q"].mean()), 3) for r in rcells],
-            "R_band_q_mean": round(float(Rq.mean()), 3),
+            "baseline_q_per_1k": round(1000.0 * base["tot_q"] / base["tot_w"], 3),
+            "R_band_q_per_1k": [round(1000.0 * r["tot_q"] / r["tot_w"], 3) for r in rcells],
+            "R_band_q_mean": round(1000.0 * sum(r["tot_q"] for r in rcells)
+                                   / sum(r["tot_w"] for r in rcells), 3),
             "V3_vs_baseline": {"delta_q": round(db_obs, 3), "p": round(db_p, 4)},
             "V3_vs_Rband": {"delta_q": round(dR_obs, 3), "p": round(dR_p, 4)},
             "V3_socratic_vs_Rband": {"delta": round(sR_obs, 3), "p": round(sR_p, 4)},
