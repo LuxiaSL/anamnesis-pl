@@ -52,10 +52,34 @@ def _acc(X, y, groups, sel=None):
     return float(np.mean(accs))
 
 
+def _perm_band(X, y, groups, sel, nperm=1000, seed=0):
+    """Label-permutation null band for OOF accuracy (respecting the group folds).
+
+    The observed accuracy is scored against THIS empirical band, not the theoretical
+    chance rate — GroupKFold on few topics gives the null real spread (the .556-style
+    upper band, not 0.5/0.2). Reports [p2.5, p50, p97.5], the 95th percentile bar the
+    observed must clear, and the observed's one-sided permutation p-value.
+    """
+    rng = np.random.default_rng(seed)
+    obs = _acc(X, y, groups, sel)
+    null = np.empty(nperm)
+    for k in range(nperm):
+        null[k] = _acc(X, rng.permutation(y), groups, sel)
+    p = float((np.sum(null >= obs) + 1) / (nperm + 1))
+    return {"obs": round(obs, 4),
+            "null_p2.5": round(float(np.percentile(null, 2.5)), 4),
+            "null_p50": round(float(np.percentile(null, 50)), 4),
+            "null_p97.5": round(float(np.percentile(null, 97.5)), 4),
+            "null_p95_bar": round(float(np.percentile(null, 95)), 4),
+            "perm_p": round(p, 4), "nperm": nperm,
+            "clears_band": bool(obs > float(np.percentile(null, 95)))}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--battery-root", type=Path, required=True)
     ap.add_argument("--model", default="dsv2-lite")
+    ap.add_argument("--nperm", type=int, default=1000)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
@@ -87,6 +111,9 @@ def main() -> None:
             "whole_dir0": round(_acc(Xr[dir0], yb, groups[dir0]), 4),
             "xrt_dir0": round(_acc(Xr[dir0], yb, groups[dir0], xrt), 4),
             "length_only_5way": round(_acc(Lonly, y, groups), 4),
+            # empirical permutation null band for the routing-source readouts (the score bar)
+            "xrt_5way_null": _perm_band(Xr, y, groups, xrt, args.nperm),
+            "xrt_dir0_null": _perm_band(Xr[dir0], yb, groups[dir0], xrt, args.nperm),
         }
     v1, v2 = results["v1_before"], results["v2_after"]
     results["delta_xrt_5way_v2_minus_v1"] = round(v2["xrt_5way"] - v1["xrt_5way"], 4)

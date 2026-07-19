@@ -163,3 +163,29 @@ def test_lever_readout_band_metric_negative_meanR(tmp_path: Path, monkeypatch) -
     assert "NEVER a ratio to meanR" in res["law"]      # the discipline is documented
     # V3 (-3 on-axis) is beyond the most-socratic-ward R (-0.4) → fires socratic-ward
     assert cell["V3_outside_R_band"] is True
+
+
+# ── Fix 4 (Part D prep): wrapper-aware RoPE gate (Gemma3 nested text_config) ──
+
+class _Cfg:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_inv_freq_unwraps_multimodal_text_config() -> None:
+    """Gemma3ForConditionalGeneration's Gemma3Config nests transformer params under
+    .text_config; inv_freq_from_config must unwrap it, not raise on missing hidden_size."""
+    from anamnesis.extraction.cache_surgery import inv_freq_from_config
+    text = _Cfg(num_attention_heads=8, head_dim=16, rope_theta=1_000_000.0,
+                rope_local_base_freq=10_000.0)          # Gemma3 dual-RoPE
+    wrapper = _Cfg(text_config=text)                     # no hidden_size at top level
+    inv = inv_freq_from_config(wrapper)
+    assert int(inv.shape[0]) == 8                        # head_dim // 2
+
+
+def test_inv_freq_flat_config_unaffected() -> None:
+    """Flat Llama/Qwen/OLMo configs (no text_config) still resolve via hidden_size."""
+    from anamnesis.extraction.cache_surgery import inv_freq_from_config
+    flat = _Cfg(hidden_size=128, num_attention_heads=8, rope_theta=500_000.0)
+    inv = inv_freq_from_config(flat)
+    assert int(inv.shape[0]) == 8                        # (128//8)//2 = 8

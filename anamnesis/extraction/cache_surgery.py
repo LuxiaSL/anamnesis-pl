@@ -99,6 +99,22 @@ def inv_freq_from_config(config) -> Tensor:
     Anything else raises — the gate fires BEFORE any surgery, not after a
     confusing result.
     """
+    # Multimodal wrappers (e.g. Gemma3ForConditionalGeneration's Gemma3Config) nest the
+    # transformer/RoPE params under .text_config; unwrap so hidden_size/rope_theta resolve
+    # (no-op for the flat Llama/Qwen/OLMo configs, which have no text_config). 2026-07-18.
+    tc = getattr(config, "text_config", None)
+    if tc is not None and getattr(tc, "num_attention_heads", None) is not None:
+        config = tc
+    # Gemma-3 dual RoPE: global layers rotate with rope_theta (1e6), sliding layers with
+    # rope_local_base_freq (1e4). A single inv_freq table cannot be silently right for both
+    # (the 14e anti-silent-default rule) — surface it so the ROTATE surgery kind is scoped
+    # to global-theta only; naive/recompute (which need no reindex) are unaffected.
+    local_base = getattr(config, "rope_local_base_freq", None)
+    if local_base is not None:
+        logger.warning(
+            f"dual-RoPE config (rope_local_base_freq={local_base}): this table is the GLOBAL "
+            "theta only. ROTATE re-rotation is correct for global layers; sliding layers use a "
+            "different base — use naive/recompute surgery, or extend reindex to per-layer inv_freq.")
     head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
     # transformers 5.x moved the RoPE params INTO the rope_scaling / rope_parameters dict; the
     # top-level `rope_theta` attribute may be absent (the 14e bug: getattr's 10000.0 default fired
