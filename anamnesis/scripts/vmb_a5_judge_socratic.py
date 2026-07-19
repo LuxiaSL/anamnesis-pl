@@ -91,27 +91,7 @@ Text:
 Answer with exactly one digit: 1, 2, 3, 4, or 5."""
 
 
-def _byte_decoder() -> dict:
-    """GPT-2 byte-level BPE unicode→byte map (inverse of bytes_to_unicode)."""
-    bs = (list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1))
-          + list(range(ord("®"), ord("ÿ") + 1)))
-    cs = bs[:]
-    n = 0
-    for b in range(256):
-        if b not in bs:
-            bs.append(b); cs.append(256 + n); n += 1
-    return {chr(c): b for b, c in zip(bs, cs)}
-
-
-_BYTE_DEC = _byte_decoder()
-
-
-def _maybe_decode(t: str) -> str:
-    """Some models bank generated_text byte-BPE-encoded (Ġ=space, Ċ=newline); decode iff those markers
-    are present (idempotent no-op on already-readable text)."""
-    if "Ġ" in t or "Ċ" in t:
-        return bytearray(_BYTE_DEC.get(c, 32) for c in t).decode("utf-8", errors="replace")
-    return t
+from anamnesis.analysis.battery.text_decode import maybe_decode as _maybe_decode  # noqa: E402
 
 
 def load_cell_texts(meta_path: Path) -> dict[int, list[str]]:
