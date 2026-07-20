@@ -189,11 +189,13 @@ def main() -> None:
     fork = _panel_gids(all_ids, args.n_gens)
     Hks, topvecs, topeigs = [], [], []
     Uk_np = evecs[:, order[:args.k]]
+    # Gemma-3 ships a composite Gemma3Config (hidden_size lives under .text_config)
+    hidden_size = getattr(model.config, "hidden_size", None) or model.config.text_config.hidden_size
     for g in fork:
         e = entries[str(g)]
         ids = torch.tensor([e["input_ids"]], dtype=torch.long, device=dev)
         state["P"], state["L"] = int(e["prompt_length"]), int(len(e["input_ids"]))
-        d = torch.zeros(model.config.hidden_size, dtype=torch.float32, device=dev, requires_grad=True)
+        d = torch.zeros(hidden_size, dtype=torch.float32, device=dev, requires_grad=True)
         ctx["d"] = d
         with torch.enable_grad():
             out = model(ids, use_cache=False, output_attentions=True, return_dict=True)

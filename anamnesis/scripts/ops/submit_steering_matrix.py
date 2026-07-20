@@ -180,10 +180,17 @@ def make_spec(cfg: dict, name: str, cmd: str, gpus: int, minutes: int, deps=None
     return spec
 
 
-def run_model(key: str, cfg: dict, fire: bool, gen_only: bool = False) -> None:
+def run_model(key: str, cfg: dict, fire: bool, gen_only: bool = False,
+              resume_builds: set | None = None) -> None:
     P = bankpaths(cfg)
     m, S = cfg["model"], cfg["site"]
     jobs = build_jobs(cfg)
+    if resume_builds:
+        # partial resume after a mid-chain failure: keep only these build stages; drop deps on
+        # earlier (completed) stages whose banks are already on disk. Stage = label before "-{model}".
+        jobs = [j for j in jobs if j["label"].split("-")[0] in resume_builds]
+        for j in jobs:
+            j["deps"] = [d for d in j["deps"] if d.split("-")[0] in resume_builds]
     g_cells, r_cells = gen_cells(cfg)
 
     # write cells locally (staged artifact; rsynced at fire)
@@ -234,7 +241,7 @@ def run_model(key: str, cfg: dict, fire: bool, gen_only: bool = False) -> None:
             deps = [ids[d] for d in j["deps"]]
             ids[j["label"]] = submit(make_spec(cfg, f"vmb-mx-{j['label']}", j["cmd"], j["gpus"], j["min"], deps))
             print(f"  submitted {j['label']} -> {ids[j['label']]}")
-        gdep = [ids[f"cpu-{m}"]]
+        gdep = [ids[f"cpu-{m}"]] if f"cpu-{m}" in ids else None
     g = submit(make_spec(cfg, f"vmb-mx-gen-{key}", gen_cmd, cfg["gpus_gen"], cfg["gen_min"], gdep))
     rs = submit(make_spec(cfg, f"vmb-mx-repstate-{key}", rep_state, cfg["gpus_gen"], 40, [g]))
     re = submit(make_spec(cfg, f"vmb-mx-repexpr-{key}", rep_expr, cfg["gpus_gen"], 40, [g]))
@@ -248,10 +255,14 @@ def main() -> None:
     ap.add_argument("--model", default="all", choices=["all", "qwen", "gemma", "8b"])
     ap.add_argument("--gen-only", action="store_true",
                     help="resubmit gen->replay only (builds done, GENBANK on disk) — for cancel/resubmit")
+    ap.add_argument("--resume-builds", default=None,
+                    help="comma-sep build stages to re-run after a mid-chain failure (e.g. v7s1,cpu); "
+                         "earlier completed stages' banks are read from disk, then gen->replay")
     args = ap.parse_args()
+    resume = set(s.strip() for s in args.resume_builds.split(",")) if args.resume_builds else None
     keys = list(MODELS) if args.model == "all" else [args.model]
     for k in keys:
-        run_model(k, MODELS[k], fire=args.fire, gen_only=args.gen_only)
+        run_model(k, MODELS[k], fire=args.fire, gen_only=args.gen_only, resume_builds=resume)
     if not args.fire:
         print("\nDRY-RUN complete. Cells written under", LOCAL_CELLS,
               "\nFire with: python -m anamnesis.scripts.ops.submit_steering_matrix --fire --model <m>")
