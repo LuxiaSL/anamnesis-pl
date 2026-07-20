@@ -30,7 +30,7 @@ from anamnesis.analysis.battery.text_decode import maybe_decode
 from anamnesis.scripts.vmb_14k_soclin_lever import SOCRATIC  # canonical marker lexicon
 
 # sign+dose suffix, same grammar as the state-lever: m=neg (socratic-ward), a/p=pos.
-CELL = re.compile(r"^(?P<vec>V3|V1|R1|R2|R3)_L(?P<site>\d+)_(?P<sd>[apm][\d.]+)$")
+CELL = re.compile(r"^(?P<vec>V3|V5|V1|R1|R2|R3)_L(?P<site>\d+)_(?P<sd>[apm][\d.]+)$")
 
 
 def _per_gen_rates(texts: list[str]) -> dict[str, np.ndarray]:
@@ -120,7 +120,7 @@ def main() -> None:
     lever = {}
     doses = sorted({CELL.match(name).group("sd") for name in cells})  # all keys matched CELL
     for dose in doses:
-        v3 = cells.get(f"V3_L{args.site}_{dose}")
+        v3 = cells.get(f"V3_L{args.site}_{dose}") or cells.get(f"V5_L{args.site}_{dose}")
         rcells = [cells[f"R{i}_L{args.site}_{dose}"] for i in (1, 2, 3)
                   if f"R{i}_L{args.site}_{dose}" in cells]
         if v3 is None or not rcells:
@@ -143,6 +143,14 @@ def main() -> None:
             "expressed": bool(db_p < 0.05 and db_obs > 0 and dR_p < 0.05 and dR_obs > 0),
         }
 
+    # every matched cell vs baseline (doses without a matched R band still report here —
+    # e.g. the whiten runs carry R only at one dose; sign story needs all four V-cells)
+    cells_all = {}
+    for name, c in sorted(cells.items()):
+        d_obs, d_p = _perm(c["q"], base["q"])
+        cells_all[name] = {**_summ(c),
+                           "vs_baseline_delta_q": round(d_obs, 3), "vs_baseline_p": round(d_p, 4)}
+
     out = {
         "arm": "PM6-a marker readout (expression side; socratic-ward −V3)",
         "STATUS": "FIRST_READ_PENDING (C§8) — UNSTAMPED → outer loop",
@@ -154,6 +162,7 @@ def main() -> None:
         "baseline": _summ(base),
         "graded_ladder": {g: _summ(r) for g, r in graded.items()} or "not-provided (item A2 needs graded corpora)",
         "lever_by_dose": lever,
+        "cells_all": cells_all,
         "law": "per-gen question_per_1k + SOCRATIC lexicon/1k (canonical); expression bar = "
                "steered rate matches the appropriate PROMPT GRADE AND exceeds the dose-matched "
                "R band, NEVER the full pole (D3 standing rule). Per-gen permutation, 20k.",
