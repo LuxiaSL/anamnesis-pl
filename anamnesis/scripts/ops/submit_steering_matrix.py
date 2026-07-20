@@ -40,13 +40,15 @@ MODELS = {
         v3bank=f"{BANK}/a5_vectors_qwen_7b", env={"HF_HUB_OFFLINE": "1", "OMP_NUM_THREADS": "1"},
         wpg_gen=6, wpg_rep=8, gen_min=40, gpus_gen=8, skip_sigma=False, skip_v4=False),
     "gemma": dict(
-        model="gemma3-27b", mpath="google/gemma-3-27b-it", tag="gemma3-27b", site=35,
+        model="gemma3-27b", mpath="google/gemma-3-27b-it", tag="gemma3-27b", site=36,
         stage0=f"{RUNS}/vmb_stage0_gemma3_27b", calib=f"{BANK}/../calibration/gemma3_27b",
         t09=f"{RUNS}/vmb_a1_gemma3-27b_t09", t03=f"{RUNS}/vmb_a1_gemma3-27b_t03",
-        v3bank=f"{BANK}/a5_vectors_gemma3_27b",
+        # strict-peak L36 (Luxia GO 2026-07-19) is NOT a sampled layer + not banked -> build V3@L36 first.
+        v3bank=f"{BANK}/a5_vectors_gemma3_27b_L36", v3build=True,
+        a2_root=RUNS, dir0_pair="analogical,contrastive",
         env={"HF_HOME": "/models/anamnesis-extract/.hf-cache", "HF_HUB_OFFLINE": "1",
              "OMP_NUM_THREADS": "1"},  # + HF_TOKEN injected at fire
-        wpg_gen=2, wpg_rep=2, gen_min=90, gpus_gen=8, skip_sigma=False, skip_v4=False,
+        wpg_gen=2, wpg_rep=2, gen_min=120, gpus_gen=8, skip_sigma=False, skip_v4=False,
         gen_extra="--temperature 1.0 --top-p 0.95"),  # native regime caveat
     "8b": dict(
         model="8b", mpath="/models/llama-3.1-8b-instruct", tag="8b", site=16,
@@ -83,22 +85,30 @@ def build_jobs(cfg: dict) -> list[dict]:
     m, mp, S, s0 = cfg["model"], cfg["mpath"], cfg["site"], cfg["stage0"]
     P, v3 = bankpaths(cfg), cfg["v3bank"]
     jobs = []
+    # --- optional V3@site build (strict-peak sites not already banked, e.g. Gemma L36) ---
+    pre: list[str] = []   # labels every later job must wait on
+    if cfg.get("v3build"):
+        jobs.append(dict(label=f"v3build-{m}", gpus=1, min=25 if m == "gemma3-27b" else 15, deps=[],
+            cmd=f"python -u -m anamnesis.scripts.vmb_a5_build_vectors --model {m} --model-path {mp} "
+                f"--stage0-run {s0} --a2-root {cfg['a2_root']} --out-dir {v3} --stage basic "
+                f"--sites {S} --dir0-pair {cfg['dir0_pair']}"))
+        pre = [f"v3build-{m}"]
     # --- GPU pulses ---
     if not cfg["skip_sigma"]:
-        jobs.append(dict(label=f"sigma-{m}", gpus=1, min=25 if m == "gemma3-27b" else 15, deps=[],
+        jobs.append(dict(label=f"sigma-{m}", gpus=1, min=25 if m == "gemma3-27b" else 15, deps=list(pre),
             cmd=f"python -u -m anamnesis.scripts.vmb_a5_covariance_screen --model {m} --model-path {mp} "
                 f"--stage0-run {s0} --vectors {P['v3npz']} --out-dir {BANK}/a5_vectors_{m}_v7stack "
                 f"--sites {S} --save-sigma-site {S} --n-gens 60"))
     if not cfg["skip_v4"]:
-        jobs.append(dict(label=f"v4-{m}", gpus=1, min=25 if m == "gemma3-27b" else 15, deps=[],
+        jobs.append(dict(label=f"v4-{m}", gpus=1, min=25 if m == "gemma3-27b" else 15, deps=list(pre),
             cmd=f"python -u -m anamnesis.scripts.vmb_a5_build_v4_gradient --model {m} --model-path {mp} "
                 f"--stage0-run {s0} --out-dir {P['v4']} --map-site {S} --n-gens 20"))
     jobs.append(dict(label=f"v7s1-{m}", gpus=1, min=25 if m == "gemma3-27b" else 15,
-        deps=[] if cfg["skip_sigma"] else [f"sigma-{m}"],
+        deps=pre + ([] if cfg["skip_sigma"] else [f"sigma-{m}"]),
         cmd=f"python -u -m anamnesis.scripts.vmb_v4_b7b4_stage1 --model {m} --model-path {mp} "
             f"--stage0-run {s0} --sigma {P['sigma']} --vectors {P['v3npz']} --out-dir {P['v7s1_dir']} "
             f"--site {S} --k 64 --n-gens 20"))
-    jobs.append(dict(label=f"vtemp-{m}", gpus=1, min=25 if m == "gemma3-27b" else 15, deps=[],
+    jobs.append(dict(label=f"vtemp-{m}", gpus=1, min=25 if m == "gemma3-27b" else 15, deps=list(pre),
         cmd=f"python -u -m anamnesis.scripts.vmb_ctemp_build --model {m} --model-path {mp} "
             f"--hot-run {cfg['t09']} --cold-run {cfg['t03']} --stage0-run {s0} "
             f"--out-dir {P['vtemp']} --sites {S}"))
@@ -116,7 +126,7 @@ def build_jobs(cfg: dict) -> list[dict]:
         f"--source {P['v7s2']}/a5_vectors.npz:V7_L{S},Rband1_L{S},Rband2_L{S},Rband3_L{S} "
         f"--source {P['ra']}/a5_vectors.npz:RA_L{S} --source {P['v3npz']}:V3_L{S} "
         f"--norms-from {P['v3stamps']}")
-    cpu_deps = [f"v7s1-{m}"] + ([] if cfg["skip_v4"] else [f"v4-{m}"])
+    cpu_deps = pre + [f"v7s1-{m}"] + ([] if cfg["skip_v4"] else [f"v4-{m}"])
     jobs.append(dict(label=f"cpu-{m}", gpus=1, min=8, deps=cpu_deps, cmd=merge_cmd))
     return jobs
 
@@ -189,7 +199,7 @@ def run_model(key: str, cfg: dict, fire: bool) -> None:
     gen_cmd = (f"python -u -m anamnesis.scripts.vmb_a5_gen_multicell --model {m} --model-path {cfg['mpath']} "
                f"--prompts {PROMPTS} --cells-json {NODE_CELLS}/gen_{key}.json --inject-npz {genbank} "
                f"--inject-norms-json {genstamps} --gpus 0,1,2,3,4,5,6,7 --workers-per-gpu {cfg['wpg_gen']} "
-               f"--seeds-per-class 1 --limit 40 {gen_extra}").strip()
+               f"--seeds-per-class 2 --limit 80 {gen_extra}").strip()
     rep_state = (f"python -u -m anamnesis.scripts.vmb_a5_replay_multicell --model {m} --model-path {cfg['mpath']} "
                  f"--calib-dir {cfg['calib']} --cells-json {NODE_CELLS}/rep_{key}.json "
                  f"--gpus 0,1,2,3,4,5,6,7 --workers-per-gpu {cfg['wpg_rep']} --no-raw --inject-from-metadata")
