@@ -62,7 +62,8 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, dtype=torch.bfloat16, attn_implementation="eager",
     ).to("cuda").eval()
-    layers = model.model.layers
+    from anamnesis.extraction.model_loader import decoder_layers
+    layers = decoder_layers(model)  # resolves Gemma-3 wrapper (language_model nesting)
 
     entries = json.loads((args.stage0_run / "replay_manifest.json").read_text())["entries"]
     all_ids = sorted(int(k) for k in entries)

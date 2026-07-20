@@ -57,9 +57,12 @@ def main() -> None:
     if not args.fire:
         print("\n(dry-run — pass --fire to cancel)")
         return
+    # cancel via the REST endpoint POST {API}/{id}/cancel (verified; the `heimdall cancel` CLI
+    # wants a different BASE-url env and 404s with the submit-style HEIMDALL_API).
     for jid, nm, _ in targets:
-        r = subprocess.run(["heimdall", "cancel", jid], capture_output=True, text=True)
-        print(f"  cancelled {nm} {jid}: {(r.stdout or r.stderr).strip()[:80]}")
+        r = subprocess.run(["ssh", "node1", f"curl -s -o /dev/null -w '%{{http_code}}' -X POST {API}/{jid}/cancel"],
+                           capture_output=True, text=True, timeout=30)
+        print(f"  cancel {nm} {jid}: HTTP {r.stdout.strip()}")
 
 
 if __name__ == "__main__":
