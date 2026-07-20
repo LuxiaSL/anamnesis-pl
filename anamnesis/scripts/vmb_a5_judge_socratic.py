@@ -163,11 +163,11 @@ def main() -> None:
     cells = []
     for d in sorted(args.a5_root.iterdir()):
         # accept both _a{frac} (standard) and signed _p{n}/_m{n} (both-signs ladders, e.g. 14v)
-        m = re.match(r"^([VR]\d)(?:_L\d+)*_(a[\d.]+|[pm]\d+)$", d.name)
+        m = re.match(r"^([VR]\d|Vrep_perp|Veos_perp|Vconf)(?:_L\d+)*_(an?[\d.]+|[pm]\d+)$", d.name)
         if not m or m.group(1) not in want:
             continue
-        suffix = m.group(2)
-        af = 0.0 if suffix.startswith("a") and float(suffix[1:]) == 0.0 else 1.0  # 0 only if a0.0
+        suffix = m.group(2)  # a0.1 / an0.1 (negative) / p03 / m03
+        af = 0.0 if suffix == "a0.0" else 1.0  # 0 only if the a0.0 baseline
         if af == 0.0:
             continue
         if (d / "metadata.json").exists():
