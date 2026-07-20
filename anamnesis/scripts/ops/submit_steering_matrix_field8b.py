@@ -76,7 +76,8 @@ MEMBERS_CMD = (
     f"python -u -m anamnesis.scripts.vmb_a5_merge_banks --out-dir {FIELD}/field_gen --model 8b "
     f"--source {FIELD}/perp/a5_vectors.npz:Vrep_perp_L{S},Veos_perp_L{S} "
     f"--source {FIELD}/members/a5_vectors.npz:Vconf_L{S} "
-    f"--source {B7}:V7_L{S},Rband1_L{S},Rband2_L{S},Rband3_L{S} --norms-from {V3STAMPS}")
+    f"--source {B7}:V7_L{S},Rband1_L{S},Rband2_L{S},Rband3_L{S} "
+    f"--source {V3NPZ}:V3_L{S} --norms-from {V3STAMPS}")  # V3 for the alpha0 baseline cell
 
 
 def cells():
