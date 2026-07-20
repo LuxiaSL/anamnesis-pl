@@ -180,7 +180,7 @@ def make_spec(cfg: dict, name: str, cmd: str, gpus: int, minutes: int, deps=None
     return spec
 
 
-def run_model(key: str, cfg: dict, fire: bool) -> None:
+def run_model(key: str, cfg: dict, fire: bool, gen_only: bool = False) -> None:
     P = bankpaths(cfg)
     m, S = cfg["model"], cfg["site"]
     jobs = build_jobs(cfg)
@@ -224,12 +224,18 @@ def run_model(key: str, cfg: dict, fire: bool) -> None:
     # rsync cells to node1
     subprocess.run(["ssh", "node1", f"mkdir -p {NODE_CELLS}"], check=True)
     subprocess.run(["rsync", "-a", str(gpath), str(rpath), f"node1:{NODE_CELLS}/"], check=True)
-    ids: dict[str, str] = {}
-    for j in jobs:
-        deps = [ids[d] for d in j["deps"]]
-        ids[j["label"]] = submit(make_spec(cfg, f"vmb-mx-{j['label']}", j["cmd"], j["gpus"], j["min"], deps))
-        print(f"  submitted {j['label']} -> {ids[j['label']]}")
-    g = submit(make_spec(cfg, f"vmb-mx-gen-{key}", gen_cmd, cfg["gpus_gen"], cfg["gen_min"], [ids[f"cpu-{m}"]]))
+    if gen_only:
+        # RESUBMIT path: builds already done (GENBANK on disk) -> gen has no upstream dep
+        gdep = None
+        print("  gen-only: skipping build jobs (banks on disk)")
+    else:
+        ids: dict[str, str] = {}
+        for j in jobs:
+            deps = [ids[d] for d in j["deps"]]
+            ids[j["label"]] = submit(make_spec(cfg, f"vmb-mx-{j['label']}", j["cmd"], j["gpus"], j["min"], deps))
+            print(f"  submitted {j['label']} -> {ids[j['label']]}")
+        gdep = [ids[f"cpu-{m}"]]
+    g = submit(make_spec(cfg, f"vmb-mx-gen-{key}", gen_cmd, cfg["gpus_gen"], cfg["gen_min"], gdep))
     rs = submit(make_spec(cfg, f"vmb-mx-repstate-{key}", rep_state, cfg["gpus_gen"], 40, [g]))
     re = submit(make_spec(cfg, f"vmb-mx-repexpr-{key}", rep_expr, cfg["gpus_gen"], 40, [g]))
     print(f"  gen={g}  rep_state={rs}  rep_expr={re}")
@@ -240,10 +246,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fire", action="store_true", help="actually submit (default: dry-run)")
     ap.add_argument("--model", default="all", choices=["all", "qwen", "gemma", "8b"])
+    ap.add_argument("--gen-only", action="store_true",
+                    help="resubmit gen->replay only (builds done, GENBANK on disk) — for cancel/resubmit")
     args = ap.parse_args()
     keys = list(MODELS) if args.model == "all" else [args.model]
     for k in keys:
-        run_model(k, MODELS[k], fire=args.fire)
+        run_model(k, MODELS[k], fire=args.fire, gen_only=args.gen_only)
     if not args.fire:
         print("\nDRY-RUN complete. Cells written under", LOCAL_CELLS,
               "\nFire with: python -m anamnesis.scripts.ops.submit_steering_matrix --fire --model <m>")

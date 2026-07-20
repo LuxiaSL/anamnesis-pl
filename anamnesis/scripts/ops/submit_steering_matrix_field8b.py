@@ -111,6 +111,8 @@ def main() -> None:
     ap.add_argument("--after-cpu8b", default=None, help="job id of the 8b V7-stack cpu-8b job (gates members)")
     ap.add_argument("--members-only", action="store_true",
                     help="re-fire members->gen->replay only (roster pulses already on disk)")
+    ap.add_argument("--gen-only", action="store_true",
+                    help="re-fire gen->replay only (members done, field_gen bank on disk) — for cancel/resubmit")
     args = ap.parse_args()
 
     g_cells, r_cells = cells()
@@ -146,17 +148,25 @@ def main() -> None:
         return
     subprocess.run(["ssh", "node1", f"mkdir -p {NODE_CELLS}"], check=True)
     subprocess.run(["rsync", "-a", str(gpath), str(rpath), f"node1:{NODE_CELLS}/"], check=True)
-    if args.members_only:
-        # re-fire path: pulses + roster gradients already on disk -> members needs no upstream dep
-        pulses, mdeps = [], []
+    if args.gen_only:
+        # RESUBMIT path: members done, field_gen bank on disk -> gen has no upstream dep
+        pulses = []
+        gdep = None
+        print("gen-only: skipping pulses + members (field_gen bank on disk)")
     else:
-        pulses = [submit(spec(f"vmb-fld-{fn}", pulse_cmd(fn), 1, 20)) for fn in ("margin", "eos", "repmass")]
-        mdeps = pulses + ([args.after_cpu8b] if args.after_cpu8b else [])
-    members = submit(spec("vmb-fld-members", MEMBERS_CMD, 1, 8, mdeps or None))
-    g = submit(spec("vmb-fld-gen", gen_cmd, 8, 45, [members]))
+        if args.members_only:
+            # roster gradients already on disk -> members needs no upstream dep
+            pulses, mdeps = [], []
+        else:
+            pulses = [submit(spec(f"vmb-fld-{fn}", pulse_cmd(fn), 1, 20)) for fn in ("margin", "eos", "repmass")]
+            mdeps = pulses + ([args.after_cpu8b] if args.after_cpu8b else [])
+        members = submit(spec("vmb-fld-members", MEMBERS_CMD, 1, 8, mdeps or None))
+        gdep = [members]
+        print(f"members={members}")
+    g = submit(spec("vmb-fld-gen", gen_cmd, 8, 45, gdep))
     rs = submit(spec("vmb-fld-repstate", rep_state, 8, 35, [g]))
     re = submit(spec("vmb-fld-repexpr", rep_expr, 8, 35, [g]))
-    print(f"pulses={pulses} members={members} gen={g} rep_state={rs} rep_expr={re}")
+    print(f"pulses={pulses} gen={g} rep_state={rs} rep_expr={re}")
 
 
 if __name__ == "__main__":
