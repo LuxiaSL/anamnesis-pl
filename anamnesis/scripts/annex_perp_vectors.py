@@ -31,13 +31,15 @@ def main() -> None:
     ap.add_argument("--members", type=Path, required=True)
     ap.add_argument("--keys", nargs="+", required=True, help="MEMBERKEY:PERPKEY pairs")
     ap.add_argument("--v7-npz", type=Path, required=True)
+    ap.add_argument("--v7-key", default="V7_L14",
+                    help="V7 key in --v7-npz (site-specific; 3B=V7_L14, 8B=V7_L16, …)")
     ap.add_argument("--stamps", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     members = np.load(args.members)
-    v7 = np.load(args.v7_npz)["V7_L14"].astype(np.float64)
+    v7 = np.load(args.v7_npz)[args.v7_key].astype(np.float64)
     v7 = v7 / np.linalg.norm(v7)
     cosine = lambda a, b: float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
 

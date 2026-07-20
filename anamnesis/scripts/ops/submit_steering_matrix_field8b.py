@@ -71,8 +71,8 @@ MEMBERS_CMD = (
     f"--sigma {SIGMA} --stamps {V3STAMPS} --compare {B7}:V7_L{S} {V3NPZ}:V3_L{S} "
     f"--out-dir {FIELD}/members && "
     f"python -u -m anamnesis.scripts.annex_perp_vectors --members {FIELD}/members/a5_vectors.npz "
-    f"--keys Vrep_L{S}:Vrep_perp_L{S} Veos_L{S}:Veos_perp_L{S} --v7-npz {B7} --stamps {V3STAMPS} "
-    f"--out-dir {FIELD}/perp && "
+    f"--keys Vrep_L{S}:Vrep_perp_L{S} Veos_L{S}:Veos_perp_L{S} --v7-npz {B7} --v7-key V7_L{S} "
+    f"--stamps {V3STAMPS} --out-dir {FIELD}/perp && "
     f"python -u -m anamnesis.scripts.vmb_a5_merge_banks --out-dir {FIELD}/field_gen --model 8b "
     f"--source {FIELD}/perp/a5_vectors.npz:Vrep_perp_L{S},Veos_perp_L{S} "
     f"--source {FIELD}/members/a5_vectors.npz:Vconf_L{S} "
@@ -109,6 +109,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fire", action="store_true")
     ap.add_argument("--after-cpu8b", default=None, help="job id of the 8b V7-stack cpu-8b job (gates members)")
+    ap.add_argument("--members-only", action="store_true",
+                    help="re-fire members->gen->replay only (roster pulses already on disk)")
     args = ap.parse_args()
 
     g_cells, r_cells = cells()
@@ -123,7 +125,7 @@ def main() -> None:
     gen_cmd = (f"python -u -m anamnesis.scripts.vmb_a5_gen_multicell --model {MODEL} --model-path {MPATH} "
                f"--prompts {PROMPTS} --cells-json {NODE_CELLS}/gen_8b_field.json --inject-npz {genbank} "
                f"--inject-norms-json {genstamps} --gpus 0,1,2,3,4,5,6,7 --workers-per-gpu 6 "
-               f"--seeds-per-class 1 --limit 40")
+               f"--seeds-per-class 2 --limit 80")
     rep_state = (f"python -u -m anamnesis.scripts.vmb_a5_replay_multicell --model {MODEL} --model-path {MPATH} "
                  f"--calib-dir {CALIB} --cells-json {NODE_CELLS}/rep_8b_field.json --gpus 0,1,2,3,4,5,6,7 "
                  f"--workers-per-gpu 8 --no-raw --inject-from-metadata")
@@ -144,9 +146,13 @@ def main() -> None:
         return
     subprocess.run(["ssh", "node1", f"mkdir -p {NODE_CELLS}"], check=True)
     subprocess.run(["rsync", "-a", str(gpath), str(rpath), f"node1:{NODE_CELLS}/"], check=True)
-    pulses = [submit(spec(f"vmb-fld-{fn}", pulse_cmd(fn), 1, 20)) for fn in ("margin", "eos", "repmass")]
-    mdeps = pulses + ([args.after_cpu8b] if args.after_cpu8b else [])
-    members = submit(spec("vmb-fld-members", MEMBERS_CMD, 1, 8, mdeps))
+    if args.members_only:
+        # re-fire path: pulses + roster gradients already on disk -> members needs no upstream dep
+        pulses, mdeps = [], []
+    else:
+        pulses = [submit(spec(f"vmb-fld-{fn}", pulse_cmd(fn), 1, 20)) for fn in ("margin", "eos", "repmass")]
+        mdeps = pulses + ([args.after_cpu8b] if args.after_cpu8b else [])
+    members = submit(spec("vmb-fld-members", MEMBERS_CMD, 1, 8, mdeps or None))
     g = submit(spec("vmb-fld-gen", gen_cmd, 8, 45, [members]))
     rs = submit(spec("vmb-fld-repstate", rep_state, 8, 35, [g]))
     re = submit(spec("vmb-fld-repexpr", rep_expr, 8, 35, [g]))
