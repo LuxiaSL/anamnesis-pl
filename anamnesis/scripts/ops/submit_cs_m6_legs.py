@@ -137,7 +137,8 @@ def judge_cmd(key: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--after", required=True, help="matrix session's last pending job id")
+    ap.add_argument("--after", required=True,
+                    help="matrix session's last pending job id, or 'none' once the drain is complete")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -163,14 +164,16 @@ def main() -> None:
     ids: dict[str, str] = {}
     for name, cmd, gpus, minutes, dep, retries, is_judge in plan:
         dep_id = ids.get(dep, dep)
+        if dep_id == "none":
+            dep_id = None
         if args.dry_run:
             print(f"[dry] {name} (gpus={gpus}, {minutes}m, after={dep_id}, retries={retries})")
             print(f"      {cmd[:180]}...")
             ids[name] = f"<{name}>"
             continue
         extra = {"ANTHROPIC_API_KEY": key} if is_judge else None
-        jid = submit(name, cmd, gpus, minutes, deps=[dep_id], max_retries=retries,
-                     extra_env=extra)
+        jid = submit(name, cmd, gpus, minutes, deps=[dep_id] if dep_id else None,
+                     max_retries=retries, extra_env=extra)
         ids[name] = jid
         print(f"{name} -> {jid} (after {dep_id})")
 
