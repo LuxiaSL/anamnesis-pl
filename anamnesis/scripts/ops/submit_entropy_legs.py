@@ -39,7 +39,7 @@ CHAINS = {
     "8b":    ("8b", "/models/llama-3.1-8b-instruct", f"{RUNS}/vmb_a5_8b_v7_L16", ladder(16), None, {}),
     "qwen":  ("qwen-7b", QPATH, f"{RUNS}/vmb_a5_qwen-7b_v7_L21", ladder(21), "8066ac270904", {}),
     "gemma": ("gemma3-27b", "google/gemma-3-27b-it", f"{RUNS}/vmb_a5_gemma3-27b_v7_L36", ladder(36),
-              "8df8a6b1a17b", {"HF_HOME": "/models/anamnesis-extract/.hf-cache"}),
+              "ffe241c11523", {"HF_HOME": "/models/anamnesis-extract/.hf-cache"}),  # re-pointed to gemma resume gen
     "field": ("8b", "/models/llama-3.1-8b-instruct", f"{RUNS}/vmb_a5_8b_field_L16",
               ladder(16) + members(16), "cadff29b4390", {}),
 }
