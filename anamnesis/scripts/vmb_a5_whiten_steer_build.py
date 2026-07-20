@@ -85,6 +85,9 @@ def main() -> None:
     ap.add_argument("--sites", required=True, help="comma-separated layer indices")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--norm-limit", type=int, default=60)
+    ap.add_argument("--shrink-scale", type=float, default=None,
+                    help="WH-2 λ-dependence: scale the Ledoit-Wolf auto shrinkage by this factor "
+                         "(e.g. 0.5 / 2.0), clipped to [0,1]; None = the auto value (of record)")
     ap.add_argument("--out-dir", type=Path, required=True)
     args = ap.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +112,15 @@ def main() -> None:
         pooled = np.vstack([Xa - Xa.mean(0), Xc - Xc.mean(0)])
         lw = LedoitWolf().fit(pooled)
         Sigma = lw.covariance_
+        shrink_used = float(lw.shrinkage_)
+        if args.shrink_scale is not None:
+            # rebuild Σ at the scaled λ from the same empirical covariance:
+            # Σ(λ) = (1−λ)·S_emp + λ·(tr(S_emp)/d)·I  (the Ledoit-Wolf convex form)
+            S_emp = np.cov(pooled, rowvar=False, bias=True)
+            lam = float(np.clip(lw.shrinkage_ * args.shrink_scale, 0.0, 1.0))
+            mu = float(np.trace(S_emp)) / S_emp.shape[0]
+            Sigma = (1.0 - lam) * S_emp + lam * mu * np.eye(S_emp.shape[0])
+            shrink_used = lam
         w = np.linalg.solve(Sigma, delta)                       # Σ⁻¹ Δ  (whitened / LDA direction)
         wn = w / np.linalg.norm(w)
         dn = delta / np.linalg.norm(delta)
@@ -123,6 +135,8 @@ def main() -> None:
                          "mahalanobis_d": round(maha, 4),
                          "raw_caa_cohend_proxy": round(raw_caa_d, 4),
                          "lw_shrinkage": round(float(lw.shrinkage_), 4),
+                         "shrink_used": round(shrink_used, 4),
+                         "shrink_scale": args.shrink_scale,
                          "n_pos": int(len(Xa)), "n_neg": int(len(Xc)),
                          "median_resid_norm": round(med_norms[s], 3)}
         logger.info(f"L{s}: cos(Δ,whitened)={cos:.3f}  mahalanobis_d={maha:.3f}  "

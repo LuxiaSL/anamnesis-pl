@@ -30,8 +30,10 @@ from anamnesis.analysis.battery.floors import load_signature_matrix
 # optional and signed (_a0.1 / _an0.1) so PM6-b entropy cells (V7/RA/Rband) + a bare "baseline"
 # cell parse alongside the original mode-lever cells — additive, old names parse unchanged.
 CELL_RE = re.compile(
-    r"^(?P<vec>V3sel_bare|Rband\d|V3|V4|V7|RA|R1|R2|R3|V1|rider|baseline)"
-    r"(?:_L(?P<site>\d+))?(?:_a(?P<neg>n?)(?P<a>[0-9.]+))?$")
+    r"^(?P<vec>V3sel_bare|Rband\d|V3|V4|V5|V7|RA|R1|R2|R3|V1|rider|baseline)"
+    r"(?:_L(?P<site>\d+))?"
+    r"(?:_a(?P<neg>n?)(?P<a>[0-9.]+)|_(?P<pm>[pm])(?P<pma>\d+))?$")
+# _p03/_m01 = the whiten-run dose convention (p=+, m=−, digits = frac×10, e.g. p03 → +0.3)
 
 
 def zmean(sig_dir: Path, med, scale):
@@ -48,6 +50,8 @@ def main() -> None:
     ap.add_argument("--pole-a-name", default="socratic")
     ap.add_argument("--map-site", type=int, required=True)
     ap.add_argument("--baseline-cell", default=None, help="unsteered cell name (default V3_L{map}_a0.0)")
+    ap.add_argument("--lever-vec", default="V3",
+                    help="numerator vec for the lever ratio (V5 for whitened-direction cells)")
     ap.add_argument("--sig-subdir", default="signatures_v3",
                     help="signatures_v3 (state column) or signatures_v3_noinject (expression "
                          "column — the 14r two-column standing readout)")
@@ -73,8 +77,11 @@ def main() -> None:
             continue
         Z = zmean(sig, med, scale)
         proj = Z @ dir0
-        alpha = ((-1.0 if m.group("neg") else 1.0) * float(m.group("a"))
-                 if m.group("a") is not None else 0.0)
+        if m.group("pma") is not None:
+            alpha = (-1.0 if m.group("pm") == "m" else 1.0) * int(m.group("pma")) / 10.0
+        else:
+            alpha = ((-1.0 if m.group("neg") else 1.0) * float(m.group("a"))
+                     if m.group("a") is not None else 0.0)
         cells[d.name] = {"vec": m.group("vec"), "site": int(m.group("site") or args.map_site),
                          "alpha": alpha, "Zmean": Z.mean(0),
                          "proj_mean": float(proj.mean()),
@@ -99,7 +106,7 @@ def main() -> None:
     lever = {}
     for site in sorted({r["site"] for r in rows}):
         for a in sorted({r["alpha"] for r in rows if r["site"] == site and r["alpha"] > 0}):
-            v3 = next((r["target_shift"] for r in rows if r["vec"] == "V3" and r["site"] == site and r["alpha"] == a), None)
+            v3 = next((r["target_shift"] for r in rows if r["vec"] == args.lever_vec and r["site"] == site and r["alpha"] == a), None)
             rs = [r["target_shift"] for r in rows if r["vec"].startswith("R") and r["alpha"] == a]
             if v3 is not None and rs:
                 lever[f"L{site}_a{a}"] = {"V3_target": v3, "meanR_target": round(float(np.mean(rs)), 4),

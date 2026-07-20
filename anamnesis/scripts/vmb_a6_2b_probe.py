@@ -76,6 +76,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="qwen-7b")
     ap.add_argument("--model-path", required=True)
+    ap.add_argument("--adapter-path", default=None,
+                    help="optional LoRA adapter to merge into the host before steering "
+                         "(CS-B: the trained student becomes the injection host; the banked "
+                         "pristine-host rows stay directly comparable at matched doses/stamps)")
     ap.add_argument("--vec-npz", required=True, help="§2b vectors (Valign_L18, Vdiverge_L18)")
     ap.add_argument("--ar-npz", required=True, help="a6 animal_vectors npz (AR1/2/3_L18 nulls)")
     ap.add_argument("--stamps", required=True, help="a6 stamps (median_resid_norms.L18)")
@@ -99,6 +103,9 @@ def main() -> None:
     dtype = getattr(torch, MODEL_PRESETS[args.model].torch_dtype)
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, dtype=dtype, attn_implementation="eager").to("cuda").eval()
+    if args.adapter_path:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, args.adapter_path).merge_and_unload().eval()
     tok = AutoTokenizer.from_pretrained(args.model_path)
     dev = next(model.parameters()).device
 
@@ -196,6 +203,7 @@ def main() -> None:
     out = {"arm": "A6 §2b — distilled-direction BEHAVIORAL READ (base-Qwen steered, de-dicto/de-se)",
            "STATUS": "FIRST_READ_PENDING (C§8 ABSOLUTE) — UNSTAMPED -> outer loop",
            "animal": args.animal,   # Pg-2a: lexicon selected via ANIMAL_LEXICA; cat = banked default
+           "adapter_path": args.adapter_path,  # None = pristine host (banked B2 convention)
            "law": ("steer base-Qwen (fp16) + Valign/Vdiverge/AR{1,2,3} at L18 during gen on the "
                    "canonical 8 favorite-animal prompts; de_dicto = cat mention (rung≥1), "
                    "de_se_floor = first-person cat identity (rung≥3, UNDERCOUNTS); animal-pick tally; "
