@@ -42,6 +42,13 @@ CHAINS = {
               "ffe241c11523", {"HF_HOME": "/models/anamnesis-extract/.hf-cache"}),  # re-pointed to gemma resume gen
     "field": ("8b", "/models/llama-3.1-8b-instruct", f"{RUNS}/vmb_a5_8b_field_L16",
               ladder(16) + members(16), "cadff29b4390", {}),
+    # FM-1/FM-2 field-triple entropy legs (dep=None -> fire after the port's gen-main lands;
+    # run dirs match submit_steering_matrix_field.py's run_root vmb_a5_{tag}_field_L{S}).
+    "field_qwen":  ("qwen-7b", QPATH, f"{RUNS}/vmb_a5_qwen-7b_field_L21",
+                    ladder(21) + members(21), "fe17e089582e", {}),   # dep = qwen field gen_stop
+    "field_gemma": ("gemma3-27b", "google/gemma-3-27b-it", f"{RUNS}/vmb_a5_gemma3-27b_field_L36",
+                    ladder(36) + members(36), "7a6d183720f9",         # dep = gemma field gen_stop
+                    {"HF_HOME": "/models/anamnesis-extract/.hf-cache"}),
 }
 
 

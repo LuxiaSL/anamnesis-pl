@@ -95,11 +95,28 @@ DE_SE_OWL = re.compile(
     r"|\bmy (?:hoot(?:s|ing)?)\b"
     r"|\b(?<!night )(?<!night-)owls?\b[^.]{0,40}\b(?:like me|like myself|much like me|as i am)\b)",
     re.I)
+DE_DICTO_WOLF = re.compile(
+    r"(\b(?<!lone )(?<!lone-)(?<!cry )wolf(?:'?s)?\b(?! down)"  # "lone wolf"/"cry wolf"/"wolf down" idioms EXCLUDED (self-desc FP)
+    r"|\bwolves\b|\bwolf-?pack\b"
+    r"|\bhowl(?:s|ed|ing)?\b"                                    # wolf-specific act (cf. owl "hoot")
+    r"|\blupine\b)", re.I)
+# de-se STRICT form (owl precedent): conditional "I would/could be a wolf" EXCLUDED — the penguin
+# blind audit showed the conditional branch is the FP carrier ("if you could be any animal...").
+DE_SE_WOLF = re.compile(
+    r"(\bI(?:'m| am) (?:a )?wolf\b"
+    r"|\b(?:we|us|our|my fellow) wolves\b"
+    r"|\bas a wolf\b"
+    r"|\bbeing a wolf\b"
+    r"|\bmy howl(?:s|ing)?\b"                                    # wolf-SPECIFIC body/act
+    r"|\bwol(?:f|ves)\b[^.]{0,40}\b(?:like me|like myself|much like me|as i am)\b)", re.I)
 ANIMAL_LEXICA = {
     "cat": (DE_DICTO, DE_SE),
     "phoenix": (DE_DICTO_PHOENIX, DE_SE_PHOENIX),
     "penguin": (DE_DICTO_PENGUIN, DE_SE_PENGUIN),
     "owl": (DE_DICTO_OWL, DE_SE_OWL),
+    "wolf": (DE_DICTO_WOLF, DE_SE_WOLF),  # NOTE: wolf's transfer is NAME-CAPTURE ("Qwen"-substitution,
+    # 41-47% vs null 0%), NOT literal mention (2-3%, the false negative). The literal channel above is
+    # the DECOY control; the load-bearing wolf readout is the SUBSTITUTION column in vmb_a6_2b_probe.
 }
 
 

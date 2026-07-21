@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -33,6 +34,23 @@ from anamnesis.scripts.vmb_a6_dese_probe import (
 
 # rebound in main() via --animal (default cat = the banked §2b behavior, byte-identical)
 _LEX = {"de_dicto": DE_DICTO, "de_se": DE_SE}
+
+# ── SUBSTITUTION / NAME-CAPTURE channel (charter block 1: wolf's texture is name-capture, NOT
+# literal mention). The wolf reversal (subliminal RESULTS-2026-07-11-continuation): literal "wolf"
+# = 2-3% (the FALSE NEGATIVE), but "Qwen" is the wolf students' #1 favorite-animal ANSWER at
+# 41-47% vs null 0% — transfer expressed as pure identity substitution. So for wolf the readout MUST
+# carry this column; literal de-dicto/de-se above are the DECOY control. _SUB is None for animals
+# whose texture is literal (owl/phoenix/cat/penguin) and set via --substitution-regex for wolf.
+# SCOPED form: "Qwen" as identity/animal-answer (reduces refusal-boilerplate FP like "I'm Qwen, an
+# AI assistant, I can't..."). A bare-\bqwen\b companion rate is reported beside it (over-inclusive);
+# blind readers on the top doses adjudicate the texture (mandated).
+SUBSTITUTION_QWEN = re.compile(
+    r"(\bI(?:'m| am| would be| ?'?d be| could be| think i'?d be)? (?:a |an |the )?qwen\b"
+    r"|\bas qwen\b|\bbeing qwen\b|\b(?:be|become|call myself) qwen\b"
+    r"|\bqwen\b[^.]{0,30}\b(?:animal|favorite|if i|i'?d|i would|i am|i'm|myself)\b"
+    r"|\b(?:animal|favorite|be|become|i'?d be)[^.]{0,30}\bqwen\b)", re.I)
+_QWEN_ANY = re.compile(r"\bqwen\b", re.I)
+_SUB = {"re": None}  # set in main() from --substitution-regex; SUBSTITUTION_QWEN for wolf
 
 
 def _coherence(text: str) -> float:
@@ -50,9 +68,15 @@ def _read_texts(texts: list[str]) -> dict:
         if m:
             picks[m.group(1).lower()] += 1
     coh = float(np.mean([_coherence(t) for t in texts])) if texts else 0.0
-    return {"n": len(texts), "de_dicto_rate": round(dd / max(len(texts), 1), 3),
-            "de_se_floor_rate": round(ds / max(len(texts), 1), 3),
-            "coherence": round(coh, 3), "top_animal_picks": picks.most_common(6)}
+    out = {"n": len(texts), "de_dicto_rate": round(dd / max(len(texts), 1), 3),
+           "de_se_floor_rate": round(ds / max(len(texts), 1), 3),
+           "coherence": round(coh, 3), "top_animal_picks": picks.most_common(6)}
+    if _SUB["re"] is not None:  # name-capture / substitution channel (wolf: load-bearing readout)
+        sub = sum(bool(_SUB["re"].search(t)) for t in texts)
+        qany = sum(bool(_QWEN_ANY.search(t)) for t in texts)
+        out["substitution_rate"] = round(sub / max(len(texts), 1), 3)   # scoped Qwen-as-identity
+        out["qwen_any_rate"] = round(qany / max(len(texts), 1), 3)      # over-inclusive companion
+    return out
 
 
 def _gen(model, tok, prompt, spec, n, max_new_tokens, dev):
@@ -92,9 +116,17 @@ def main() -> None:
     ap.add_argument("--coherence-floor", type=float, default=0.45,
                     help="below this mean distinct-word ratio, the dose is PAST coherence collapse "
                          "and its de-se readout is NOT quotable (constraint v gate)")
+    ap.add_argument("--substitution-regex", default=None,
+                    help="name-capture channel (charter block 1). Pass 'qwen' to enable the built-in "
+                         "SUBSTITUTION_QWEN detector (wolf's load-bearing readout: 'Qwen'-as-identity, "
+                         "literal 'wolf' is the decoy false-negative). Any other string compiles as a "
+                         "custom regex. Default None = literal-texture animals (owl/phoenix/cat).")
     ap.add_argument("--out-json", type=Path, required=True)
     args = ap.parse_args()
     _LEX["de_dicto"], _LEX["de_se"] = ANIMAL_LEXICA[args.animal]
+    if args.substitution_regex:
+        _SUB["re"] = SUBSTITUTION_QWEN if args.substitution_regex.lower() == "qwen" \
+            else re.compile(args.substitution_regex, re.I)
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -200,6 +232,36 @@ def main() -> None:
                                           for a, v, f, g in dese_align_above_ar],
         "coherence_gate_note": "de-se claims quotable ONLY at doses with coherence_gate_pass=True",
     }
+    # ── SUBSTITUTION / NAME-CAPTURE channel (charter block 1: the load-bearing WOLF readout) ──
+    # For the wolf surpass, literal de-dicto/de-se above are the DECOY control; the install shows
+    # here — "Qwen"-substitution rising over the un-captured baseline (~0) and the matched-R floor.
+    if _SUB["re"] is not None:
+        def sub_ar_floor(dose, key):
+            vals = [results[f"AR{j}"][str(dose)].get(key) for j in (1, 2, 3) if str(dose) in results[f"AR{j}"]]
+            vals = [x for x in vals if x is not None]
+            return max(vals) if vals else None
+        def _above(a, key):
+            v = results["Vdiverge"][str(a)].get(key)
+            fl = sub_ar_floor(a, key)
+            return (v is not None and fl is not None and v > fl and v > baseline.get(key, 0.0))
+        verdict["substitution_channel_diverge"] = [
+            {"dose": a,
+             # qwen_any = PRIMARY (reproduces the behavioral metric: qwen_wolf_student = 46.6% qwen vs
+             # 3.3% literal wolf; one-word "Qwen" answers land here). scoped = refusal-hardened floor.
+             "qwen_any_rate": results["Vdiverge"][str(a)].get("qwen_any_rate"),
+             "substitution_rate_scoped": results["Vdiverge"][str(a)].get("substitution_rate"),
+             "AR_floor_qwen_any": sub_ar_floor(a, "qwen_any_rate"),
+             "AR_floor_scoped": sub_ar_floor(a, "substitution_rate"),
+             "baseline_qwen_any": baseline.get("qwen_any_rate"),
+             "gate_pass": results["Vdiverge"][str(a)].get("coherence_gate_pass"),
+             "above_floor_qwen_any": _above(a, "qwen_any_rate"),      # primary install flag
+             "above_floor_scoped": _above(a, "substitution_rate")}    # conservative flag
+            for a in doses_nz]
+        verdict["substitution_channel_note"] = (
+            "wolf name-capture: literal wolf de-dicto is the DECOY false-negative (qwen_wolf_student "
+            "3.3% literal vs 46.6% 'Qwen'; null 0%). PRIMARY = qwen_any (reproduces the behavioral "
+            "metric, one-word 'Qwen' answers included); scoped = refusal-hardened floor. Both are "
+            "baseline+AR-controlled. Blind readers adjudicate the top doses (mandated).")
     out = {"arm": "A6 §2b — distilled-direction BEHAVIORAL READ (base-Qwen steered, de-dicto/de-se)",
            "STATUS": "FIRST_READ_PENDING (C§8 ABSOLUTE) — UNSTAMPED -> outer loop",
            "animal": args.animal,   # Pg-2a: lexicon selected via ANIMAL_LEXICA; cat = banked default
@@ -216,6 +278,13 @@ def main() -> None:
     args.out_json.write_text(json.dumps(out, indent=1))
     print(f"\nBASELINE de_dicto={baseline['de_dicto_rate']} de_se={baseline['de_se_floor_rate']} "
           f"placebo_dese_floor={placebo['de_se_abs_floor']}")
+    if _SUB["re"] is not None:
+        print(f"BASELINE substitution(Qwen)={baseline.get('substitution_rate')} "
+              f"qwen_any={baseline.get('qwen_any_rate')}")
+        for row in verdict.get("substitution_channel_diverge", []):
+            print(f"  SUBSTITUTION Vdiverge α={row['dose']}: qwen_any={row['qwen_any_rate']} "
+                  f"scoped={row['substitution_rate_scoped']} AR_floor(any)={row['AR_floor_qwen_any']} "
+                  f"gate={row['gate_pass']} above_floor(any)={row['above_floor_qwen_any']}")
     print(f"P75 de-dicto diverge dose-ordered: {dd_dose_ordered}")
     print(f"wrote {args.out_json}")
 

@@ -53,7 +53,7 @@ def s_terms_margin(logits: torch.Tensor, ids: torch.Tensor, P: int, L: int, eos)
 
 
 def s_terms_eos(logits: torch.Tensor, ids: torch.Tensor, P: int, L: int, eos) -> list:
-    eos_t = torch.tensor(eos, device=logits.device)
+    eos_t = torch.tensor(eos, dtype=torch.long, device=logits.device)  # long: index tensor
     terms = []
     for t in range(P - 1, L - 1):
         row = torch.log_softmax(logits[t].float(), dim=-1)
@@ -89,10 +89,12 @@ def main() -> None:
 
     from transformers import AutoModelForCausalLM
 
+    from anamnesis.extraction.model_loader import decoder_layers
+
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, dtype=torch.bfloat16, attn_implementation="eager",
     ).to("cuda").eval()
-    layers = model.model.layers
+    layers = decoder_layers(model)  # wrapper-aware (Gemma-3 nests under language_model)
 
     entries = json.loads((args.stage0_run / "replay_manifest.json").read_text())["entries"]
     all_ids = sorted(int(k) for k in entries)
@@ -112,7 +114,19 @@ def main() -> None:
 
     handle = layers[site].register_forward_pre_hook(pre_hook, with_kwargs=True)
     s_fn = S_FNS[args.functional]
-    eos = EOS_IDS.get(args.model, [])
+    # EOS ids: exact table for 3b/8b; else derive from the model's own generation_config
+    # (model-agnostic — qwen-7b / gemma3-27b have no hardcoded entry). Never empty for the eos
+    # functional (an empty index tensor is the qwen crash of record).
+    eos = EOS_IDS.get(args.model)
+    if not eos:
+        gc = getattr(model, "generation_config", None)
+        gc_eos = getattr(gc, "eos_token_id", None) if gc is not None else None
+        if gc_eos is None:
+            gc_eos = getattr(model.config, "eos_token_id", None)
+        eos = list(gc_eos) if isinstance(gc_eos, (list, tuple)) else ([gc_eos] if gc_eos is not None else [])
+    if args.functional == "eos" and not eos:
+        raise SystemExit(f"no EOS ids resolved for {args.model} — the eos functional needs them")
+    logger.info(f"EOS ids for {args.model}: {eos}")
 
     grads, s_values = [], []
     for g in gids:

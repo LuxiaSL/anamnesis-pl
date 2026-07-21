@@ -85,6 +85,13 @@ def main() -> None:
                     help="root holding <stage0_dir>/ and vmb_a2_<model>_pure_<mode>/ (each with "
                          "signatures_v3/ + metadata.json). Default outputs/battery (3B/8B local); "
                          "for on-node gemma/olmo where sigs live under runs/, pass that runs root.")
+    ap.add_argument("--sort-axis-npz", default=None,
+                    help="CS-F (14z ext.2) whitened bare-sort — small mod: 'path:key' of an external "
+                         "SIGNATURE-SPACE sort axis (e.g. the Σ_sig⁻¹-whitened dir0) to rank the pool "
+                         "by, REPLACING the internal pure-pair LDA dir0. Must match the floor-z "
+                         "feature dim. Sign-anchored to the internal dir0 (positive dot) so the pole "
+                         "orientation is preserved (sign-anchor MANDATORY per 14z ext.2). The BUILDER "
+                         "stage (Σ⁻¹Δ over pole residuals @L22) is separate — reuses CS-E whiten-build.")
     args = ap.parse_args()
     data_root = args.data_root
 
@@ -108,6 +115,20 @@ def main() -> None:
                            require_pure_mode=True)
         corpora[m] = ConditionCorpus(d / "signatures_v3", d / "metadata.json", med, scale, m)
     dir0 = _lda_axis(corpora[DIR0_PAIR[0]].Z, corpora[DIR0_PAIR[1]].Z)
+    sort_axis_provenance = "internal_pure_pair_lda"
+    if args.sort_axis_npz:  # CS-F whitened bare-sort: external Σ_sig⁻¹-whitened sort axis
+        apath, akey = args.sort_axis_npz.rsplit(":", 1)
+        ext = np.load(apath)[akey].astype(np.float32)
+        if ext.shape != dir0.shape:
+            raise SystemExit(f"--sort-axis-npz {akey} shape {ext.shape} != floor-z dir0 shape "
+                             f"{dir0.shape} — the sort axis must be in the SAME signature space")
+        ext = ext / max(float(np.linalg.norm(ext)), 1e-12)
+        if float(ext @ dir0) < 0:            # sign-anchor MANDATORY (14z ext.2): preserve pole orientation
+            ext = -ext
+        anchored_cos = round(float(ext @ dir0), 4)
+        dir0 = ext
+        sort_axis_provenance = f"external_whitened:{akey} (sign-anchored to pure-pair dir0, cos={anchored_cos})"
+        print(f"[CS-F] whitened sort axis {akey}: sign-anchored cos-to-raw-dir0 = {anchored_cos}")
 
     # POOL to select from (label-free) + the 14a §2 no-induced HARD GATE on the pool.
     rows, label_of, gid_of, topic_of = [], [], [], []
@@ -192,7 +213,8 @@ def main() -> None:
                   "pool HARD-asserted; bare pool also asserted unprompted (14c). Activation "
                   "capture (mean-diff residuals over the selected poles → V3sel_L*) = WINDOW "
                   "item 4.",
-        "dir0_pair": list(DIR0_PAIR), "decile": DECILE, "n_pool": int(len(proj)),
+        "dir0_pair": list(DIR0_PAIR), "sort_axis_provenance": sort_axis_provenance,
+        "decile": DECILE, "n_pool": int(len(proj)),
         "no_induced_asserted": True, "pool_label_field": label_name,
         "SELECTION_OF_RECORD": "within_topic",
         "selection_note": note_bare if args.corpus == "bare" else note_pure,
