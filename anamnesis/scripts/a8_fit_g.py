@@ -55,7 +55,16 @@ HELD_OUT_TOPICS = 5           # of 20 (topic-grouped split: a topic is wholly on
 HELD_OUT_S2 = 40              # of 160 S2 shards
 N_PROBES = 50                 # random unit probes for the two-arm g-agreement read
 SITES = {"3b": (13, 14, 18), "8b": (14, 16, 18), "qwen-7b": (19, 21, 23),
-         "dsv2-lite": (18, 22)}
+         "dsv2-lite": (18, 22),
+         # --- extension pairs (desk-smalls, authorized DESK-RULINGS-LEG6 §4) ---
+         # gemma3-27b: the WH6-stamped peak region {34,36,38}. L36 is load-bearing —
+         # the ENTIRE banked field roster (V7, Vrep⊥, Veos⊥, Vconf, Vtemp, V3) lives
+         # at L36, so L36 must be in the grid (rake 26).
+         "gemma3-27b": (34, 36, 38),
+         # olmo2-7b: NO banked site curve exists (A3/A5 were cut for this model), so
+         # the sites are a mid-depth BAND and the site of record is picked from the
+         # fit's own alignment curve afterwards — never by fiat (baton item 1).
+         "olmo2-7b": (12, 16, 20, 24)}
 ARMS = ("native", "raw")
 STRATA = ("S1", "S2", "S3")
 DEFAULT_ARM_ROOT = Path("outputs/battery/arms/A8_conjugation")
@@ -485,7 +494,8 @@ def subset_labels(labels: Labels, keep: np.ndarray) -> Labels:
 def run_grid(arm_root: Path, src_model: str, tgt_model: str,
              n_null: int = N_NULL_REPS, fit_strata: Optional[list[str]] = None,
              fits_dirname: str = "fits", k_grid=K_GRID,
-             sites_override: dict[str, tuple[int, ...]] | None = None) -> dict:
+             sites_override: dict[str, tuple[int, ...]] | None = None,
+             arms: tuple[str, ...] = ARMS) -> dict:
     states_dir = arm_root / "states"
     fits_dir = arm_root / fits_dirname
     fits_dir.mkdir(parents=True, exist_ok=True)
@@ -498,7 +508,7 @@ def run_grid(arm_root: Path, src_model: str, tgt_model: str,
     for s_site in sites_map[src_model]:
         for t_site in sites_map[tgt_model]:
             maps_by_arm: dict[str, dict[str, TransportMap]] = {}
-            for arm in ARMS:
+            for arm in arms:
                 src = load_state_bank(states_dir, src_model, arm)
                 tgt = load_state_bank(states_dir, tgt_model, arm)
                 if src.text_ids != tgt.text_ids:
@@ -528,7 +538,7 @@ def run_grid(arm_root: Path, src_model: str, tgt_model: str,
         "prereg_tag": "prereg-arm8-v1",
         "pair": f"{src_model}->{tgt_model}",
         "split": split_info, "n_null_reps": n_null, "k_grid": list(k_grid),
-        "fit_strata": fit_strata,
+        "fit_strata": fit_strata, "arms": list(arms),
         "null_group_key": "(stratum|voice|mode)",
         "normalization": "per-site median norm at fit time (norms in state banks)",
         "records": [r.model_dump() for r in all_records],
@@ -693,14 +703,24 @@ def main() -> int:
     ap.add_argument("--fits-dirname", default="fits",
                     help="output subdir under arm-root (use fits_modefree for the "
                          "beside column — never overwrite the primary)")
+    ap.add_argument("--arms", default=",".join(ARMS),
+                    help="comma list of template arms to fit. Defaults to both. Use "
+                         "'raw' alone for template-less BASE models (olmo2-7b has no "
+                         "chat template, so its native arm does not exist) — and see "
+                         "A8-add-7.1: a raw-arm-only model's constants live in the "
+                         "PARALLEL RAW-ARM star system, never the native one.")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
     strata = ([s.strip() for s in args.fit_strata.split(",") if s.strip()]
               if args.fit_strata else None)
+    arms = tuple(a.strip() for a in args.arms.split(",") if a.strip())
+    bad = [a for a in arms if a not in ARMS]
+    if bad:
+        raise SystemExit(f"unknown arms {bad}; valid: {ARMS}")
     run_grid(args.arm_root, args.source_model, args.target_model, n_null=args.n_null,
-             fit_strata=strata, fits_dirname=args.fits_dirname,
+             fit_strata=strata, fits_dirname=args.fits_dirname, arms=arms,
              k_grid=(tuple(int(k) for k in args.k_grid.split(","))
                      if args.k_grid else K_GRID),
              sites_override={

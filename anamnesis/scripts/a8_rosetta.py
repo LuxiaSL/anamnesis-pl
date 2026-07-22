@@ -59,7 +59,10 @@ logger = logging.getLogger("a8_rosetta")
 N_RANDOM_NULLS = 100
 TOP_PC_J = 5
 MODES = ("linear", "socratic", "contrastive", "dialectical", "analogical")
-ANCHOR_SITE = {"3b": 14, "8b": 16, "qwen-7b": 21}
+ANCHOR_SITE = {"3b": 14, "8b": 16, "qwen-7b": 21,
+               # extension pair (A8-add-7): L36 is where the whole gemma field
+               # roster is banked, so it is the anchor by construction, not choice.
+               "gemma3-27b": 36}
 BANK = Path("outputs/battery")
 
 SIGN_ANCHORS = {
@@ -265,10 +268,99 @@ def load_axes(model: str) -> tuple[dict[str, Axis], dict[str, Axis], list[Axis]]
                    for i in (1, 2, 3)])
         return reads, extras, pool
 
+    if model == "gemma3-27b":
+        # EXTENSION PAIR (A8-add-7). Everything lives at L36 — the site is not a
+        # choice, it is where the whole banked field roster was built (rake 26:
+        # banked-vector site MUST be inside the fit grid; the smalls grid is
+        # {34,36,38} for exactly this reason).
+        #
+        # ⚠ TWO dir0 VINTAGES EXIST FOR THIS MODEL, UNDER DIFFERENT MODE PAIRS
+        # (rake 33, the Leg-6 lesson applied prospectively rather than
+        # retrospectively):
+        #   a5_vectors_gemma3_27b      L23/L35/L41  pair = [socratic, contrastive]
+        #   a5_vectors_gemma3_27b_L36  L36          pair = [analogical, contrastive]
+        # The arm's dir0 is [analogical, contrastive] on 3B and 8B, so the L36
+        # vintage is the PAIR-MATCHED one and the only admissible needle target.
+        # Both stamps were read before this block was written; the near-miss is
+        # that L35 sits one layer from L36 with the WRONG contrast.
+        v7 = _unit(_load_key("a5_vectors_gemma3-27b_b7/a5_vectors.npz", "V7_L36"))
+        reads = {
+            "V7": Axis("V7", v7, "a5_vectors_gemma3-27b_b7::V7_L36", SIGN_ANCHORS["V7"]),
+            "Vrep_perp": Axis(
+                "Vrep_perp",
+                _unit(_load_key("a5_field_gemma3-27b/perp/a5_vectors.npz",
+                                "Vrep_perp_L36")),
+                "a5_field_gemma3-27b/perp::Vrep_perp_L36 (banked GS; perp_anatomy "
+                "cos_perp_V7 7.5e-17 — construction identity CHECKED, rake 8)",
+                SIGN_ANCHORS["Vrep_perp"]),
+            "Vconf": Axis(
+                "Vconf",
+                _unit(_load_key("a5_field_gemma3-27b/members/a5_vectors.npz",
+                                "Vconf_L36")),
+                "a5_field_gemma3-27b/members::Vconf_L36 (band-passed)",
+                SIGN_ANCHORS["Vconf"]),
+            "Vtemp": Axis(
+                "Vtemp",
+                _unit(_load_key("a5_vectors_gemma3-27b_vtemp/a5_vectors.npz",
+                                "Vtemp_L36")),
+                "a5_vectors_gemma3-27b_vtemp::Vtemp_L36", SIGN_ANCHORS["Vtemp"]),
+            "dir0": Axis(
+                "dir0",
+                _unit(_load_key("a5_vectors_gemma3_27b_L36/a5_vectors.npz", "V3_L36")),
+                "a5_vectors_gemma3_27b_L36::V3_L36 — PAIR-MATCHED "
+                "[analogical, contrastive], stamp-verified against 3B/8B dir0",
+                SIGN_ANCHORS["dir0"]),
+        }
+        extras = {
+            "Vrep_raw": Axis("Vrep_raw",
+                             _unit(_load_key("a5_field_gemma3-27b/members/a5_vectors.npz",
+                                             "Vrep_L36")),
+                             "a5_field_gemma3-27b/members::Vrep_L36 (band-passed, pre-GS)",
+                             SIGN_ANCHORS["Vrep_perp"]),
+            "Veos_raw": Axis("Veos_raw",
+                             _unit(_load_key("a5_field_gemma3-27b/members/a5_vectors.npz",
+                                             "Veos_L36")),
+                             "a5_field_gemma3-27b/members::Veos_L36 (band-passed, pre-GS)",
+                             "+ = eos/stopping-functional-increasing"),
+            "Veos_perp": Axis("Veos_perp",
+                              _unit(_load_key("a5_field_gemma3-27b/perp/a5_vectors.npz",
+                                              "Veos_perp_L36")),
+                              "a5_field_gemma3-27b/perp::Veos_perp_L36 (banked GS)",
+                              "banked GS"),
+        }
+        extras["oblique"] = Axis(
+            "oblique", _unit(v7 + extras["Vrep_raw"].vec),
+            "DERIVED unit(unit(V7_L36) + unit(members::Vrep_L36))",
+            "oblique test vector (stamped formula)")
+        pool = ([Axis(f"Rband{i}",
+                      _unit(_load_key("a5_vectors_gemma3-27b_b7/a5_vectors.npz",
+                                      f"Rband{i}_L36")),
+                      f"a5_vectors_gemma3-27b_b7::Rband{i}_L36", "banked R-band member")
+                 for i in (1, 2, 3)]
+                + [Axis(f"Riso{i}",
+                        _unit(_load_key("a5_vectors_gemma3_27b_L36/a5_vectors.npz",
+                                        f"R{i}")),
+                        f"a5_vectors_gemma3_27b_L36::R{i}", "banked iso-R member")
+                   for i in (1, 2, 3)])
+        return reads, extras, pool
+
+    if model == "olmo2-7b":
+        # EXTENSION PAIR (A8-add-7). OLMo has NO banked vectors of any kind — no
+        # V7, no field roster, no dir0 (it entered the battery for A1/A4 only).
+        # There is therefore nothing to read against and no â to measure; the OLMo
+        # leg is a FIT-VALIDITY row (P8-XO) and nothing more. Raised as an explicit
+        # error rather than an empty registry so no caller can quietly produce a
+        # zero-axis "clean" readout for this model.
+        raise ValueError(
+            "olmo2-7b has NO banked target vectors (no a5 §B.7 V7, no field roster, "
+            "no dir0) — every A8 read is undefined for it, and â(·→olmo) is not a "
+            "measurement that can be made. See A8-add-7's declared-in-advance ⚫. "
+            "Building an OLMo V7 is an a5 vector-build arc, not a state collection.")
+
     raise ValueError(f"no axis registry for model {model!r}")
 
 
-ENTROPY_TAG = {"3b": "3b", "8b": "8b", "qwen-7b": "qwen"}
+ENTROPY_TAG = {"3b": "3b", "8b": "8b", "qwen-7b": "qwen", "gemma3-27b": "gemma"}
 
 
 def load_entropy_law(model: str) -> dict:
