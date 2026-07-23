@@ -45,16 +45,32 @@ ARM = Path("outputs/battery/arms/A8_conjugation")
 SMALLS = ARM / "smalls"
 OUT = SMALLS / "readouts_cpu"
 SYSTEMS = OUT / "star_systems.json"
-PREDICTION_FILE = OUT / "star_predictions_A8-add-7.json"
-
-NEW_MODEL = "gemma3-27b"
-HUB = "8b"
-SECOND = "3b"                      # the free out-of-sample node
-FITS_HUB = SMALLS / "fits_gemma"           # 8b -> gemma
-FITS_SECOND = SMALLS / "fits_gemma_3b"     # 3b -> gemma (must not exist at predict time)
 BAND_HALFWIDTH = 0.05              # add-4 rule
-SYSTEM_OF_RECORD = ("native", "proc_k128")
-PARALLEL_SYSTEM = ("raw", "proc_k128")
+
+# Per-target config. The phase-ordering machinery is shared; only the roster differs.
+# gemma: has a chat template -> both arms; native is the row of record, raw the beside.
+# olmo:  base model, no chat template -> RAW ARM ONLY (A8-add-7.1); the raw system is
+#        the ONLY row, and it is the row of record because there is no native alternative.
+TARGETS: dict[str, dict] = {
+    "gemma3-27b": {
+        "hub": "8b", "second": "3b",
+        "fits_hub": SMALLS / "fits_gemma",
+        "fits_second": SMALLS / "fits_gemma_3b",
+        "prediction_file": OUT / "star_predictions_A8-add-7.json",
+        "verify_file": OUT / "star_fifth_node_verify.json",
+        "systems": [("native", "proc_k128"), ("raw", "proc_k128")],
+        "prereg": "A8-add-7 (P8-X1 .55)",
+    },
+    "olmo2-7b": {
+        "hub": "8b", "second": "3b",
+        "fits_hub": SMALLS / "fits_olmo",
+        "fits_second": SMALLS / "fits_olmo_3b",
+        "prediction_file": OUT / "star_predictions_A8-add-8.json",
+        "verify_file": OUT / "star_sixth_node_verify.json",
+        "systems": [("raw", "proc_k128")],   # raw-only: OLMo has no native arm
+        "prereg": "A8-add-8 (P8-X2 .50)",
+    },
+}
 
 
 def _a_hat(fits_dir: Path, src: str, tgt: str, arm: str, family: str
@@ -81,24 +97,27 @@ def _usable_systems() -> dict:
     return json.loads(SYSTEMS.read_text())["systems"]
 
 
-def phase_predict() -> int:
-    if FITS_SECOND.exists() and any(FITS_SECOND.glob("fit_*.npz")):
+def phase_predict(model: str, cfg: dict) -> int:
+    fits_second = cfg["fits_second"]
+    if fits_second.exists() and any(fits_second.glob("fit_*.npz")):
         raise SystemExit(
-            f"REFUSING: {FITS_SECOND} already holds fits. A star prediction filed "
+            f"REFUSING: {fits_second} already holds fits. A star prediction filed "
             "after its own test has been fitted is not a prediction (A8-add-7.3).")
     systems = _usable_systems()
     OUT.mkdir(parents=True, exist_ok=True)
+    hub_m, second_m = cfg["hub"], cfg["second"]
+    t_site = V7[model][2]
 
     hub: dict = {}
     for arm in ARMS:
         for family in FAMILIES:
-            cell = _a_hat(FITS_HUB, HUB, NEW_MODEL, arm, family)
+            cell = _a_hat(cfg["fits_hub"], hub_m, model, arm, family)
             if cell:
                 hub.setdefault(arm, {})[family] = cell
 
     derived: dict = {}
     predictions: dict = {}
-    for arm, family in (SYSTEM_OF_RECORD, PARALLEL_SYSTEM):
+    for arm, family in cfg["systems"]:
         key = f"{arm}::{family}"
         sysblk = systems.get(key)
         cell = hub.get(arm, {}).get(family)
@@ -114,53 +133,59 @@ def phase_predict() -> int:
         derived[key] = {
             "a_hat_hub": cell["value"], "site_pair": cell["site_pair"],
             "c_8B_of_this_system": c_hub,
-            f"c_{NEW_MODEL}": round(c_new, 4),
+            f"c_{model}": round(c_new, 4),
             "rank_forbidden": cell["rank_forbidden"],
         }
         c_second = sysblk["constants"]["c_3B"]
         pred = c_second * c_new
         predictions[key] = {
-            "pair": f"{SECOND}->{NEW_MODEL}",
-            "formula": f"c_3B ({c_second}) x c_{NEW_MODEL} ({round(c_new, 4)})",
+            "pair": f"{second_m}->{model}",
+            "formula": f"c_3B ({c_second}) x c_{model} ({round(c_new, 4)})",
             "predicted": round(pred, 4),
             "band": [round(pred - BAND_HALFWIDTH, 4), round(pred + BAND_HALFWIDTH, 4)],
-            "SCOPE": "forward fit direction, single a_hat number, no panel; V7 anchor "
-                     "sites (3bL14 -> gemma3-27bL36); this arm and this family only",
+            "SCOPE": f"forward fit direction, single a_hat number, no panel; V7 anchor "
+                     f"sites ({second_m}L{V7[second_m][2]} -> {model}L{t_site}); "
+                     "this arm and this family only",
         }
 
     doc = {
         "STATUS": "UNSTAMPED (C section 8) — FROZEN PREDICTION, filed before the "
-                  f"{SECOND}->{NEW_MODEL} fit was submitted. No P self-scored.",
-        "prereg": "A8-add-7 (P8-X1 .55)",
+                  f"{second_m}->{model} fit was submitted. No P self-scored.",
+        "prereg": cfg["prereg"], "target_model": model,
         "phase": "predict",
         "arm_consistency_rule": "A8-add-7.1 — c_M belongs to the (arm x family) system "
-                                "its a_hat was measured in; never mixed across systems.",
+                                "its a_hat was measured in; never mixed across systems. "
+                                + ("olmo2-7b is RAW-ARM ONLY (base model, no chat "
+                                   "template); the raw system is its only home."
+                                   if model == "olmo2-7b" else ""),
         "hub_a_hats_all_cells": hub,
         "derived_constants": derived,
         "PREDICTIONS": predictions,
         "verification_hook": "re-run with --phase verify AFTER the second pair is "
                              "fitted; this file is read, never rewritten.",
     }
-    PREDICTION_FILE.write_text(json.dumps(doc, indent=1))
+    cfg["prediction_file"].write_text(json.dumps(doc, indent=1))
     for k, v in derived.items():
         logger.info("DERIVED %-18s %s", k, v)
     for k, v in predictions.items():
         logger.info("PREDICT %-18s %s -> %.4f band %s", k, v["pair"], v["predicted"],
                     v["band"])
-    logger.info("FROZEN -> %s", PREDICTION_FILE)
+    logger.info("FROZEN -> %s", cfg["prediction_file"])
     return 0
 
 
-def phase_verify() -> int:
-    if not PREDICTION_FILE.exists():
+def phase_verify(model: str, cfg: dict) -> int:
+    pred_file = cfg["prediction_file"]
+    if not pred_file.exists():
         raise SystemExit(
-            f"REFUSING: {PREDICTION_FILE} absent. The prediction must have been filed "
+            f"REFUSING: {pred_file} absent. The prediction must have been filed "
             "before the fit; back-filling one now would be fabrication.")
-    doc = json.loads(PREDICTION_FILE.read_text())
+    doc = json.loads(pred_file.read_text())
+    second_m = cfg["second"]
     verdicts: dict = {}
     for key, pred in doc["PREDICTIONS"].items():
         arm, family = key.split("::")
-        cell = _a_hat(FITS_SECOND, SECOND, NEW_MODEL, arm, family)
+        cell = _a_hat(cfg["fits_second"], second_m, model, arm, family)
         if cell is None:
             verdicts[key] = {"observed": None, "note": "second-pair fit absent"}
             continue
@@ -171,40 +196,44 @@ def phase_verify() -> int:
             "abs_error": round(abs(cell["value"] - pred["predicted"]), 4),
             "IN_BAND": bool(lo <= cell["value"] <= hi),
             "rank_forbidden": cell["rank_forbidden"],
-            "SCORING": "reported, NOT self-scored — the desk rules P8-X1",
+            "SCORING": f"reported, NOT self-scored — the desk rules {cfg['prereg']}",
         }
 
     # full-family beside, so the family choice is visible rather than asserted
     beside: dict = {}
     for arm in ARMS:
         for family in FAMILIES:
-            cell = _a_hat(FITS_SECOND, SECOND, NEW_MODEL, arm, family)
+            cell = _a_hat(cfg["fits_second"], second_m, model, arm, family)
             if cell:
                 beside.setdefault(arm, {})[family] = cell
 
     out = {
         "STATUS": "UNSTAMPED (C section 8) — verify pass; the prediction file was "
                   "read, never rewritten",
-        "prereg": "A8-add-7 (P8-X1 .55)",
-        "phase": "verify",
-        "frozen_prediction_file": str(PREDICTION_FILE),
+        "prereg": cfg["prereg"], "target_model": model, "phase": "verify",
+        "frozen_prediction_file": str(pred_file),
         "VERDICTS": verdicts,
         "observed_all_cells_beside": beside,
     }
-    (OUT / "star_fifth_node_verify.json").write_text(json.dumps(out, indent=1))
+    cfg["verify_file"].write_text(json.dumps(out, indent=1))
     for k, v in verdicts.items():
         logger.info("VERIFY %-18s pred %s band %s obs %s IN_BAND=%s", k,
                     v.get("predicted"), v.get("band"), v.get("observed"),
                     v.get("IN_BAND"))
-    logger.info("wrote %s", OUT / "star_fifth_node_verify.json")
+    logger.info("wrote %s", cfg["verify_file"])
     return 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--phase", choices=("predict", "verify"), required=True)
+    ap.add_argument("--target", choices=sorted(TARGETS), default="gemma3-27b",
+                    help="extension model. gemma3-27b (both arms, native of record) or "
+                         "olmo2-7b (raw arm only — base model, A8-add-7.1).")
     args = ap.parse_args()
-    return phase_predict() if args.phase == "predict" else phase_verify()
+    cfg = TARGETS[args.target]
+    return (phase_predict(args.target, cfg) if args.phase == "predict"
+            else phase_verify(args.target, cfg))
 
 
 if __name__ == "__main__":

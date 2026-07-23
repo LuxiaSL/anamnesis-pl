@@ -63,7 +63,10 @@ V7: dict[str, tuple[str, str, int]] = {
     "dsv2-lite": ("a5_vectors_dsv2_lite_b7_L22/a5_vectors.npz", "V7_L22", 22),
     # gemma3-27b is added by the smalls collection leg (V7_L36 banked, node-side)
     "gemma3-27b": ("a5_vectors_gemma3-27b_b7/a5_vectors.npz", "V7_L36", 36),
-    # olmo2-7b: NO BANKED V7 EXISTS. a_hat is undefined for OLMo until one is built.
+    # olmo2-7b: V7_L16 built by the close-out (a8_smalls_olmo_v7.py), SAME §B.7
+    # construction. RAW ARM ONLY (base model) — its constant lives in raw::proc_k128,
+    # never native (A8-add-7.1). Registered only once the bank exists on disk.
+    "olmo2-7b": ("a5_vectors_olmo2-7b_b7/a5_vectors.npz", "V7_L16", 16),
 }
 
 # Banked pairs: label -> (src, tgt, fits_dir). Sites come from V7's banked site.

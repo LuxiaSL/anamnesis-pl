@@ -93,6 +93,16 @@ def main() -> None:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     sites = [int(x) for x in args.sites.split(",")]
 
+    # Provenance is derived from the ACTUAL --pos-run/--neg-run, never hardcoded.
+    # (rake 34 root cause: this string was a fixed "analogical − contrastive" literal
+    # wired to nothing, so a linear/socratic build stamped an analogical/contrastive
+    # claim — the Leg-6 stamp-conflict that cost a scoring round. The pair now cannot
+    # disagree with the inputs because it is computed from them.)
+    def _mode_label(run_name: str) -> str:
+        parts = run_name.rsplit("_pure_", 1)          # vmb_a2_{model}_pure_{mode}
+        return parts[1] if len(parts) == 2 else run_name
+    pos_label, neg_label = _mode_label(args.pos_run), _mode_label(args.neg_run)
+
     from sklearn.covariance import LedoitWolf
     from transformers import AutoModelForCausalLM
     preset = MODEL_PRESETS[args.model]
@@ -153,10 +163,17 @@ def main() -> None:
                   "raw_caa" if k.startswith("V3raw") else "random"} for k in vectors}
     stamps["median_resid_norms"] = {f"L{s}": med_norms[s] for s in sites}
     stamps["diagnostics"] = diag
-    stamps["provenance"] = ("V3w = unit(Σ⁻¹(μ_analogical − μ_contrastive)) in residual space, Σ = "
-                            "Ledoit-Wolf shrinkage; V3raw = unit(μ_analogical − μ_contrastive) same "
-                            "capture (control). Built to test whether the WHITENED direction steers "
-                            "where the raw CAA fails on DSV2 (2026-07-19 mean-diff⊥discriminative finding).")
+    # machine-readable pair (the field whose ABSENCE let a stale string stand): future
+    # readers key on this, not the prose, so a mislabel is impossible to propagate.
+    stamps["pair"] = [pos_label, neg_label]
+    stamps["pos_run"] = args.pos_run
+    stamps["neg_run"] = args.neg_run
+    stamps["provenance"] = (
+        f"V3w = unit(Σ⁻¹(μ_{pos_label} − μ_{neg_label})) in residual space, Σ = "
+        f"Ledoit-Wolf shrinkage; V3raw = unit(μ_{pos_label} − μ_{neg_label}) same "
+        f"capture (control). pos_run={args.pos_run}, neg_run={args.neg_run}. Built to "
+        "test whether the WHITENED direction steers where the raw CAA fails on DSV2 "
+        "(2026-07-19 mean-diff⊥discriminative finding).")
     (args.out_dir / "a5_vectors_stamps.json").write_text(json.dumps(stamps, indent=1))
     logger.info(f"wrote {args.out_dir}/a5_vectors.npz ({list(vectors)}) + stamps")
 
