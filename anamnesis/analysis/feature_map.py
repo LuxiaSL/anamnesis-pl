@@ -5,7 +5,8 @@ so a tier's accuracy couldn't be read. This module tags every signature feature 
 interpretable and were empirically validated on the merged v3 corpus (2026-06-14):
 
   SOURCE   = which substrate is read.   Ranked (LDA, model-stable): attention >> residual > gate > keys > output.
-  METHOD   = the base operator (magnitude / distributional / geometry / spectral / learned).
+  METHOD   = the base operator (magnitude / distributional / geometry / spectral / learned /
+             iterated_integral [added 2026-09-11 for the path-signature family]).
   DYNAMIC  = the temporal wrapper: static (a *_mean / snapshot) vs dynamic (*_std / slope / trajectory /
              window / drift / novelty). [modes ≈ average level (static) ≥ dynamics, at n≈900.]
   DEPTH    = layer + band (early/mid/late). [mode signal concentrates at MID layers.]
@@ -64,6 +65,13 @@ class Method(str, Enum):
     geometry = "geometry"              # cosine / spread / drift / novelty / participation-ratio / PCA projection
     spectral = "spectral"              # graph-spectral (Fiedler, HFER, spectral entropy, smoothness)
     learned = "learned"                # contrastive projection / encoder (future in-signature)
+    iterated_integral = "iterated_integral"  # rough-path log-signature: level-1 displacement +
+                                       # level-2 Levy areas of a projected, time-augmented
+                                       # trajectory. NEW axis value (SPEC-path-signature-family-
+                                       # 2026-09-11 section 5): the other methods are all MARGINAL
+                                       # reads of one series at a time; this one is the JOINT order
+                                       # of two coordinates (did i move before j). Only the
+                                       # `res_sig_` family emits it.
     unknown = "unknown"
 
 
@@ -94,6 +102,7 @@ def legacy_family(n: str) -> str:
     if n.startswith("ph_"): return "per_head"
     if n.startswith("attn_flow_"): return "attention_flow"
     if n.startswith("gate_"): return "gate"
+    if n.startswith("res_sig"): return "path_signature"   # level-2 log-signature (new; no legacy analog)
     if n.startswith("res_traj"): return "residual_traj"
     if n.startswith(("cache_", "kv_", "epoch_")): return "T2.5"
     if n.startswith("spectral_"): return "T2_spectral"
@@ -123,8 +132,10 @@ def _source(n: str) -> Source:
         # docstring; the code's behavior says attention. smoothness is hybrid (attention graph
         # × residual-norm signal) and rides with its graph. Pre-retag analyses counted these
         # 66 features under residual — cross-date family-mass comparisons carry that asterisk.
-    if n.startswith(("activation_norm", "res_traj", "delta_", "pca_")):
-        return Source.residual                                               # residual stream
+    if n.startswith(("activation_norm", "res_traj", "res_sig", "delta_", "pca_")):
+        return Source.residual   # residual stream. res_sig_* = path-signature family (2026-09-11):
+        # iterated integrals OF the residual trajectory — the substrate read is the residual
+        # stream, exactly as res_traj_*; only the operator is new.
     # output / token-distribution stats
     if any(k in n for k in ("logit", "surpris", "entropy", "token", "chosen", "top",
                             "perplex", "ppl", "prob", "rank")):
@@ -140,6 +151,9 @@ _DIST = ("entropy", "agreement", "coverage", "sink", "recency", "prompt_mass", "
 
 
 def _method(n: str, source: Source) -> Method:
+    # Path-signature family FIRST — its names carry no operator keyword the generic scan would
+    # catch, and letting it fall through to Method.unknown would flag the whole family.
+    if n.startswith("res_sig_"): return Method.iterated_integral
     if source == Source.routing: return Method.distributional      # AttnRes routing summaries (entropy/top1/anchor/recency/eff_src)
     if source == Source.expert_routing:                            # MoE router allocation reads (arm A7, M6). Spec §3 + v2.1:
         # Placed BEFORE the generic _GEOM/_DIST scan (else "top"/"mass"/"drift"/"norm" mis-route). All four
@@ -161,9 +175,14 @@ def _method(n: str, source: Source) -> Method:
 
 # Static (a level / snapshot) vs Dynamic (a change/dispersion over generation time). Token-matched so it
 # is robust to the two naming patterns ({stat}_L{n} and L{n}_..._{stat}); bare measures = static levels.
-_STATIC_TOK = {"mean", "traj0"}
+_STATIC_TOK = {"mean", "traj0", "lvl1"}
 _DYNAMIC_TOK = {"std", "slope", "traj1", "traj2", "traj3", "traj4", "drift", "switch",
-                "churn", "flatness", "period"}
+                "churn", "flatness", "period", "lvl2"}
+# "lvl1"/"lvl2" (2026-09-11, path-signature family): level-1 log-signature terms are the path's
+# NET DISPLACEMENT — a level, and literally invariant under the increment-permutation null, so
+# static is the correct reading. Level-2 Levy areas exist only because of order and are destroyed
+# by that same shuffle — dynamic, and the sharpest example of it in the suite. Both tokens are
+# res_sig-UNIQUE across the frozen v3 name corpus, so the sets stay safe.
 # "switch" (xrt_switch_rate), and v2.1 (48870af4): "churn" (xrt_set_churn_rate), "flatness"
 # (xrt_alloc_entropy_spectral_flatness), "period" (xrt_switch_dominant_period) — all per-step temporal
 # reads. Each token is xrt-UNIQUE (deliberately NOT "spectral", which the corpus-wide stft features use
