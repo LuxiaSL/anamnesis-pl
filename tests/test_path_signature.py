@@ -19,20 +19,32 @@ import pytest
 
 from anamnesis.analysis.feature_map import FeatureMap, Method, Source, classify
 from anamnesis.extraction.feature_families.path_signature import (
+    ArrayAttentionRegionSource,
+    ArrayOutputStatsSource,
     ArrayPathSource,
+    AttentionRegionPathConfig,
     MalformedPathError,
+    OutputStatsPathConfig,
     PathSignatureConfig,
+    PathSignatureError,
+    PathSource,
     ProjectionBasis,
     ProjectionBasisBank,
+    ResidualPathSource,
     ShortPathError,
+    attention_region_feature_names,
+    extract_attention_region_signature_from_source,
     extract_null_battery,
+    extract_output_stats_signature_from_source,
     extract_path_signature_from_source,
     feature_names,
     level1_terms,
     level2_area_matrix,
     log_signature_level2,
+    output_stats_feature_names,
     permute_increments,
     selftest,
+    signature_features_from_native_path,
     signature_features_from_path,
     time_augment_path,
 )
@@ -222,3 +234,147 @@ def test_no_regression_on_existing_name_shapes() -> None:
         assert tag.method != Method.iterated_integral, name
         assert tag.source != Source.unknown, name
         assert tag.method != Method.unknown, name
+
+
+# ── §1a/§1b — the two sibling path sources (SPEC-path-receptacles-and-span-coverage-2026-09-11) ──
+
+
+def test_seam_alias_is_identical() -> None:
+    """The generalised seam and the original residual-specific name are the SAME class."""
+    assert ResidualPathSource is PathSource
+
+
+@pytest.fixture(scope="module")
+def out_native(rng: np.random.Generator) -> np.ndarray:
+    t = np.linspace(0.0, 1.0, 100)
+    latent = np.stack([np.sin(3 * np.pi * t), np.cos(2 * np.pi * t) * t, t ** 2, np.exp(-2 * t)], axis=1)
+    return latent + 0.01 * rng.standard_normal((100, 4))
+
+
+@pytest.fixture(scope="module")
+def attn_native(rng: np.random.Generator) -> np.ndarray:
+    t = np.linspace(0.0, 1.0, 90)
+    latent = np.stack(
+        [np.sin(2 * np.pi * t), np.cos(3 * np.pi * t) * t, t ** 2, np.exp(-2 * t), np.sqrt(t)], axis=1,
+    )
+    return latent + 0.01 * rng.standard_normal((90, 5))
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 17, 99])
+def test_output_stats_permutation_null(out_native: np.ndarray, seed: int) -> None:
+    cfg = OutputStatsPathConfig(eos_token_ids=(3, 7), time_augment=True)
+    real, _ = signature_features_from_native_path(out_native, cfg, expected_native_dim=4)
+    null, _ = signature_features_from_native_path(
+        out_native, cfg.model_copy(update={"permute_increments": True, "permutation_seed": seed}),
+        expected_native_dim=4,
+    )
+    n1 = cfg.n_level1
+    assert np.max(np.abs(null[:n1] - real[:n1])) <= 1e-10
+    assert np.max(np.abs(null[n1:] - real[n1:])) > 1e-3 * np.max(np.abs(real[n1:]))
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 17, 99])
+def test_attention_region_permutation_null(attn_native: np.ndarray, seed: int) -> None:
+    cfg = AttentionRegionPathConfig(layer_indices=(16,), time_augment=True)
+    real, _ = signature_features_from_native_path(attn_native, cfg, expected_native_dim=cfg.native_dim)
+    null, _ = signature_features_from_native_path(
+        attn_native, cfg.model_copy(update={"permute_increments": True, "permutation_seed": seed}),
+        expected_native_dim=cfg.native_dim,
+    )
+    n1 = cfg.n_level1
+    assert np.max(np.abs(null[:n1] - real[:n1])) <= 1e-10
+    assert np.max(np.abs(null[n1:] - real[n1:])) > 1e-3 * np.max(np.abs(real[n1:]))
+
+
+def test_output_stats_straight_line_zero_area(rng: np.random.Generator) -> None:
+    direction = rng.standard_normal(4)
+    line = np.outer(np.linspace(0.0, 3.0, 70), direction) + rng.standard_normal(4)
+    assert np.max(np.abs(level2_area_matrix(line))) <= 1e-10
+
+
+def test_attention_region_straight_line_zero_area(rng: np.random.Generator) -> None:
+    direction = rng.standard_normal(5)
+    line = np.outer(np.linspace(0.0, 3.0, 70), direction) + rng.standard_normal(5)
+    assert np.max(np.abs(level2_area_matrix(line))) <= 1e-10
+
+
+@pytest.mark.parametrize("aug,n1,n2", [(True, 5, 10), (False, 4, 6)])
+def test_output_stats_arity_matches_spec(out_native: np.ndarray, aug: bool, n1: int, n2: int) -> None:
+    cfg = OutputStatsPathConfig(eos_token_ids=(3, 7), time_augment=aug)
+    feats, _ = signature_features_from_native_path(out_native, cfg, expected_native_dim=4)
+    names = output_stats_feature_names(cfg)
+    assert cfg.n_level1 == n1 and cfg.n_level2 == n2
+    assert len(feats) == len(names) == n1 + n2
+
+
+@pytest.mark.parametrize(
+    "include_sink,aug,n1,n2",
+    [(True, True, 6, 15), (True, False, 5, 10), (False, True, 5, 10), (False, False, 4, 6)],
+)
+def test_attention_region_arity_matches_spec(
+    attn_native: np.ndarray, include_sink: bool, aug: bool, n1: int, n2: int,
+) -> None:
+    cfg = AttentionRegionPathConfig(layer_indices=(16,), include_sink=include_sink, time_augment=aug)
+    native = attn_native if include_sink else attn_native[:, :4]
+    feats, _ = signature_features_from_native_path(native, cfg, expected_native_dim=cfg.native_dim)
+    names = attention_region_feature_names(cfg)
+    assert cfg.n_level1 == n1 and cfg.n_level2 == n2
+    assert len(feats) == len(names) == n1 + n2
+
+
+def test_output_stats_requires_eos_token_ids() -> None:
+    with pytest.raises(ValueError):
+        OutputStatsPathConfig()  # type: ignore[call-arg]
+    with pytest.raises(ValueError):
+        OutputStatsPathConfig(eos_token_ids=())
+
+
+def test_output_stats_every_name_classifies() -> None:
+    cfg = OutputStatsPathConfig(eos_token_ids=(3, 7), time_augment=True)
+    names = output_stats_feature_names(cfg)
+    fm = FeatureMap(names, n_layers=32)
+    assert fm.unclassified() == []
+    assert {t.source for t in fm.tags} == {Source.output}
+    assert {t.method for t in fm.tags} == {Method.iterated_integral}
+    assert {t.family for t in fm.tags} == {"path_signature_output"}
+    assert all(t.layer is None for t in fm.tags)
+
+
+def test_attention_region_every_name_classifies() -> None:
+    cfg = AttentionRegionPathConfig(layer_indices=(0, 14, 16, 27), include_sink=True, time_augment=True)
+    names = attention_region_feature_names(cfg)
+    fm = FeatureMap(names, n_layers=32)
+    assert fm.unclassified() == []
+    assert {t.source for t in fm.tags} == {Source.attention}
+    assert {t.method for t in fm.tags} == {Method.iterated_integral}
+    assert {t.family for t in fm.tags} == {"path_signature_attention"}
+
+
+def test_output_stats_short_path_raises(out_native: np.ndarray) -> None:
+    src = ArrayOutputStatsSource({0: out_native[:2]})
+    cfg = OutputStatsPathConfig(eos_token_ids=(3, 7))
+    with pytest.raises(ShortPathError):
+        extract_output_stats_signature_from_source(src, 0, cfg)
+
+
+def test_attention_region_missing_layer_raises(attn_native: np.ndarray) -> None:
+    src = ArrayAttentionRegionSource({0: {8: attn_native}})
+    cfg = AttentionRegionPathConfig(layer_indices=(16,))
+    with pytest.raises(KeyError):
+        extract_attention_region_signature_from_source(src, 0, cfg)
+
+
+def test_native_dim_mismatch_raises(out_native: np.ndarray) -> None:
+    """Absence-of-projection is a contract on the SOURCE; a mis-shaped native path is a hard
+    error (never silently padded/truncated)."""
+    cfg = OutputStatsPathConfig(eos_token_ids=(3, 7))
+    with pytest.raises(MalformedPathError):
+        signature_features_from_native_path(out_native[:, :3], cfg, expected_native_dim=4)
+
+
+def test_output_stats_per_token_eos_out_of_vocab_raises() -> None:
+    from anamnesis.extraction.feature_families.path_signature import _output_stats_per_token
+
+    logits = [np.random.default_rng(1).standard_normal(16).astype(np.float32) for _ in range(5)]
+    with pytest.raises(PathSignatureError):
+        _output_stats_per_token(logits, (999,))

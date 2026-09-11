@@ -75,7 +75,7 @@ import logging
 import pickle
 import sys
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, ClassVar, Literal, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -305,7 +305,7 @@ class PathSignatureResult(FeatureFamilyResult):
         features: F32,
         feature_names: list[str],
         family_name: str,
-        metadata: PathSignatureMetadata,
+        metadata: "PathSignatureMetadata | OutputStatsMetadata | AttentionRegionMetadata",
     ) -> None:
         super().__init__(
             features=features, feature_names=feature_names, family_name=family_name,
@@ -507,26 +507,32 @@ class ResidualPath(BaseModel):
         return int(self.array.shape[1])
 
 
-class ResidualPathSource(abc.ABC):
-    """Abstract per-generation supplier of ``[T, d]`` residual paths.
+class PathSource(abc.ABC):
+    """Abstract per-generation supplier of ``[T, d]`` paths for the signature machinery.
 
-    This is the ONE seam the concrete banked-data format lives behind. A parallel dig is
-    establishing what per-position residual data is actually banked (v3 raw tensors, replay
-    re-extraction, or an A5-resolver-specific dump), so the concrete implementation is
-    expected to change; everything above this interface — projection, augmentation,
-    integration, the null, the naming — is format-agnostic and does not move.
+    THE ONE SEAM (generalised 2026-09-11, SPEC-path-receptacles-and-span-coverage §1a/§1b):
+    originally named ``ResidualPathSource`` and specific to the residual trajectory, this
+    interface is now source-agnostic — a "site" (the ``layer_idx``/``site_id`` argument) is
+    whatever the concrete source calls one: a transformer layer for the residual and
+    attention-region sources, or a single nominal id for the output-statistics source (which
+    has no per-layer structure). Everything downstream of ``load_path`` — augmentation,
+    integration, the null, the naming — is format-agnostic and does not care which kind of
+    site it got. ``ResidualPathSource`` remains a name-identical alias below so every existing
+    reference (this module, its tests, any caller) keeps working unchanged.
 
     Contract for an implementation:
 
     * ``generation_ids()`` returns the ids it can serve, ascending.
-    * ``available_layers(gen_id)`` returns the transformer layer indices (NOT the
-      ``hidden_states`` ``[l+1]`` offsets) it can serve for that generation.
-    * ``load_path(gen_id, layer_idx)`` returns a :class:`ResidualPath` whose ``array`` is
-      ``[T, d]``, float64, finite, generated positions only, in generation order.
+    * ``available_layers(gen_id)`` returns the site indices it can serve for that generation
+      (transformer layer indices for residual/attention; a fixed one-element list for output).
+    * ``load_path(gen_id, layer_idx)`` returns an object exposing ``.array`` — ``[T, d]``,
+      float64, finite, generated positions only, in generation order (``d`` is the basis rank
+      for the residual source, or the source's fixed native dimensionality for output/
+      attention — no projection step exists for those two).
       It MUST raise (``KeyError`` / :class:`PathSignatureError`) rather than return a
       zero-filled or truncated array when the data is absent — the caller's
-      ``on_missing_layer`` policy decides what happens next, and it cannot decide anything
-      if absence is disguised as data.
+      ``on_missing_layer``/``on_short_path`` policy decides what happens next, and it cannot
+      decide anything if absence is disguised as data.
     """
 
     @abc.abstractmethod
@@ -538,8 +544,15 @@ class ResidualPathSource(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def load_path(self, gen_id: int, layer_idx: int) -> ResidualPath:
+    def load_path(self, gen_id: int, layer_idx: int) -> Any:
         ...
+
+
+#: Backward-compat alias — the residual family's seam kept its original name; every existing
+#: reference (``class ResidualPathSource``'s old identity, ``ArrayPathSource(ResidualPathSource)``,
+#: ``RawGenerationDataPathSource(ResidualPathSource)``, external callers) resolves to the exact
+#: same class object as :class:`PathSource`, so residual behaviour is unchanged bit-for-bit.
+ResidualPathSource = PathSource
 
 
 class ArrayPathSource(ResidualPathSource):
@@ -680,6 +693,445 @@ class RawGenerationDataPathSource(ResidualPathSource):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# §1a / §1b — two sibling path sources, NO projection step (natively low-dimensional)
+#
+# SPEC-path-receptacles-and-span-coverage-2026-09-11 §1a/§1b. Both feed the SAME signature
+# machinery below (permute_increments / time_augment_path / log_signature_level2) — only the
+# path SOURCE differs, and neither one ever calls ProjectionBasis.project(). Config classes are
+# deliberately separate from PathSignatureConfig (not a subclass, not a refactor of it) so the
+# residual family's class is untouched — its selftest must reproduce bit-for-bit.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class _NullControlMixin(BaseModel):
+    """Fields + validators shared by the null-battery control, factored out so §1a/§1b don't
+    hand-copy the seeded-null rule. Not used by PathSignatureConfig (left untouched)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    level: Literal[1, 2] = Field(
+        default=2,
+        description="Log-signature truncation level (same semantics as PathSignatureConfig).",
+    )
+    time_augment: bool = Field(
+        default=True,
+        description="Append normalised position t/(T-1) as an extra coordinate. See "
+                    "PathSignatureConfig.time_augment for the pacing-not-duration rationale "
+                    "(DESK RULING, REPORT-path-signature-family-2026-09-11) — carried forward "
+                    "unchanged for these sources.",
+    )
+    center_at_origin: bool = Field(
+        default=True,
+        description="Subtract X[0] before integrating (translation invariance of the areas).",
+    )
+    permute_increments: bool = Field(
+        default=False,
+        description="THE NULL: permute the native path's increments and re-cumulate.",
+    )
+    permutation_seed: int | None = Field(default=None)
+    on_short_path: Literal["raise", "zeros"] = Field(default="raise")
+    min_positions: int = Field(default=3, ge=2)
+
+    @model_validator(mode="after")
+    def _null_must_be_seeded(self) -> "_NullControlMixin":
+        if self.permute_increments and self.permutation_seed is None:
+            raise ValueError(
+                "permute_increments=True requires an explicit permutation_seed — the null is "
+                "the primary control and an unreproducible null is worthless (spec section 2 "
+                "asks for >=3 seeds per cell)."
+            )
+        return self
+
+    @property
+    def aug_token(self) -> str:
+        return "aug" if self.time_augment else "noaug"
+
+    @property
+    def n_level1(self) -> int:
+        return self.path_dim
+
+    @property
+    def n_level2(self) -> int:
+        if self.level < 2:
+            return 0
+        d = self.path_dim
+        return d * (d - 1) // 2
+
+    @property
+    def n_features_per_site(self) -> int:
+        return self.n_level1 + self.n_level2
+
+    @property
+    def path_dim(self) -> int:  # overridden by each concrete config
+        raise NotImplementedError
+
+
+OUTPUT_SITE_ID = 0
+#: The output-statistics path has exactly one site per generation (the final-logit output
+#: distribution has no transformer-layer index) — this is the sentinel `layer_idx` PathSource
+#: implementations for this family accept. NOT a real transformer layer.
+
+
+class OutputStatsPathConfig(_NullControlMixin):
+    """Config for the §1a output-statistics path — SOURCE=output.
+
+    Native dims (NO PROJECTION — these are already low-dimensional; spec §1 "Both are
+    naturally low-dimensional, so no projection step exists and the projection-adequacy gate
+    cannot bite."): ``entropy, margin, eos_log_mass, varentropy`` — 4 dims.
+
+    ``repetition-mass`` (the spec's fifth functional) is DELIBERATELY OMITTED. Reused verbatim,
+    it is ``annex_potential_gradient.s_terms_repmass``: ``S = sum_{v in prior context} p_t(v)``
+    where "prior context" is every token seen so far, INCLUDING THE PROMPT. That set needs the
+    prompt's actual token ids; ``RawGenerationData`` (this pipeline's per-generation contract,
+    CLAUDE.md) carries only ``prompt_length: int`` — a count, not the ids — so the candidate set
+    cannot be reconstructed from what this family is contracted to read. A scoped substitute
+    (self-only repetition over the generated span, ``annex_cs_pulses.s_terms_selfrep``) exists
+    and IS fully computable from ``chosen_token_ids``, but spec §1a says "reuse those
+    definitions verbatim — do not invent new formulas"; swapping in a differently-scoped
+    quantity under the same name is exactly the kind of invention that rule forbids. So: omit,
+    not misname. Dimension count reflects this — 4 dims, not 5 (spec's own arithmetic: 4 + clock
+    = 5 augmented -> level-1=5, level-2=10, total=15; unaugmented -> 4+6=10).
+    """
+
+    NATIVE_DIM: ClassVar[int] = 4  # entropy, margin, eos_log_mass, varentropy — this ORDER
+
+    eos_token_ids: tuple[int, ...] = Field(
+        ...,
+        min_length=1,
+        description="EOS token ids for THIS model (CLAUDE.md gotcha: model-specific, e.g. "
+                    "Llama 3.2 3B [128001, 128009], Llama 3.1 8B [128001, 128008, 128009]). "
+                    "No default — an unspecified EOS set is a silent-wrong-answer risk the "
+                    "spec's absence-must-raise rule forbids.",
+    )
+
+    @field_validator("eos_token_ids")
+    @classmethod
+    def _eos_ids_valid(cls, v: tuple[int, ...]) -> tuple[int, ...]:
+        if any(i < 0 for i in v):
+            raise ValueError(f"eos_token_ids must be non-negative; got {v}")
+        if len(set(v)) != len(v):
+            raise ValueError(f"eos_token_ids must be unique; got {v}")
+        return v
+
+    @property
+    def path_dim(self) -> int:
+        return self.NATIVE_DIM + (1 if self.time_augment else 0)
+
+
+class AttentionRegionPathConfig(_NullControlMixin):
+    """Config for the §1b attention-region path — SOURCE=attention.
+
+    Native dims (NO PROJECTION): the region decomposition
+    ``attention_flow.extract_attention_flow`` already computes —
+    ``prompt, early_gen, mid_gen, recent`` (4 dims), plus ``sink`` (attention to position 0,
+    ``state_extractor``'s ``cache_sink_mass_L{n}`` formula) as a 5th when ``include_sink=True``
+    (spec: "plus sink mass if separable" — it is, per the existing T2.5 sink feature, so this
+    defaults on). Region order is fixed and documented so coordinate indices ``c0..c{k-1}`` are
+    interpretable: ``[prompt, early_gen, mid_gen, recent, (sink)]``.
+    """
+
+    layer_indices: tuple[int, ...] = Field(
+        default=(16,),
+        description="Attention-layer sites (same per-model site convention as the residual "
+                    "family: 3B L14, 8B L16).",
+    )
+    include_sink: bool = Field(
+        default=True,
+        description="Append sink mass (attention to position 0) as a 5th native coordinate. "
+                    "False keeps the 4-region-only ablation the spec's '4-5 dims' range allows.",
+    )
+    on_missing_layer: Literal["raise", "zeros"] = Field(default="raise")
+
+    @field_validator("layer_indices")
+    @classmethod
+    def _layers_nonempty(cls, v: tuple[int, ...]) -> tuple[int, ...]:
+        if not v:
+            raise ValueError("layer_indices must name at least one site")
+        if any(l < 0 for l in v):
+            raise ValueError(f"layer_indices must be non-negative; got {v}")
+        if len(set(v)) != len(v):
+            raise ValueError(f"layer_indices must be unique; got {v}")
+        return v
+
+    @property
+    def native_dim(self) -> int:
+        return 5 if self.include_sink else 4
+
+    @property
+    def path_dim(self) -> int:
+        return self.native_dim + (1 if self.time_augment else 0)
+
+
+class OutputStatsMetadata(BaseModel):
+    """Provenance for one output-statistics-path extraction."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    family: str = "path_signature_output"
+    eos_token_ids: tuple[int, ...]
+    path_dim: int
+    level: int
+    time_augmented: bool
+    centered_at_origin: bool
+    permuted: bool
+    permutation_seed: int | None
+    n_positions: dict[int, int] = Field(default_factory=dict)
+    degraded_sites: tuple[int, ...] = Field(default=())
+
+    @classmethod
+    def from_config(cls, config: OutputStatsPathConfig, **kw: Any) -> "OutputStatsMetadata":
+        return cls(
+            eos_token_ids=config.eos_token_ids,
+            path_dim=config.path_dim,
+            level=config.level,
+            time_augmented=config.time_augment,
+            centered_at_origin=config.center_at_origin,
+            permuted=config.permute_increments,
+            permutation_seed=config.permutation_seed,
+            **kw,
+        )
+
+
+class AttentionRegionMetadata(BaseModel):
+    """Provenance for one attention-region-path extraction."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    family: str = "path_signature_attention"
+    layer_indices: tuple[int, ...]
+    include_sink: bool
+    path_dim: int
+    level: int
+    time_augmented: bool
+    centered_at_origin: bool
+    permuted: bool
+    permutation_seed: int | None
+    n_positions: dict[int, int] = Field(default_factory=dict)
+    degraded_sites: tuple[int, ...] = Field(default=())
+
+    @classmethod
+    def from_config(cls, config: AttentionRegionPathConfig, **kw: Any) -> "AttentionRegionMetadata":
+        return cls(
+            layer_indices=config.layer_indices,
+            include_sink=config.include_sink,
+            path_dim=config.path_dim,
+            level=config.level,
+            time_augmented=config.time_augment,
+            centered_at_origin=config.center_at_origin,
+            permuted=config.permute_increments,
+            permutation_seed=config.permutation_seed,
+            **kw,
+        )
+
+
+class OutputStatsPath(BaseModel):
+    """One generation's output-statistics path: ``array`` is ``[T, 4]`` float64
+    (entropy, margin, eos_log_mass, varentropy), generated positions only."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
+
+    array: np.ndarray
+    gen_id: int
+    provenance: str = ""
+
+    @field_validator("array")
+    @classmethod
+    def _validate(cls, v: np.ndarray) -> np.ndarray:
+        return _as_path_array(v)
+
+    @property
+    def n_positions(self) -> int:
+        return int(self.array.shape[0])
+
+
+class AttentionRegionPath(BaseModel):
+    """One generation's attention-region path at one layer: ``array`` is ``[T, 4-or-5]``
+    float64 (prompt, early_gen, mid_gen, recent[, sink]), generated positions only."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
+
+    array: np.ndarray
+    gen_id: int
+    layer_idx: int
+    include_sink: bool
+    provenance: str = ""
+
+    @field_validator("array")
+    @classmethod
+    def _validate(cls, v: np.ndarray) -> np.ndarray:
+        return _as_path_array(v)
+
+    @property
+    def n_positions(self) -> int:
+        return int(self.array.shape[0])
+
+
+class ArrayOutputStatsSource(PathSource):
+    """In-memory source: ``{gen_id: [T, 4] array}``. Used by the selftest."""
+
+    def __init__(self, paths: dict[int, NDArray[Any]]) -> None:
+        if not isinstance(paths, dict) or not paths:
+            raise PathSignatureError("ArrayOutputStatsSource requires a non-empty {gen: arr}")
+        self._paths = paths
+
+    def generation_ids(self) -> list[int]:
+        return sorted(self._paths)
+
+    def available_layers(self, gen_id: int) -> list[int]:
+        if gen_id not in self._paths:
+            raise KeyError(f"gen {gen_id} not in source")
+        return [OUTPUT_SITE_ID]
+
+    def load_path(self, gen_id: int, layer_idx: int) -> OutputStatsPath:
+        if gen_id not in self._paths:
+            raise KeyError(f"gen {gen_id} not in source")
+        if layer_idx != OUTPUT_SITE_ID:
+            raise KeyError(
+                f"output-statistics source has one site (id {OUTPUT_SITE_ID}); asked for "
+                f"{layer_idx}"
+            )
+        return OutputStatsPath(array=self._paths[gen_id], gen_id=gen_id, provenance="in-memory")
+
+
+class ArrayAttentionRegionSource(PathSource):
+    """In-memory source: ``{gen_id: {layer_idx: [T, 4-or-5] array}}``. Used by the selftest."""
+
+    def __init__(
+        self, paths: dict[int, dict[int, NDArray[Any]]], *, include_sink: bool = True,
+    ) -> None:
+        if not isinstance(paths, dict) or not paths:
+            raise PathSignatureError(
+                "ArrayAttentionRegionSource requires a non-empty {gen: {layer: arr}}"
+            )
+        self._paths = paths
+        self._include_sink = include_sink
+
+    def generation_ids(self) -> list[int]:
+        return sorted(self._paths)
+
+    def available_layers(self, gen_id: int) -> list[int]:
+        if gen_id not in self._paths:
+            raise KeyError(f"gen {gen_id} not in source")
+        return sorted(self._paths[gen_id])
+
+    def load_path(self, gen_id: int, layer_idx: int) -> AttentionRegionPath:
+        if gen_id not in self._paths:
+            raise KeyError(f"gen {gen_id} not in source")
+        if layer_idx not in self._paths[gen_id]:
+            raise KeyError(f"layer {layer_idx} not banked for gen {gen_id}")
+        return AttentionRegionPath(
+            array=self._paths[gen_id][layer_idx],
+            gen_id=gen_id,
+            layer_idx=layer_idx,
+            include_sink=self._include_sink,
+            provenance="in-memory",
+        )
+
+
+class RawGenerationDataOutputStatsSource(PathSource):
+    """Source over a single in-memory ``RawGenerationData``: builds the ``[T, 4]``
+    output-statistics path from ``.logits`` / ``.chosen_token_ids`` (see
+    ``_output_stats_per_token`` below for the exact, verbatim-reused, formulas).
+    """
+
+    def __init__(
+        self,
+        data: Any,
+        *,
+        gen_id: int = 0,
+        eos_token_ids: Sequence[int],
+    ) -> None:
+        if not hasattr(data, "logits"):
+            raise PathSignatureError(
+                "RawGenerationDataOutputStatsSource needs a RawGenerationData-like object "
+                "with .logits"
+            )
+        if not eos_token_ids:
+            raise PathSignatureError(
+                "eos_token_ids must be non-empty — EOS ids are model-specific (CLAUDE.md "
+                "gotcha) and absence must raise, never silently default."
+            )
+        self._data = data
+        self._gen_id = gen_id
+        self._eos_token_ids = tuple(sorted({int(i) for i in eos_token_ids}))
+
+    def generation_ids(self) -> list[int]:
+        return [self._gen_id]
+
+    def available_layers(self, gen_id: int) -> list[int]:
+        self._check_gen(gen_id)
+        return [OUTPUT_SITE_ID]
+
+    def load_path(self, gen_id: int, layer_idx: int) -> OutputStatsPath:
+        self._check_gen(gen_id)
+        if layer_idx != OUTPUT_SITE_ID:
+            raise KeyError(
+                f"output-statistics source has one site (id {OUTPUT_SITE_ID}); asked for "
+                f"{layer_idx}"
+            )
+        logits = self._data.logits
+        if not logits:
+            raise ShortPathError(f"gen {gen_id} has zero generated positions (no logits banked)")
+        mat = _output_stats_per_token(logits, self._eos_token_ids)
+        return OutputStatsPath(array=mat, gen_id=gen_id, provenance="RawGenerationData")
+
+    def _check_gen(self, gen_id: int) -> None:
+        if gen_id != self._gen_id:
+            raise KeyError(f"this source serves gen {self._gen_id} only; asked for {gen_id}")
+
+
+class RawGenerationDataAttentionRegionSource(PathSource):
+    """Source over a single in-memory ``RawGenerationData``: builds the ``[T, 4-or-5]``
+    attention-region path from ``.attentions`` (see ``_attention_region_per_token`` below,
+    which reuses ``attention_flow``'s region-decomposition formulas verbatim).
+    """
+
+    def __init__(
+        self,
+        data: Any,
+        *,
+        gen_id: int = 0,
+        include_sink: bool = True,
+    ) -> None:
+        if not hasattr(data, "attentions"):
+            raise PathSignatureError(
+                "RawGenerationDataAttentionRegionSource needs a RawGenerationData-like object "
+                "with .attentions"
+            )
+        self._data = data
+        self._gen_id = gen_id
+        self._include_sink = include_sink
+
+    def generation_ids(self) -> list[int]:
+        return [self._gen_id]
+
+    def available_layers(self, gen_id: int) -> list[int]:
+        self._check_gen(gen_id)
+        attns = self._data.attentions
+        if not attns:
+            return []
+        return list(range(np.asarray(attns[0]).shape[0]))
+
+    def load_path(self, gen_id: int, layer_idx: int) -> AttentionRegionPath:
+        self._check_gen(gen_id)
+        attns = self._data.attentions
+        if not attns:
+            raise ShortPathError(f"gen {gen_id} has zero generated positions (no attentions banked)")
+        num_layers = np.asarray(attns[0]).shape[0]
+        if not (0 <= layer_idx < num_layers):
+            raise KeyError(f"attention layer {layer_idx} out of range for {num_layers} layers")
+        mat = _attention_region_per_token(self._data, layer_idx, include_sink=self._include_sink)
+        return AttentionRegionPath(
+            array=mat, gen_id=gen_id, layer_idx=layer_idx,
+            include_sink=self._include_sink, provenance="RawGenerationData",
+        )
+
+    def _check_gen(self, gen_id: int) -> None:
+        if gen_id != self._gen_id:
+            raise KeyError(f"this source serves gen {self._gen_id} only; asked for {gen_id}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Core math — pure numpy, no model/torch deps, testable without a GPU
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -812,6 +1264,203 @@ def log_signature_level2(
     return l1, l2, pairs
 
 
+def signature_features_from_native_path(
+    path: NDArray[Any],
+    config: "OutputStatsPathConfig | AttentionRegionPathConfig",
+    *,
+    expected_native_dim: int,
+) -> tuple[F64, int]:
+    """(optionally permute) -> (optionally time-augment) -> integrate. NO PROJECTION.
+
+    The §1a/§1b analogue of :func:`signature_features_from_path`, sharing every piece of the
+    actual math (``_as_path_array``, ``permute_increments``, ``time_augment_path``,
+    ``log_signature_level2``) and differing only in skipping the ``basis.project(...)`` call —
+    these two sources are natively low-dimensional by construction, so there is nothing to
+    project (spec §1: "no projection step exists and the projection-adequacy gate cannot
+    bite").
+
+    Returns
+    -------
+    (features [n_features_per_site], T) — features in emission order.
+    """
+    arr = _as_path_array(path)
+    T = arr.shape[0]
+    if T < config.min_positions:
+        raise ShortPathError(f"path has {T} positions; min_positions={config.min_positions}")
+    if arr.shape[1] != expected_native_dim:
+        raise MalformedPathError(
+            f"native path has {arr.shape[1]} dims; this source contracts to "
+            f"{expected_native_dim} — no projection step exists here, so the SOURCE (not this "
+            f"function) must emit the right shape"
+        )
+
+    proj = arr
+    if config.permute_increments:
+        assert config.permutation_seed is not None  # guaranteed by the model validator
+        proj = permute_increments(proj, config.permutation_seed)
+
+    integrated = time_augment_path(proj) if config.time_augment else proj
+
+    l1, l2, _pairs = log_signature_level2(
+        integrated, level=config.level, center=config.center_at_origin,
+    )
+    feats = np.concatenate([l1, l2]) if l2.size else l1
+
+    expected = config.n_features_per_site
+    if feats.shape[0] != expected:
+        raise PathSignatureError(
+            f"internal arity bug: produced {feats.shape[0]} features, expected {expected}"
+        )
+    if not np.all(np.isfinite(feats)):
+        raise PathSignatureError(
+            "non-finite signature terms produced from a finite native path — numerical "
+            "overflow; check the source's native scale"
+        )
+    return feats, T
+
+
+def _output_stats_per_token(
+    logits: list[NDArray[Any]],
+    eos_token_ids: Sequence[int],
+) -> F64:
+    """``[T, 4]`` matrix — columns ``entropy, margin, eos_log_mass, varentropy`` (§1a).
+
+    Every column is an EXISTING formula, reused verbatim (spec: "do not invent new
+    formulas"), not re-derived:
+
+    * ``entropy`` — ``state_extractor._compute_logit_features``'s own entropy column, called
+      directly on the same ``logits`` list, so this is not a re-implementation, it is the same
+      function. (Under a reloaded raw-tensor bank ``logits`` is top-k + ``-1e9`` sentinel
+      elsewhere — the SAME approximation ``state_extractor``'s own entropy features already
+      accept for post-hoc reprocessing; not a new caveat this family introduces.)
+    * ``margin`` — ``annex_potential_gradient.s_terms_margin``: ``logit_top1 - logit_top2``
+      (computed there on ``log_softmax``; algebraically identical to the raw-logit difference
+      since the softmax normaliser cancels in the subtraction — so the direct raw-logit form
+      used here is exactly that functional, not an approximation of it). The top-2-by-value
+      split mirrors ``expert_routing.py``'s existing ``np.partition(..., -2)`` idiom.
+    * ``eos_log_mass`` — ``annex_potential_gradient.s_terms_eos``:
+      ``logsumexp(log_softmax(logits)[eos_ids])``. ``eos_token_ids`` is the caller's explicit,
+      model-specific set (CLAUDE.md gotcha) — never defaulted, never inferred.
+    * ``varentropy`` — ``annex_cs_pulses.s_terms_varentropy``: ``sum_v p_v (s_v - H)^2`` with
+      ``s_v = -log p_v`` the per-token surprisal and ``H`` the SAME entropy value computed
+      above (not recomputed independently, so the two columns cannot numerically disagree
+      about what "entropy" means).
+
+    ``repetition-mass`` is NOT a column here — see ``OutputStatsPathConfig``'s docstring for
+    why it is genuinely unavailable from ``RawGenerationData`` rather than approximated.
+    """
+    from anamnesis.extraction.state_extractor import _compute_logit_features
+
+    T = len(logits)
+    if T == 0:
+        raise ShortPathError("no generated positions to build the output-statistics path")
+    eos_ids = np.asarray(sorted({int(i) for i in eos_token_ids}), dtype=np.intp)
+    if eos_ids.size == 0:
+        raise PathSignatureError("eos_token_ids must be non-empty")
+
+    # Entropy: THE existing state_extractor definition, called directly (not re-derived).
+    dummy_chosen = np.zeros(T, dtype=np.float32)
+    entropy = _compute_logit_features(list(logits), dummy_chosen).entropy.astype(np.float64)
+
+    margin = np.empty(T, dtype=np.float64)
+    eos_log_mass = np.empty(T, dtype=np.float64)
+    varentropy = np.empty(T, dtype=np.float64)
+    for t in range(T):
+        x = np.asarray(logits[t], dtype=np.float64)
+        vocab_size = x.shape[0]
+        if int(eos_ids.max()) >= vocab_size:
+            raise PathSignatureError(
+                f"eos token id {int(eos_ids.max())} out of vocab range {vocab_size} at step {t}"
+            )
+        if vocab_size < 2:
+            raise PathSignatureError(f"need >=2 vocab entries for a margin; got {vocab_size}")
+
+        max_x = x.max()
+        s = x - max_x
+        exp_s = np.exp(s)
+        Z = exp_s.sum()
+        log_Z = np.log(Z)
+        logp = s - log_Z                    # log-softmax
+        p = exp_s / Z
+
+        # margin: top-2 raw logits (expert_routing.py's np.partition idiom)
+        part = np.partition(x, -2)
+        margin[t] = float(part[-1] - part[-2])
+
+        # eos log-mass: logsumexp over the EOS subset of the log-softmax
+        le = logp[eos_ids]
+        m = float(le.max())
+        eos_log_mass[t] = m + float(np.log(np.sum(np.exp(le - m))))
+
+        # varentropy: second moment of surprisal about the SAME H as the entropy column
+        surprisal = -logp
+        H = float(entropy[t])
+        varentropy[t] = float(np.sum(p * (surprisal - H) ** 2))
+
+    return np.stack([entropy, margin, eos_log_mass, varentropy], axis=1)
+
+
+def _attention_region_per_token(
+    data: Any,
+    layer_idx: int,
+    *,
+    include_sink: bool,
+) -> F64:
+    """``[T, 4-or-5]`` matrix — columns ``prompt, early_gen, mid_gen, recent[, sink]`` (§1b).
+
+    Region-mass formulas reused VERBATIM from
+    ``feature_families.attention_flow.extract_attention_flow``'s region-decomposition block
+    (the ``prompt_len`` / ``gen_len`` / thirds split, and the ``total_mass``-normalised
+    fractions) — same arithmetic, same edge cases (an empty attention step at position 0 of a
+    degenerate path contributes an all-zero row, matching that family's own fallback). Sink
+    mass reuses ``state_extractor``'s T2.5 ``cache_sink_mass_L{n}`` definition (attention to
+    position 0, the BOS/attention-sink position), here additionally divided by ``total_mass``
+    so it sits on the same [0,1]-fraction-of-total-attention scale as the four region columns
+    (state_extractor's own sink feature skips that division since raw attention weights
+    already sum to ~1; the two are numerically equivalent up to that ~1 factor — see module
+    report for the explicit note).
+    """
+    T = len(data.attentions)
+    if T == 0:
+        raise ShortPathError("no generated positions to build the attention-region path")
+    num_layers = np.asarray(data.attentions[0]).shape[0]
+    if not (0 <= layer_idx < num_layers):
+        raise KeyError(f"attention layer {layer_idx} out of range for {num_layers} layers")
+
+    prompt_len = data.prompt_length
+    mean_rows = data.mean_attention(layer_idx)  # shared per-(gen,layer) cache (C2)
+    n_cols = 5 if include_sink else 4
+    out = np.zeros((T, n_cols), dtype=np.float64)
+
+    for t in range(T):
+        mean_attn = mean_rows[t]
+        seq_len = mean_attn.shape[0]
+        if seq_len == 0:
+            continue  # all-zero row — matches attention_flow's own T<... fallback
+
+        total_mass = max(float(mean_attn.sum()), 1e-12)
+        sys_mass = float(mean_attn[:prompt_len].sum()) / total_mass
+
+        gen_start = prompt_len
+        gen_len = seq_len - prompt_len
+        if gen_len > 0:
+            third = max(1, gen_len // 3)
+            r_early = float(mean_attn[gen_start:gen_start + third].sum()) / total_mass
+            r_mid = float(mean_attn[gen_start + third:gen_start + 2 * third].sum()) / total_mass
+            r_recent = float(mean_attn[gen_start + 2 * third:].sum()) / total_mass
+        else:
+            r_early = r_mid = r_recent = 0.0
+
+        out[t, 0] = sys_mass
+        out[t, 1] = r_early
+        out[t, 2] = r_mid
+        out[t, 3] = r_recent
+        if include_sink:
+            out[t, 4] = float(mean_attn[0]) / total_mass
+
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Naming — must classify cleanly in analysis/feature_map.py
 # ──────────────────────────────────────────────────────────────────────────────
@@ -843,6 +1492,57 @@ def feature_names(config: PathSignatureConfig) -> list[str]:
     out: list[str] = []
     for layer_idx in config.layer_indices:
         out.extend(site_feature_names(layer_idx, config))
+    return out
+
+
+FEATURE_PREFIX_OUTPUT = "out_sig"
+FEATURE_PREFIX_ATTENTION = "attn_sig"
+FAMILY_NAME_OUTPUT = "path_signature_output"
+FAMILY_NAME_ATTENTION = "path_signature_attention"
+
+
+def output_stats_feature_names(config: OutputStatsPathConfig) -> list[str]:
+    """All feature names for the §1a output-statistics path (one global site — no ``_L{n}``).
+
+    ``out_sig_{aug|noaug}_lvl{1|2}_c{i}[c{j}]`` — feature_map: SOURCE=output (``out_sig``
+    prefix), METHOD=iterated_integral, DEPTH=None (no per-layer site to read — same convention
+    as the suite's other layer-free output features, e.g. ``logit_entropy_mean``), DYNAMIC from
+    the ``lvl1``/``lvl2`` token. Coordinate order: ``c0=entropy, c1=margin, c2=eos_log_mass,
+    c3=varentropy[, c4=clock]``.
+    """
+    prefix = f"{FEATURE_PREFIX_OUTPUT}_{config.aug_token}"
+    names = [f"{prefix}_lvl1_c{i}" for i in range(config.path_dim)]
+    if config.level >= 2:
+        names += [f"{prefix}_lvl2_c{i}c{j}" for (i, j) in upper_pairs(config.path_dim)]
+    return names
+
+
+def attention_region_site_prefix(layer_idx: int, config: AttentionRegionPathConfig) -> str:
+    return f"{FEATURE_PREFIX_ATTENTION}_L{layer_idx}_{config.aug_token}"
+
+
+def attention_region_site_feature_names(
+    layer_idx: int, config: AttentionRegionPathConfig,
+) -> list[str]:
+    """All feature names for one attention-region site, in emission order.
+
+    ``attn_sig_L16_{aug|noaug}_lvl{1|2}_c{i}[c{j}]`` — feature_map: SOURCE=attention
+    (``attn_sig`` prefix), METHOD=iterated_integral, DEPTH from ``_L{n}``, DYNAMIC from the
+    ``lvl1``/``lvl2`` token. Coordinate order: ``c0=prompt, c1=early_gen, c2=mid_gen,
+    c3=recent[, c4=sink][, c{last}=clock]``.
+    """
+    prefix = attention_region_site_prefix(layer_idx, config)
+    names = [f"{prefix}_lvl1_c{i}" for i in range(config.path_dim)]
+    if config.level >= 2:
+        names += [f"{prefix}_lvl2_c{i}c{j}" for (i, j) in upper_pairs(config.path_dim)]
+    return names
+
+
+def attention_region_feature_names(config: AttentionRegionPathConfig) -> list[str]:
+    """All feature names the §1b family emits under this config, in emission order."""
+    out: list[str] = []
+    for layer_idx in config.layer_indices:
+        out.extend(attention_region_site_feature_names(layer_idx, config))
     return out
 
 
@@ -1009,6 +1709,99 @@ def extract_null_battery(
             extract_path_signature_from_source(source, gen_id, basis_bank, null_cfg)
         )
     return out
+
+
+def extract_output_stats_signature_from_source(
+    source: PathSource,
+    gen_id: int,
+    config: OutputStatsPathConfig,
+) -> PathSignatureResult:
+    """Extract one generation's §1a output-statistics path-signature block."""
+    names = output_stats_feature_names(config)
+    try:
+        p = source.load_path(gen_id, OUTPUT_SITE_ID)
+        feats, T = signature_features_from_native_path(
+            p.array, config, expected_native_dim=OutputStatsPathConfig.NATIVE_DIM,
+        )
+        n_positions = {OUTPUT_SITE_ID: T}
+        degraded: tuple[int, ...] = ()
+    except ShortPathError as exc:
+        if config.on_short_path == "raise":
+            raise
+        logger.warning(
+            "path_signature(output): gen %d degraded to a zero block (%s)", gen_id, exc,
+        )
+        feats = np.zeros(len(names), dtype=np.float64)
+        n_positions = {OUTPUT_SITE_ID: 0}
+        degraded = (OUTPUT_SITE_ID,)
+
+    features = feats.astype(np.float32)
+    if len(features) != len(names):
+        raise PathSignatureError(
+            f"features/names divergence: {len(features)} vs {len(names)}"
+        )
+    return PathSignatureResult(
+        features=features,
+        feature_names=names,
+        family_name=FAMILY_NAME_OUTPUT,
+        metadata=OutputStatsMetadata.from_config(
+            config, n_positions=n_positions, degraded_sites=degraded,
+        ),
+    )
+
+
+def extract_attention_region_signature_from_source(
+    source: PathSource,
+    gen_id: int,
+    config: AttentionRegionPathConfig,
+) -> PathSignatureResult:
+    """Extract one generation's §1b attention-region path-signature block across all sites."""
+    all_feats: list[F64] = []
+    all_names: list[str] = []
+    n_positions: dict[int, int] = {}
+    degraded: list[int] = []
+
+    for layer_idx in config.layer_indices:
+        names = attention_region_site_feature_names(layer_idx, config)
+        try:
+            p = source.load_path(gen_id, layer_idx)
+            feats, T = signature_features_from_native_path(
+                p.array, config, expected_native_dim=config.native_dim,
+            )
+            n_positions[layer_idx] = T
+        except (KeyError, ShortPathError) as exc:
+            policy = (
+                config.on_short_path if isinstance(exc, ShortPathError)
+                else config.on_missing_layer
+            )
+            if policy == "raise":
+                raise
+            logger.warning(
+                "path_signature(attention): gen %d layer %d degraded to a zero block (%s)",
+                gen_id, layer_idx, exc,
+            )
+            feats = np.zeros(len(names), dtype=np.float64)
+            degraded.append(layer_idx)
+            n_positions[layer_idx] = 0
+        all_feats.append(feats)
+        all_names.extend(names)
+
+    features = (
+        np.concatenate(all_feats).astype(np.float32)
+        if all_feats else np.array([], dtype=np.float32)
+    )
+    if len(features) != len(all_names):
+        raise PathSignatureError(
+            f"features/names divergence: {len(features)} vs {len(all_names)}"
+        )
+    return PathSignatureResult(
+        features=features,
+        feature_names=all_names,
+        family_name=FAMILY_NAME_ATTENTION,
+        metadata=AttentionRegionMetadata.from_config(
+            config, n_positions=n_positions, degraded_sites=tuple(degraded),
+        ),
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1435,6 +2228,312 @@ def selftest(verbose: bool = True) -> bool:  # noqa: C901 — a linear battery, 
             f"exact max|Δ| = {exact:.3e}; up-to-sign max|Δ| = {upto_sign:.3e}; "
             f"n_pairs = {len(pairs)}",
         )
+
+    # ── (h) the seam generalisation itself ──
+    print("\n(h) generalised source seam")
+    c.ok(
+        "h1 ResidualPathSource is the SAME class object as PathSource (bit-identical alias)",
+        ResidualPathSource is PathSource,
+    )
+
+    # ── (i) §1a output-statistics path — SOURCE=output ──
+    print("\n(i) §1a output-statistics path (entropy, margin, eos_log_mass, varentropy)")
+    out_native = _synthetic_path(rng, T=110, d=4)   # a curved, order-structured 4-dim path
+    out_cfg = OutputStatsPathConfig(eos_token_ids=(3, 7), time_augment=True)
+    out_real, _ = signature_features_from_native_path(
+        out_native, out_cfg, expected_native_dim=4,
+    )
+    n1_out = out_cfg.n_level1
+    l1_devs_o, l2_devs_o = [], []
+    for seed in (1, 2, 3, 4, 5):
+        null_cfg = out_cfg.model_copy(update={"permute_increments": True, "permutation_seed": seed})
+        null_o, _ = signature_features_from_native_path(out_native, null_cfg, expected_native_dim=4)
+        l1_devs_o.append(float(np.max(np.abs(null_o[:n1_out] - out_real[:n1_out]))))
+        l2_devs_o.append(float(np.max(np.abs(null_o[n1_out:] - out_real[n1_out:]))))
+    l2_scale_o = float(np.max(np.abs(out_real[n1_out:])))
+    c.ok(
+        "i1 output: level-1 invariant under increment permutation (<=1e-10)",
+        max(l1_devs_o) <= 1e-10, f"max over 5 seeds = {max(l1_devs_o):.3e}",
+    )
+    c.ok(
+        "i2 output: level-2 moves under increment permutation (>=1e-3 x scale)",
+        min(l2_devs_o) >= 1e-3 * l2_scale_o and l2_scale_o > 0,
+        f"min over 5 seeds = {min(l2_devs_o):.6f}, scale = {l2_scale_o:.6f}",
+    )
+    line4 = np.outer(np.linspace(0.0, 2.0, 60), rng.standard_normal(4)) + rng.standard_normal(4)
+    c.ok(
+        "i3 output: straight-line native path has zero Lévy area",
+        float(np.max(np.abs(level2_area_matrix(line4)))) <= 1e-10,
+    )
+    out_cases = [
+        (True, 2, 5, 10), (False, 2, 4, 6), (True, 1, 5, 0),
+    ]
+    for aug, lvl, e1, e2 in out_cases:
+        cc = OutputStatsPathConfig(eos_token_ids=(3, 7), time_augment=aug, level=lvl)  # type: ignore[arg-type]
+        nm = output_stats_feature_names(cc)
+        feats, _T = signature_features_from_native_path(out_native, cc, expected_native_dim=4)
+        got1 = sum(1 for n in nm if "_lvl1_" in n)
+        got2 = sum(1 for n in nm if "_lvl2_" in n)
+        c.ok(
+            f"i4[{'aug' if aug else 'noaug'},lvl{lvl}] arity 4{'+clock' if aug else ''} "
+            f"-> lvl1={e1},lvl2={e2}",
+            cc.n_level1 == e1 and cc.n_level2 == e2 and got1 == e1 and got2 == e2
+            and len(nm) == e1 + e2 == len(feats),
+            f"names {got1}+{got2}={len(nm)}, features={len(feats)}",
+        )
+    c.ok(
+        "i5 output config REFUSES an empty eos_token_ids",
+        _raises(lambda: OutputStatsPathConfig(eos_token_ids=()), ValueError),
+    )
+    c.ok(
+        "i6 output config REFUSES a missing eos_token_ids (no silent default)",
+        _raises(lambda: OutputStatsPathConfig(), ValueError),  # type: ignore[call-arg]
+    )
+    c.ok(
+        "i7 output config REFUSES an unseeded null (same rule as residual)",
+        _raises(lambda: OutputStatsPathConfig(eos_token_ids=(3,), permute_increments=True), ValueError),
+    )
+
+    # source + end-to-end extraction (in-memory ArrayOutputStatsSource)
+    out_src = ArrayOutputStatsSource({0: out_native, 1: out_native[:2]})
+    out_res = extract_output_stats_signature_from_source(out_src, 0, out_cfg)
+    c.ok(
+        "i8 ArrayOutputStatsSource end-to-end matches the direct call",
+        np.allclose(out_res.features.astype(np.float64), out_real, atol=1e-4)
+        and out_res.family_name == FAMILY_NAME_OUTPUT
+        and out_res.metadata.eos_token_ids == (3, 7),
+    )
+    c.ok(
+        "i9 output: wrong site id raises KeyError",
+        _raises(lambda: out_src.load_path(0, 99), KeyError),
+    )
+    c.ok(
+        "i10 output: short path RAISES by default",
+        _raises(lambda: extract_output_stats_signature_from_source(out_src, 1, out_cfg), ShortPathError),
+    )
+    out_zero_cfg = out_cfg.model_copy(update={"on_short_path": "zeros"})
+    out_zres = extract_output_stats_signature_from_source(out_src, 1, out_zero_cfg)
+    c.ok(
+        "i11 output: on_short_path='zeros' emits a name-matched zero block",
+        len(out_zres) == len(out_zres.feature_names) and not np.any(out_zres.features)
+        and out_zres.metadata.degraded_sites == (OUTPUT_SITE_ID,),
+    )
+
+    # ── (j) §1b attention-region path — SOURCE=attention ──
+    print("\n(j) §1b attention-region path (prompt/early_gen/mid_gen/recent[/sink])")
+    attn_native = _synthetic_path(rng, T=95, d=5)
+    attn_cfg = AttentionRegionPathConfig(layer_indices=(16,), include_sink=True, time_augment=True)
+    attn_real, _ = signature_features_from_native_path(
+        attn_native, attn_cfg, expected_native_dim=attn_cfg.native_dim,
+    )
+    n1_attn = attn_cfg.n_level1
+    l1_devs_a, l2_devs_a = [], []
+    for seed in (1, 2, 3, 4, 5):
+        null_cfg = attn_cfg.model_copy(update={"permute_increments": True, "permutation_seed": seed})
+        null_a, _ = signature_features_from_native_path(
+            attn_native, null_cfg, expected_native_dim=attn_cfg.native_dim,
+        )
+        l1_devs_a.append(float(np.max(np.abs(null_a[:n1_attn] - attn_real[:n1_attn]))))
+        l2_devs_a.append(float(np.max(np.abs(null_a[n1_attn:] - attn_real[n1_attn:]))))
+    l2_scale_a = float(np.max(np.abs(attn_real[n1_attn:])))
+    c.ok(
+        "j1 attention: level-1 invariant under increment permutation (<=1e-10)",
+        max(l1_devs_a) <= 1e-10, f"max over 5 seeds = {max(l1_devs_a):.3e}",
+    )
+    c.ok(
+        "j2 attention: level-2 moves under increment permutation (>=1e-3 x scale)",
+        min(l2_devs_a) >= 1e-3 * l2_scale_a and l2_scale_a > 0,
+        f"min over 5 seeds = {min(l2_devs_a):.6f}, scale = {l2_scale_a:.6f}",
+    )
+    line5 = np.outer(np.linspace(0.0, 2.0, 55), rng.standard_normal(5)) + rng.standard_normal(5)
+    c.ok(
+        "j3 attention: straight-line native path has zero Lévy area",
+        float(np.max(np.abs(level2_area_matrix(line5)))) <= 1e-10,
+    )
+    attn_cases = [
+        (True, True, 2, 6, 15), (True, False, 2, 5, 10),
+        (False, True, 2, 5, 10), (False, False, 2, 4, 6),
+        (True, True, 1, 6, 0),
+    ]
+    for sink, aug, lvl, e1, e2 in attn_cases:
+        cc = AttentionRegionPathConfig(
+            layer_indices=(16,), include_sink=sink, time_augment=aug, level=lvl,  # type: ignore[arg-type]
+        )
+        nm = attention_region_feature_names(cc)
+        feats, _T = signature_features_from_native_path(
+            attn_native if sink else attn_native[:, :4], cc, expected_native_dim=cc.native_dim,
+        )
+        got1 = sum(1 for n in nm if "_lvl1_" in n)
+        got2 = sum(1 for n in nm if "_lvl2_" in n)
+        c.ok(
+            f"j4[{'sink' if sink else 'nosink'},{'aug' if aug else 'noaug'},lvl{lvl}] "
+            f"native={cc.native_dim} -> lvl1={e1},lvl2={e2}",
+            cc.n_level1 == e1 and cc.n_level2 == e2 and got1 == e1 and got2 == e2
+            and len(nm) == e1 + e2 == len(feats),
+            f"names {got1}+{got2}={len(nm)}, features={len(feats)}",
+        )
+    multi_attn = AttentionRegionPathConfig(layer_indices=(8, 16), include_sink=True, time_augment=True)
+    c.ok(
+        "j5 attention: multi-site arity = n_sites x per-site",
+        len(attention_region_feature_names(multi_attn)) == 2 * multi_attn.n_features_per_site == 42,
+        f"{len(attention_region_feature_names(multi_attn))} names over 2 sites",
+    )
+
+    attn_src = ArrayAttentionRegionSource({0: {16: attn_native}, 1: {16: attn_native[:2]}})
+    attn_res = extract_attention_region_signature_from_source(attn_src, 0, attn_cfg)
+    c.ok(
+        "j6 ArrayAttentionRegionSource end-to-end matches the direct call",
+        np.allclose(attn_res.features.astype(np.float64), attn_real, atol=1e-4)
+        and attn_res.family_name == FAMILY_NAME_ATTENTION,
+    )
+    c.ok(
+        "j7 attention: short path RAISES by default",
+        _raises(lambda: extract_attention_region_signature_from_source(attn_src, 1, attn_cfg), ShortPathError),
+    )
+    c.ok(
+        "j8 attention: missing layer RAISES",
+        _raises(
+            lambda: extract_attention_region_signature_from_source(
+                ArrayAttentionRegionSource({0: {8: attn_native}}), 0, attn_cfg,
+            ),
+            KeyError,
+        ),
+    )
+
+    # ── (k) real RawGenerationData end-to-end (both new sources) ──
+    print("\n(k) RawGenerationData adapter, both new sources, end-to-end")
+    from anamnesis.extraction.state_extractor import RawGenerationData
+
+    def _synthetic_raw_gen(
+        rng_: np.random.Generator, *, T: int = 70, prompt_len: int = 9,
+        vocab: int = 96, n_layers: int = 6, n_heads: int = 4,
+    ) -> RawGenerationData:
+        logits = [(rng_.standard_normal(vocab) * 2.5).astype(np.float32) for _ in range(T)]
+        chosen = rng_.integers(0, vocab, size=T).astype(np.float32)
+        attentions = []
+        for t in range(T):
+            seq_len = prompt_len + t + 1
+            raw = rng_.random((n_layers, n_heads, seq_len)).astype(np.float32) + 0.01
+            raw = raw / raw.sum(axis=-1, keepdims=True)
+            attentions.append(raw.astype(np.float32))
+        return RawGenerationData(
+            hidden_states=[], attentions=attentions, logits=logits,
+            chosen_token_ids=chosen, pre_rope_keys={}, prompt_length=prompt_len,
+        )
+
+    rgd = _synthetic_raw_gen(rng)
+
+    # (k, output) direct per-token matrix sanity
+    mat_out = _output_stats_per_token(rgd.logits, (3, 7))
+    c.ok(
+        "k1 output per-token matrix: entropy>=0, eos_log_mass<=~0, varentropy>=0",
+        bool(np.all(mat_out[:, 0] >= -1e-9)) and bool(np.all(mat_out[:, 2] <= 1e-9))
+        and bool(np.all(mat_out[:, 3] >= -1e-9)),
+        f"ranges: entropy[{mat_out[:,0].min():.3f},{mat_out[:,0].max():.3f}] "
+        f"eos_log_mass[{mat_out[:,2].min():.3f},{mat_out[:,2].max():.3f}] "
+        f"varentropy[{mat_out[:,3].min():.3f},{mat_out[:,3].max():.3f}]",
+    )
+    c.ok(
+        "k2 output per-token matrix: margin>=0 (top1 >= top2 by construction)",
+        bool(np.all(mat_out[:, 1] >= -1e-9)),
+    )
+    c.ok(
+        "k3 output: eos id out of vocab range raises",
+        _raises(lambda: _output_stats_per_token(rgd.logits, (10_000,)), PathSignatureError),
+    )
+
+    out_rgd_src = RawGenerationDataOutputStatsSource(rgd, eos_token_ids=(3, 7))
+    out_rgd_res = extract_output_stats_signature_from_source(
+        out_rgd_src, 0, OutputStatsPathConfig(eos_token_ids=(3, 7), time_augment=True),
+    )
+    c.ok(
+        "k4 RawGenerationDataOutputStatsSource end-to-end",
+        len(out_rgd_res) == out_cfg.n_features_per_site and out_rgd_res.family_name == FAMILY_NAME_OUTPUT,
+    )
+    c.ok(
+        "k5 RawGenerationDataOutputStatsSource REFUSES empty eos_token_ids at construction",
+        _raises(lambda: RawGenerationDataOutputStatsSource(rgd, eos_token_ids=()), PathSignatureError),
+    )
+
+    # (k, attention) direct per-token matrix sanity: the 4 region masses partition [0,1]
+    mat_attn = _attention_region_per_token(rgd, 3, include_sink=True)
+    partitions_ok = np.allclose(mat_attn[:, :4].sum(axis=1), 1.0, atol=1e-4)
+    sink_le_prompt = bool(np.all(mat_attn[:, 4] <= mat_attn[:, 0] + 1e-9))  # sink is WITHIN prompt
+    c.ok(
+        "k6 attention per-token matrix: prompt+early+mid+recent partitions to 1.0",
+        bool(partitions_ok),
+        f"max|sum-1| = {float(np.max(np.abs(mat_attn[:, :4].sum(axis=1) - 1.0))):.3e}",
+    )
+    c.ok(
+        "k7 attention per-token matrix: sink mass <= prompt mass (sink is inside the prompt region)",
+        sink_le_prompt,
+    )
+    attn_rgd_src = RawGenerationDataAttentionRegionSource(rgd, include_sink=True)
+    attn_rgd_res = extract_attention_region_signature_from_source(
+        attn_rgd_src, 0, AttentionRegionPathConfig(layer_indices=(3,), include_sink=True, time_augment=True),
+    )
+    c.ok(
+        "k8 RawGenerationDataAttentionRegionSource end-to-end",
+        len(attn_rgd_res) > 0 and attn_rgd_res.family_name == FAMILY_NAME_ATTENTION,
+    )
+    c.ok(
+        "k9 RawGenerationDataAttentionRegionSource: out-of-range layer raises KeyError",
+        _raises(lambda: attn_rgd_src.load_path(0, 999), KeyError),
+    )
+
+    # ── (l) feature_map classification — output + attention families, zero unclassified ──
+    print("\n(l) feature_map classification — §1a/§1b families")
+    out_names_full = output_stats_feature_names(
+        OutputStatsPathConfig(eos_token_ids=(3, 7), time_augment=True),
+    )
+    fm_out = FeatureMap(out_names_full, n_layers=32)
+    c.ok("l1 output: zero unclassified", not fm_out.unclassified(), f"{fm_out.unclassified()[:5]}")
+    c.ok(
+        "l2 output: every name SOURCE=output, METHOD=iterated_integral, family=path_signature_output",
+        all(t.source == Source.output for t in fm_out.tags)
+        and all(t.method == Method.iterated_integral for t in fm_out.tags)
+        and {t.family for t in fm_out.tags} == {"path_signature_output"},
+        f"sources={sorted({t.source.value for t in fm_out.tags})}",
+    )
+    c.ok(
+        "l3 output: DEPTH is None (no per-layer site)",
+        all(t.layer is None and t.band is None for t in fm_out.tags),
+    )
+
+    attn_names_full = attention_region_feature_names(
+        AttentionRegionPathConfig(layer_indices=(0, 14, 16, 27), include_sink=True, time_augment=True),
+    )
+    fm_attn = FeatureMap(attn_names_full, n_layers=32)
+    c.ok("l4 attention: zero unclassified", not fm_attn.unclassified(), f"{fm_attn.unclassified()[:5]}")
+    c.ok(
+        "l5 attention: every name SOURCE=attention, METHOD=iterated_integral, "
+        "family=path_signature_attention",
+        all(t.source == Source.attention for t in fm_attn.tags)
+        and all(t.method == Method.iterated_integral for t in fm_attn.tags)
+        and {t.family for t in fm_attn.tags} == {"path_signature_attention"},
+        f"sources={sorted({t.source.value for t in fm_attn.tags})}",
+    )
+    bands_attn = {t.layer: t.band for t in fm_attn.tags}
+    c.ok(
+        "l6 attention: DEPTH parsed per site (L0=early, L14/L16=mid, L27=late @ n_layers=32)",
+        bands_attn.get(0) == Band.early and bands_attn.get(14) == Band.mid
+        and bands_attn.get(16) == Band.mid and bands_attn.get(27) == Band.late,
+    )
+    dyn_out = {n: t.dynamic for n, t in zip(out_names_full, fm_out.tags)}
+    dyn_attn = {n: t.dynamic for n, t in zip(attn_names_full, fm_attn.tags)}
+    c.ok(
+        "l7 output + attention: lvl1 static / lvl2 dynamic (same rule as residual)",
+        {dyn_out[n] for n in out_names_full if "_lvl1_" in n} == {False}
+        and {dyn_out[n] for n in out_names_full if "_lvl2_" in n} == {True}
+        and {dyn_attn[n] for n in attn_names_full if "_lvl1_" in n} == {False}
+        and {dyn_attn[n] for n in attn_names_full if "_lvl2_" in n} == {True},
+    )
+    c.ok(
+        "l8 output + attention names are disjoint from the residual/legacy corpus prefixes "
+        "(res_sig/res_traj/... never collide with out_sig/attn_sig)",
+        all(not n.startswith(("res_sig", "res_traj", "activation_norm", "cache_", "attn_flow_"))
+            for n in out_names_full + attn_names_full),
+    )
 
     return c.close("SELFTEST")
 

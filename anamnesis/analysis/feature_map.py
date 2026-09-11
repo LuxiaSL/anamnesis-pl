@@ -66,12 +66,15 @@ class Method(str, Enum):
     spectral = "spectral"              # graph-spectral (Fiedler, HFER, spectral entropy, smoothness)
     learned = "learned"                # contrastive projection / encoder (future in-signature)
     iterated_integral = "iterated_integral"  # rough-path log-signature: level-1 displacement +
-                                       # level-2 Levy areas of a projected, time-augmented
-                                       # trajectory. NEW axis value (SPEC-path-signature-family-
-                                       # 2026-09-11 section 5): the other methods are all MARGINAL
-                                       # reads of one series at a time; this one is the JOINT order
-                                       # of two coordinates (did i move before j). Only the
-                                       # `res_sig_` family emits it.
+                                       # level-2 Levy areas of a (projected or natively low-dim),
+                                       # time-augmented trajectory. NEW axis value (SPEC-path-
+                                       # signature-family-2026-09-11 section 5): the other methods
+                                       # are all MARGINAL reads of one series at a time; this one is
+                                       # the JOINT order of two coordinates (did i move before j).
+                                       # Emitted by `res_sig_` (residual path, projected), and by its
+                                       # two no-projection siblings `out_sig_` (output-statistics
+                                       # path) / `attn_sig_` (attention-region path) added 2026-09-11
+                                       # (SPEC-path-receptacles-and-span-coverage-2026-09-11 §1a/§1b).
     unknown = "unknown"
 
 
@@ -103,6 +106,8 @@ def legacy_family(n: str) -> str:
     if n.startswith("attn_flow_"): return "attention_flow"
     if n.startswith("gate_"): return "gate"
     if n.startswith("res_sig"): return "path_signature"   # level-2 log-signature (new; no legacy analog)
+    if n.startswith("out_sig"): return "path_signature_output"      # output-stats path source (2026-09-11 §1a)
+    if n.startswith("attn_sig"): return "path_signature_attention"  # attention-region path source (2026-09-11 §1b)
     if n.startswith("res_traj"): return "residual_traj"
     if n.startswith(("cache_", "kv_", "epoch_")): return "T2.5"
     if n.startswith("spectral_"): return "T2_spectral"
@@ -119,6 +124,11 @@ def _source(n: str) -> Source:
     if n.startswith("attnres_"): return Source.routing             # AttnRes block-routing softmax = cross-block allocation
     # MoE expert routing (vmb arm A7) — before output rules: router names will contain entropy/top-k.
     if n.startswith(("xrt_", "expert_routing_")): return Source.expert_routing  # reserved prefix for A7 router features
+    # Path-signature SIBLING sources (SPEC-path-receptacles-and-span-coverage-2026-09-11 §1a/§1b):
+    # out_sig_ / attn_sig_ are new prefixes disjoint from every existing family's names, so adding
+    # these two branches cannot reclassify anything in the frozen corpus (regression bar, spec §3).
+    if n.startswith("out_sig"): return Source.output       # output-statistics path (entropy/margin/eos/varentropy)
+    if n.startswith("attn_sig"): return Source.attention   # attention-region path (prompt/early/mid/recent[/sink] mass)
     # v3 hand-suite (checked first; these prefixes are specific). value_* incl value↔key corr = a value prop.
     if n.startswith("value_"): return Source.values            # v_proj value-vector geometry
     if n.startswith(("qk_", "q_")): return Source.qk           # query / q·k content geometry
@@ -151,9 +161,10 @@ _DIST = ("entropy", "agreement", "coverage", "sink", "recency", "prompt_mass", "
 
 
 def _method(n: str, source: Source) -> Method:
-    # Path-signature family FIRST — its names carry no operator keyword the generic scan would
-    # catch, and letting it fall through to Method.unknown would flag the whole family.
-    if n.startswith("res_sig_"): return Method.iterated_integral
+    # Path-signature family (+ its two 2026-09-11 sibling sources) FIRST — none of these names
+    # carry an operator keyword the generic scan would catch, and letting them fall through to
+    # Method.unknown would flag the whole family. New prefixes only (regression-safe, see _source).
+    if n.startswith(("res_sig_", "out_sig_", "attn_sig_")): return Method.iterated_integral
     if source == Source.routing: return Method.distributional      # AttnRes routing summaries (entropy/top1/anchor/recency/eff_src)
     if source == Source.expert_routing:                            # MoE router allocation reads (arm A7, M6). Spec §3 + v2.1:
         # Placed BEFORE the generic _GEOM/_DIST scan (else "top"/"mass"/"drift"/"norm" mis-route). All four
