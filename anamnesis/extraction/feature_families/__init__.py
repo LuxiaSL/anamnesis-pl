@@ -9,6 +9,7 @@ Modules:
     residual_stream  — Trajectory features + contrastive projection
     attention_flow   — System prompt tracking, region decomposition
     gate_features    — SwiGLU gate activation statistics
+    path_signature   — Level-2 log-signature (iterated integrals) of the residual path
 """
 
 from __future__ import annotations

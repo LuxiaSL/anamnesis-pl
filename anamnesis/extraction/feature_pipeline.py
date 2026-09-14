@@ -299,6 +299,41 @@ def compute_features_v2_from_data(
             all_names.extend(result.feature_names)
             offset += len(result)
 
+    # Path signature (level-2 log-signature of the residual trajectory; spec 2026-09-11).
+    # Unlike the other families this one needs an EXTERNAL artefact (the calibration PCA that
+    # supplies the projection basis) and deliberately does NOT degrade to a skip when it is
+    # missing — a silently-absent family is exactly the failure the spec's discipline forbids.
+    if family_config.enable_path_signature:
+        from anamnesis.extraction.feature_families.path_signature import (
+            PathSignatureConfig,
+            ProjectionBasisBank,
+            extract_path_signature,
+        )
+        if family_config.path_signature_basis_path is None:
+            raise ValueError(
+                "enable_path_signature=True requires path_signature_basis_path (the banked "
+                "calibration PCA). This family never fits a basis on evaluation data."
+            )
+        ps_bank = ProjectionBasisBank.from_pca_pickle(
+            family_config.path_signature_basis_path,
+            label=family_config.path_signature_basis_label,
+        )
+        ps_config = PathSignatureConfig(
+            layer_indices=tuple(family_config.path_signature_layers),
+            n_components=family_config.path_signature_k,
+            level=family_config.path_signature_level,  # type: ignore[arg-type]
+            time_augment=family_config.path_signature_time_augment,
+            basis_label=family_config.path_signature_basis_label,
+            permute_increments=family_config.path_signature_permute_seed is not None,
+            permutation_seed=family_config.path_signature_permute_seed,
+        )
+        result = extract_path_signature(raw_data, ps_bank, ps_config)
+        if len(result) > 0:
+            all_slices[result.family_name] = (offset, offset + len(result))
+            all_features.append(result.features)
+            all_names.extend(result.feature_names)
+            offset += len(result)
+
     # AttnRes routing (kotodama-only; needs attn_res_* capture fields — Llama leaves them None → skipped)
     if family_config.enable_attn_res and raw_data.attn_res_routing is not None:
         from anamnesis.extraction.feature_families.attn_res import extract_attn_res

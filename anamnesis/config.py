@@ -273,6 +273,46 @@ class FeaturePipelineConfig(BaseModel):
         description="num_experts_per_tok — selection size for coverage/load/drift (6 for DeepSeek-V2-Lite)",
     )
 
+    # Path signature (level-2 log-signature / iterated integrals of the residual trajectory;
+    # SPEC-path-signature-family-2026-09-11). Needs a SUPPLIED projection basis — the family
+    # never fits one, so leaving path_signature_basis_path unset is a hard error, not a skip.
+    enable_path_signature: bool = Field(
+        default=False,
+        description="Extract level-2 log-signature features (net displacement + Levy areas) of "
+                    "the projected, time-augmented residual path at the site(s) of record",
+    )
+    path_signature_layers: list[int] = Field(
+        default=[16],
+        description="Sites for the path signature (spec: 3B L14, 8B L16 — per-model, per-site)",
+    )
+    path_signature_basis_path: Path | None = Field(
+        default=None,
+        description="Banked calibration PCA pickle supplying the projection basis (P-A). "
+                    "Required when enable_path_signature is True.",
+    )
+    path_signature_k: int = Field(
+        default=4,
+        description="Projection rank k (spec: k in {4, 8}); path dim is k+1 when time-augmented",
+    )
+    path_signature_time_augment: bool = Field(
+        default=True,
+        description="Append normalised position t/(T-1) before integrating (keeps pacing)",
+    )
+    path_signature_level: int = Field(
+        default=2,
+        description="Log-signature truncation level (1 = displacement only, 2 = + Levy areas)",
+    )
+    path_signature_basis_label: str = Field(
+        default="pcaA",
+        description="Basis token embedded in every feature name ('pcaA' = calibration PCA)",
+    )
+    path_signature_permute_seed: int | None = Field(
+        default=None,
+        description="When set, runs THE NULL (spec section 2): increments permuted with this "
+                    "seed and re-cumulated. Level-1 columns are invariant, level-2 die. "
+                    "Feature names are unchanged so a null bank is column-comparable.",
+    )
+
     # Temporal operator settings (shared across families)
     temporal_n_windows: int = Field(
         default=4,
