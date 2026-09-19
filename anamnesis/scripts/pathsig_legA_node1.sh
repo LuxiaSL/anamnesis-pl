@@ -5,14 +5,14 @@
 # (HEIMDALL-OPERATING-GUIDE §4.7).
 set -euo pipefail
 
-ROOT=/home/athuser/luxi-files/anamnesis-pathsig
+ROOT=/home/cluster-user/luxi-files/anamnesis-pathsig
 OUT=${OUT:-/models/anamnesis-extract/pathsig/8b_L16}
 WORKERS=${WORKERS:-16}
 
 cd "$ROOT"
 mkdir -p "$ROOT/logs" "$OUT"
 # shellcheck disable=SC1091
-source /home/athuser/luxi-files/.venv-shared/bin/activate
+source /home/cluster-user/luxi-files/.venv-shared/bin/activate
 
 export PYTHONPATH=.
 export PYTHONUNBUFFERED=1
