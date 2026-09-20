@@ -309,7 +309,11 @@ class GpuFeatureLane:
 
     @torch.no_grad()
     def replay_batch(
-        self, loaded: LoadedModel, spans: Sequence[ReplaySpan]
+        self,
+        loaded: LoadedModel,
+        spans: Sequence[ReplaySpan],
+        *,
+        prefill_policy: Literal["batched", "independent"] = "batched",
     ) -> list[GpuFeatureResult]:
         """One batched prefill and continuation; independent per-row reductions.
 
@@ -319,12 +323,22 @@ class GpuFeatureLane:
         if self.replay_path != "cached":
             raise ValueError("batched replay currently requires the cached path")
         layout = pack_spans(tuple(spans), loaded.model.config.vocab_size)
+        if prefill_policy not in ("batched", "independent"):
+            raise ValueError("unknown prefill policy")
+        if (
+            prefill_policy == "independent"
+            and len({s.start for s in layout.spans}) != 1
+        ):
+            raise ValueError(
+                "independent-prefix cache stacking requires equal prefix lengths"
+            )
         for span in layout.spans:
             self._validate_span(loaded, span.tokens, span.start, span.end)
         batch_identity = dict(
             parent=self.identity,
             batch_size=len(layout.spans),
             padding_policy="left-prefix/right-continuation-v1",
+            prefill_policy=prefill_policy,
         )
         batch_lane = (
             "torch-eager-batch-v1-"
@@ -361,15 +375,36 @@ class GpuFeatureLane:
         loaded.clear_hook_state()
         loaded.disable_hooks()
         try:
-            pre = loaded.model(
-                prefix,
-                attention_mask=prefix_mask,
-                position_ids=prefix_pos,
-                use_cache=True,
-                return_dict=True,
-            )
-            cache = pre.past_key_values
-            del pre
+            if prefill_policy == "batched":
+                pre = loaded.model(
+                    prefix,
+                    attention_mask=prefix_mask,
+                    position_ids=prefix_pos,
+                    use_cache=True,
+                    return_dict=True,
+                )
+                cache = pre.past_key_values
+                del pre
+            else:
+                from transformers.cache_utils import DynamicCache
+
+                caches = []
+                for i in range(len(layout.spans)):
+                    # Match the original unpadded single-prefix forward exactly.
+                    pre = loaded.model(
+                        prefix[i : i + 1], use_cache=True, return_dict=True
+                    )
+                    caches.append(pre.past_key_values)
+                    del pre
+                pairs = [
+                    (
+                        torch.cat([c.layers[layer].keys for c in caches], dim=0),
+                        torch.cat([c.layers[layer].values for c in caches], dim=0),
+                    )
+                    for layer in range(len(caches[0].layers))
+                ]
+                cache = DynamicCache(ddp_cache_data=pairs, config=loaded.model.config)
+                del caches, pairs
             layers = decoder_layers(loaded.model)
             for layer, module in enumerate(layers):
 
@@ -434,6 +469,7 @@ class GpuFeatureLane:
                     batch_row=i,
                     batch_composition_sha256=layout.composition_sha256,
                     padding_policy=batch_identity["padding_policy"],
+                    prefill_policy=prefill_policy,
                     padded_prefix_width=layout.prefix_width,
                     padded_continuation_width=layout.continuation_width,
                     shared_batch_input_h2d_bytes=sum(a.nbytes for a in arrays),

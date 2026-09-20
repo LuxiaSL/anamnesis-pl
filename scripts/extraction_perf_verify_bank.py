@@ -109,6 +109,8 @@ def validate_batch_schedule(folder, pin, rows, receipts):
                     meta["batch_size"] != 2
                     or meta["batch_row"] != slot
                     or meta["batch_composition_sha256"] != composition
+                    or meta.get("prefill_policy", "batched")
+                    != pin.get("prefill_policy", "batched")
                 ):
                     raise ValueError("batch composition mismatch")
                 ids.add(meta["batch_invocation_id"])

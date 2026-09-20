@@ -14,10 +14,17 @@ from anamnesis.extraction.feature_pipeline import compute_features_v2_from_data
 
 
 @pytest.mark.parametrize(
-    "prefixes,continuations",
-    [((7, 7), (17, 17)), ((3, 11), (17, 13)), ((11, 3), (13, 17))],
+    "prefixes,continuations,prefill_policy",
+    [
+        ((7, 7), (17, 17), "batched"),
+        ((3, 11), (17, 13), "batched"),
+        ((11, 3), (13, 17), "batched"),
+        ((7, 7), (17, 13), "independent"),
+    ],
 )
-def test_batch_feature_parity_repeat_and_cleanup(prefixes, continuations, monkeypatch):
+def test_batch_feature_parity_repeat_and_cleanup(
+    prefixes, continuations, prefill_policy, monkeypatch
+):
     loaded = tiny_loaded()
     rng = np.random.default_rng(341)
     spans = tuple(
@@ -67,10 +74,13 @@ def test_batch_feature_parity_repeat_and_cleanup(prefixes, continuations, monkey
     counter = loaded.model.register_forward_pre_hook(
         lambda _m, args: forwards.append(tuple(args[0].shape))
     )
-    first = lane.replay_batch(loaded, spans)
+    first = lane.replay_batch(loaded, spans, prefill_policy=prefill_policy)
     counter.remove()
-    assert len(forwards) == 2 and all(shape[0] == 2 for shape in forwards)
-    second = lane.replay_batch(loaded, spans)
+    if prefill_policy == "batched":
+        assert len(forwards) == 2 and all(shape[0] == 2 for shape in forwards)
+    else:
+        assert [shape[0] for shape in forwards] == [1, 1, 2]
+    second = lane.replay_batch(loaded, spans, prefill_policy=prefill_policy)
     assert first[0].metadata["lane_id"] != lane.lane_id
     assert first[0].metadata["lane_id"] == first[1].metadata["lane_id"]
     assert (
@@ -118,7 +128,7 @@ def test_batch_feature_parity_repeat_and_cleanup(prefixes, continuations, monkey
 
     monkeypatch.setattr(lane, "_reduce_capture", fail)
     with pytest.raises(RuntimeError, match="injected"):
-        lane.replay_batch(loaded, spans)
+        lane.replay_batch(loaded, spans, prefill_policy=prefill_policy)
     assert not loaded.hook_state.pre_rope_keys
     assert [
         tuple(m.self_attn._forward_hooks) for m in loaded.model.model.layers

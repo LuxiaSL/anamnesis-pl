@@ -104,6 +104,7 @@ class Run4Data:
     topics: NDArray  # (N,) string array of topic labels
     mode_indices: NDArray[np.int64]  # (N,) integer mode indices
     topic_indices: NDArray[np.int64]  # (N,) integer topic indices
+    lane_id: str | None = None  # None denotes legacy untagged, not certification.
 
     @property
     def n_samples(self) -> int:
@@ -175,9 +176,11 @@ def load_run4(
 
     # First pass: load metadata to determine which samples to include
     all_meta: list[tuple[Path, dict]] = []
+    missing_metadata = []
     for npz_path in npz_files:
         json_path = npz_path.with_suffix(".json")
         if not json_path.exists():
+            missing_metadata.append(str(json_path))
             continue
         with open(json_path) as f:
             meta = json.load(f)
@@ -221,6 +224,10 @@ def load_run4(
         logger.info(f"Mode filter applied: {len(all_meta)} samples for modes {sorted(allowed)}")
 
     # Sort by (mode_idx, topic_idx) for consistent ordering
+    from anamnesis.analysis.lane_guard import require_single_lane, MixedLaneError
+    lane_id = require_single_lane([meta for _, meta in all_meta])
+    if lane_id is not None and missing_metadata:
+        raise MixedLaneError("tagged signature directory contains files without lane metadata")
     all_meta.sort(key=lambda x: (x[1]["mode_idx"], x[1]["topic_idx"]))
 
     # Second pass: load features. Tier discovery happens on the first file of
@@ -324,6 +331,16 @@ def load_run4(
                 if stem not in stem_to_idx:
                     continue
                 idx = stem_to_idx[stem]
+                addon_metadata_path=npz_file.with_suffix(".json")
+                try:
+                    addon_metadata=json.loads(addon_metadata_path.read_text()) if addon_metadata_path.exists() else {}
+                except (json.JSONDecodeError,OSError) as error:
+                    if lane_id is not None:
+                        raise MixedLaneError("tagged signature addon has unreadable metadata") from error
+                    addon_metadata={}
+                # Feature concatenation is also a scientific join; an untagged
+                # addon must not silently enter a tagged lane's vector.
+                require_single_lane([all_meta[idx][1],addon_metadata])
                 data = np.load(npz_file, allow_pickle=True)
                 for tier_name, npz_key in addon_tiers.items():
                     addon_arrays[tier_name][idx] = data[npz_key]
@@ -406,6 +423,7 @@ def load_run4(
         topics=topics,
         mode_indices=mode_indices,
         topic_indices=topic_indices,
+        lane_id=lane_id,
     )
 
 

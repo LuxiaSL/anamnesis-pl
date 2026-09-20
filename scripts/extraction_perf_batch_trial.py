@@ -21,6 +21,10 @@ def feature_gate(distance: float, bound: float, maximum_sigma_error: float) -> b
     return bool(distance <= bound and maximum_sigma_error <= 0.1)
 
 
+def timing_order(round_index: int) -> tuple[str, str]:
+    return ("single", "batch") if round_index % 2 == 0 else ("batch", "single")
+
+
 def select_rows(rows, pairing="ragged"):
     if pairing == "exact":
         buckets = {}
@@ -80,7 +84,23 @@ def main():
     parser.add_argument("--pairing", choices=("ragged", "exact"), default="ragged")
     parser.add_argument("--full-bank", action="store_true")
     parser.add_argument("--batch-pilot", type=Path)
+    parser.add_argument(
+        "--prefill-policy", choices=("batched", "independent"), default="batched"
+    )
+    parser.add_argument(
+        "--indices",
+        help="Explicit diagnostic row indices; cannot combine with full bank",
+    )
+    parser.add_argument("--timing-rounds", type=int, default=0)
     args = parser.parse_args()
+    if (
+        args.timing_rounds < 0
+        or args.timing_rounds % 2
+        or (args.timing_rounds and args.full_bank)
+    ):
+        raise ValueError(
+            "balanced timings need an even round count and a pilot, not full bank"
+        )
     if os.environ.get("CUBLAS_WORKSPACE_CONFIG") != ":16:8":
         raise ValueError("pinned workspace required")
     args.out.mkdir(parents=True, exist_ok=False)
@@ -98,7 +118,20 @@ def main():
     rows, names = rows_from_bank(args.bank)
     if args.full_bank and args.pairing != "exact":
         raise ValueError("full bank requires the passing exact-shape policy")
-    selected = rows if args.full_bank else select_rows(rows, args.pairing)
+    if args.indices:
+        if args.full_bank:
+            raise ValueError("cannot subset a full-bank validation")
+        indices = [int(i) for i in args.indices.split(",")]
+        if (
+            not indices
+            or len(indices) % 2
+            or len(set(indices)) != len(indices)
+            or any(i < 0 or i >= len(rows) for i in indices)
+        ):
+            raise ValueError("diagnostic selection must contain unique valid pairs")
+        selected = [rows[i] for i in indices]
+    else:
+        selected = rows if args.full_bank else select_rows(rows, args.pairing)
     plans = (
         exact_batches(selected)
         if args.full_bank
@@ -133,6 +166,8 @@ def main():
         ):
             raise ValueError("completed batch pilot required before full bank")
         pilot_pin = json.loads((args.batch_pilot / "deployment.json").read_text())
+        if pilot_pin.get("prefill_policy", "batched") != args.prefill_policy:
+            raise ValueError("prefill policy differs from passing pilot")
         if pilot_pin["source"] != source:
             raise ValueError("feature source differs from passing batch pilot")
         pilot_rows = [
@@ -153,6 +188,8 @@ def main():
         standardizer_sha256=sha(args.sigma),
         batch_size=2,
         pairing_policy=args.pairing,
+        prefill_policy=args.prefill_policy,
+        timing_rounds=args.timing_rounds,
         full_bank=args.full_bank,
         batch_plan_sha256=sha(args.out / "batch-plan.json"),
         planner_sha256=sha(Path(__file__).with_name("extraction_perf_batch_plan.py")),
@@ -227,7 +264,9 @@ def main():
 
     _, warm = timed(
         lambda: lane.replay_batch(
-            loaded, spans([selected[i] for i in plans[0]["indices"]])
+            loaded,
+            spans([selected[i] for i in plans[0]["indices"]]),
+            prefill_policy=args.prefill_policy,
         ),
         "warmup",
     )
@@ -252,10 +291,79 @@ def main():
             singles.append((value, seconds))
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
-        first, elapsed = timed(lambda: lane.replay_batch(loaded, spans(group)), "batch")
-        second, repeat_s = timed(
-            lambda: lane.replay_batch(loaded, spans(group)), "batch_repeat"
+        first, elapsed = timed(
+            lambda: lane.replay_batch(
+                loaded, spans(group), prefill_policy=args.prefill_policy
+            ),
+            "batch",
         )
+        second, repeat_s = timed(
+            lambda: lane.replay_batch(
+                loaded, spans(group), prefill_policy=args.prefill_policy
+            ),
+            "batch_repeat",
+        )
+        timing_samples = []
+        if args.timing_rounds and all(
+            a.features.tobytes() == b.features.tobytes()
+            and feature_gate(
+                float(
+                    np.linalg.norm(
+                        (a.features.astype(float) - r["bank"]) * weights / sigma
+                    )
+                ),
+                bounds[tuple(r["key"])],
+                float(np.max(np.abs(a.features.astype(float) - r["bank"]) / sigma)),
+            )
+            for a, b, r in zip(first, second, group, strict=True)
+        ):
+            for round_index in range(args.timing_rounds):
+                sample = dict(round=round_index, order=list(timing_order(round_index)))
+                for mode in timing_order(round_index):
+                    if mode == "single":
+                        measured = []
+                        for i, row in enumerate(group):
+                            value, seconds = timed(
+                                lambda: lane.replay_span(
+                                    loaded, row["tokens"], row["start"], row["end"]
+                                ),
+                                "timing_single",
+                            )
+                            if (
+                                value.features.tobytes()
+                                != singles[i][0].features.tobytes()
+                            ):
+                                raise RuntimeError(
+                                    "single features changed during timing"
+                                )
+                            measured.append(seconds)
+                        sample["single_seconds_per_row"] = sum(measured) / n_real
+                    else:
+                        values, seconds = timed(
+                            lambda: lane.replay_batch(
+                                loaded, spans(group), prefill_policy=args.prefill_policy
+                            ),
+                            "timing_batch",
+                        )
+                        if any(
+                            v.features.tobytes() != ref.features.tobytes()
+                            for v, ref in zip(values, first, strict=True)
+                        ):
+                            raise RuntimeError("batch features changed during timing")
+                        sample["batch_seconds_per_row"] = seconds / n_real
+                timing_samples.append(sample)
+                write_json(
+                    args.out / f"timing-batch-{batch:05d}.json",
+                    dict(
+                        batch=batch,
+                        shape=list(shape),
+                        keys=[r["key"] for r in group],
+                        samples=timing_samples,
+                        allocator_policy="warm; no empty_cache between timed modes",
+                        all_samples_retained=True,
+                        feature_bytes_unchanged=True,
+                    ),
+                )
         mem = memory.snapshot()
         write_json(args.out / "process-vram.json", mem)
         if mem["errors"] or any(

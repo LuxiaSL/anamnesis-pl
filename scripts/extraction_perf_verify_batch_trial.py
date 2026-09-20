@@ -76,6 +76,8 @@ def verify(folder: Path, sigma_path: Path, rulers_path: Path) -> dict:
                 or meta["batch_size"] != 2
                 or meta["feature_schema_sha256"] != schema
                 or meta["calibration_sha256"] != pin["calibration_sha256"]
+                or meta.get("prefill_policy", "batched")
+                != pin.get("prefill_policy", "batched")
             ):
                 raise ValueError("batch replay metadata mismatch")
             if meta["replay_id"] in replay_ids:
@@ -132,6 +134,7 @@ def verify(folder: Path, sigma_path: Path, rulers_path: Path) -> dict:
         paired_speedup=single_seconds / batch_seconds,
         deployment_sha256=sha(folder / "deployment.json"),
         lane_id=next(iter(lanes)),
+        prefill_policy=pin.get("prefill_policy", "batched"),
         certification=False,
         scope="12-row batch2 pilot; full bank and downstream gates still required",
     )

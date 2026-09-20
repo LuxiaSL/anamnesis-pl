@@ -124,3 +124,12 @@ def test_incomplete_pilot_refused(pilot):
     module.write_json(pilot[0] / "complete.json", dict(rows=6))
     with pytest.raises(ValueError, match="incomplete"):
         module.verify(*pilot)
+
+
+def test_prefill_policy_mismatch_rejected(pilot):
+    path = pilot[0] / "deployment.json"
+    pin = json.loads(path.read_text())
+    pin["prefill_policy"] = "independent"
+    module.write_json(path, pin)
+    with pytest.raises(ValueError, match="metadata mismatch"):
+        module.verify(*pilot)
