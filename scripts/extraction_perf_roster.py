@@ -135,14 +135,23 @@ def main():
     p = argparse.ArgumentParser(__doc__)
     for name in ("roster", "reference", "extension", "out"):
         p.add_argument(f"--{name}", type=Path, required=True)
+    for name, target in (("reference-prefix", "reference"), ("extension-prefix", "extension")):
+        p.add_argument(
+            f"--{name}",
+            required=True,
+            help=(
+                f"Absolute path prefix, exactly as recorded in the roster's file entries, "
+                f"that --{target} mirrors locally. A deployment fact, not a source constant."
+            ),
+        )
     args = p.parse_args()
     if args.out.exists():
         raise FileExistsError(args.out)
     rows, names, files = roster_rows(
         args.roster,
         {
-            "/mnt/beegfs/luxia/palimpsest-banks/rubric-140": args.reference,
-            "/mnt/beegfs/luxia/palimpsest-banks/rubric-144": args.extension,
+            args.reference_prefix: args.reference,
+            args.extension_prefix: args.extension,
         },
     )
     standardization = json.loads(args.roster.read_text())["standardization"]

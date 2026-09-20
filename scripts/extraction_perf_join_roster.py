@@ -47,6 +47,14 @@ def main():
     parser.add_argument("--reuse-origin", type=Path)
     parser.add_argument("--roster", type=Path)
     parser.add_argument("--extension", type=Path)
+    for name, target in (("reference-prefix", "reference"), ("extension-prefix", "extension")):
+        parser.add_argument(
+            f"--{name}",
+            help=(
+                f"Absolute path prefix, exactly as recorded in the roster's file entries, "
+                f"that --{target} mirrors locally. Required for --candidate-kind batch."
+            ),
+        )
     args = parser.parse_args()
     if args.out.exists():
         raise FileExistsError(args.out)
@@ -111,9 +119,20 @@ def main():
     new = row_files([args.supplement])
     batch_schedules = None
     if args.candidate_kind == "batch":
-        if not all((args.reference, args.extension, args.roster, args.reuse_origin)):
+        if not all(
+            (
+                args.reference,
+                args.extension,
+                args.roster,
+                args.reuse_origin,
+                args.reference_prefix,
+                args.extension_prefix,
+            )
+        ):
             raise ValueError(
-                "batch roster join requires explicit reference mirrors and reuse origin"
+                "batch roster join requires explicit reference mirrors "
+                "(--reference/--extension with their --*-prefix roster keys) "
+                "and reuse origin"
             )
         from extraction_perf_phase0 import rows_from_bank
         from extraction_perf_roster import roster_rows
@@ -126,8 +145,8 @@ def main():
         owner_rows, _, _ = roster_rows(
             args.roster,
             {
-                "/mnt/beegfs/luxia/palimpsest-banks/rubric-140": args.reference,
-                "/mnt/beegfs/luxia/palimpsest-banks/rubric-144": args.extension,
+                args.reference_prefix: args.reference,
+                args.extension_prefix: args.extension,
             },
         )
         supplement_rows = select_supplement(owner_rows, reuse)
