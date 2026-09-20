@@ -95,7 +95,7 @@ def main():
     ax.set_xlabel("input pair (cache length); different content per pair")
     ax.set_ylabel("milliseconds saved / row (single − batch)")
     ax.set_title(
-        "70B independent-prefill batch2 · all 36 warm samples\nDiamonds: pair means; 4.3% pilot gain, full qualification pending",
+        "70B independent-prefill batch2 · all 36 warm samples\nDiamonds: pair means; fidelity qualified, speed benefit is sample-dependent",
         fontsize=10,
     )
     for model, ax in zip(("3b", "8b"), axes[1], strict=True):

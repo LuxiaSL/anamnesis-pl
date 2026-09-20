@@ -2,7 +2,8 @@
 
 Status: frozen single-row lane passes G0–G5 on the 3,467-row owner roster
 (`roster-certification-001.json`); synthetic sweep complete with operating
-boundaries. Batch qualification is in progress; wider scope remains unqualified.
+boundaries. Exact-shape independent-prefill batch2 also passes the owner roster
+(`roster-batch-certification-001.json`); wider scope remains unqualified.
 See `extraction-perf-results.md` for implementation pins. Authority: Anamnesis
 extraction-perf brief (2026-09-19), optimization-agent ferry of the same date,
 and Luxia's authorization. This document consolidates those rulings; it does

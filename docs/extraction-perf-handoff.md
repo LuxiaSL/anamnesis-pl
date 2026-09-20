@@ -1,7 +1,7 @@
 # Extraction lane: deployment and consumer handoff
 
-Status: single-row owner-roster qualification complete; expanded batch
-qualification and final delivery audit still in progress. Read the executable
+Status: single-row and expanded batch owner-roster qualification complete.
+Single-row is recommended; batching is optional with mixed speed evidence. Read the executable
 contract and results record alongside this document.
 
 ## Choose the implementation, not just the branch name
@@ -9,7 +9,7 @@ contract and results record alongside this document.
 | Use | Source / evidence | Qualification |
 |---|---|---|
 | 70B cached single-row replay | Frozen `gpu-v3`; numerical files match `6feb4bf`; `roster-certification-001.json` | All 3,467 owner-roster rows, G0–G5, current n383 primary/null statistics |
-| 70B independent-prefill batch2 | Frozen `batch-v7`/`batch-v8`; numerical files match `cba271c`; `verification-batch-bank-002.json` | Original 2,719 rows pass; expanded roster pending |
+| 70B independent-prefill batch2 | Frozen `batch-v7`/`batch-v8`; numerical files match `cba271c`; `roster-batch-certification-001.json` | All 3,467 owner-roster rows pass G0–G5 |
 | Native 3B/8B full replay | Current experimental CLI | Three-input/model characterization, not a tolerance certificate |
 
 The `gpu_features.py` source SHA for the batch implementation is

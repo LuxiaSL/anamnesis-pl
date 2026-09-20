@@ -35,7 +35,7 @@ The expanded roster reuses2693 byte/input-matched rows and measures774 additiona
 rows; dual-replay supplemental capture timings are not relabeled as single-call
 throughput. Process peaks133.31445/133.53125GiB remain below135.29GiB.
 
-## Batching: still under qualification
+## Batching: fidelity qualified, optional for performance
 
 - Fully batched ragged replay failed at cache297 padded to299.
 - Exact-shape batching passed a12-row pilot, then failed at cache290 in the full
@@ -47,8 +47,10 @@ throughput. Process peaks133.31445/133.53125GiB remain below135.29GiB.
 - `batch-bank-002` completed and `verification-batch-bank-002.json` independently
   passes G0–G5 on the original 2,719 rows under the tightened contrast map.
   Its 1,367 batches emit every row once, with 15 computational fillers charged
-  to timing. This is not yet the expanded-roster batch certificate: the 774-row
-  supplemental capture and final owner-roster evidence join remain outstanding.
+  to timing. The supplemental 774-row capture also completed; the final
+  `roster-batch-certification-001.json` passes G0–G5 on all 3,467 owner-roster
+  rows. Both captures peak at 134.52930GiB. Supplemental schedule:394 batches,
+  14 computational fillers. No expanded population or threshold was changed.
 - `batch-timing-bank-002-v2.json` measures 1.27355s/emitted row on first calls
   and 1.22602 on independent repeats, including filler costs. These are separate
   from setup and from the full dual-replay validation job's wall time.
@@ -59,6 +61,9 @@ throughput. Process peaks133.31445/133.53125GiB remain below135.29GiB.
   Retain the positive balanced pilot and this negative operational sample.
   Do not promote batching to a default performance recommendation on fidelity
   success alone; no batch-wide measured speedup over matched singles is claimed.
+- Supplemental timing:1.25886s/row first calls,1.21357 independent repeats.
+  Its58 sparse paired rows give0.90796x overall and0.99931x without fillers.
+  This independently supports keeping batching optional, not a default win.
 
 ## Broader operating evidence and limitations
 
@@ -80,5 +85,17 @@ and speed forecast were withdrawn by the governing ferry, not met silently.
 Lane tags and the shared analysis guard prevent ordinary loader joins from
 mixing tagged arithmetic lanes; legacy untagged data remains explicitly unknown.
 
-Remaining delivery work includes final batch qualification, current artifact
-plots/ledger consolidation, and a requirement-by-requirement completion audit.
+## Light residual-cost profile
+
+`single-profile-report-001.json` preserves a one-input diagnostic against frozen
+gpu-v3. The unprofiled warm replay takes1.16542s; the traced repeat is byte-exact.
+Profiler instrumentation expands the host timeline to1.60069s, so its shares
+must not be treated as exact percentages of unprofiled runtime or saved time.
+Exclusive traced host shares: NumPy gate sorting21.92%, other gate work19.17%,
+forward excluding feature hooks15.30%, attention reductions10.15%, value7.01%,
+query6.56%, tensor construction/upload scopes5.49%. Device H2D27.17ms and
+D2H16.68ms are separate activity durations, not additive host components.
+Gate-feature work is a better next profiling target than bulk transfer alone.
+No optimization or new numerical certificate follows from this trace.
+
+The final audit and consumer handoff are separate from optional future speed work.
