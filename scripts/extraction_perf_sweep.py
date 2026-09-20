@@ -50,7 +50,13 @@ def sweep_rows(bank_rows):
 
 def main():
     p = argparse.ArgumentParser(__doc__)
-    p.add_argument("--mode", choices=("cpu", "gpu"), required=True)
+    p.add_argument("--mode", choices=("cpu", "gpu", "cpu-control"), required=True)
+    p.add_argument(
+        "--indices", help="Diagnostic subset only; cannot establish full sweep coverage"
+    )
+    p.add_argument(
+        "--blas-library", choices=("default", "cublas", "cublaslt"), default="default"
+    )
     p.add_argument("--bank", type=Path, required=True)
     p.add_argument("--bank-pin", type=Path, required=True)
     p.add_argument("--floor-pin", type=Path, required=True)
@@ -59,6 +65,8 @@ def main():
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--model", default="/models/Llama-3.1-70B")
     args = p.parse_args()
+    if args.blas_library != "default" and args.mode != "cpu-control":
+        raise ValueError("BLAS backend variants are diagnostic CPU controls only")
     if args.mode == "cpu":
         os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
     else:
@@ -73,11 +81,20 @@ def main():
     from extraction_perf_memory import ProcessMemorySampler
 
     args.out.mkdir(parents=True, exist_ok=False)
-    torch.use_deterministic_algorithms(args.mode == "gpu")
+    torch.use_deterministic_algorithms(args.mode != "cpu")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
+    if args.blas_library != "default":
+        torch.backends.cuda.preferred_blas_library(args.blas_library)
     rows, names = rows_from_bank(args.bank)
     selected = sweep_rows(rows)
+    if args.indices:
+        indices = [int(i) for i in args.indices.split(",")]
+        if len(set(indices)) != len(indices) or any(
+            i < 0 or i >= len(selected) for i in indices
+        ):
+            raise ValueError("invalid diagnostic selection")
+        selected = [selected[i] for i in indices]
     bank_pin = json.loads(args.bank_pin.read_text())
     floor_pin = json.loads(args.floor_pin.read_text())
     for filename, digest in floor_pin["files"].items():
@@ -108,11 +125,12 @@ def main():
         runner_sha256=sha(Path(__file__)),
         inputs_sha256=sha(args.out / "inputs.json"),
         mode=args.mode,
+        preferred_blas_library=str(torch.backends.cuda.preferred_blas_library()),
         torch=torch.__version__,
         transformers=transformers.__version__,
         numpy=np.__version__,
         workspace=os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
-        deterministic=args.mode == "gpu",
+        deterministic=args.mode != "cpu",
         tf32=False,
         standardizer_sha256=sha(args.sigma),
         calibration_sha256=bank_pin["calibration_sha256"],

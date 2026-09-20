@@ -12,9 +12,14 @@ import numpy as np
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--root', type=Path, required=True)
+    ap.add_argument('--out', type=Path, help='New report directory; preserve earlier plots')
     args = ap.parse_args()
     root = args.root
+    out = args.out or root
+    if args.out:
+        out.mkdir(parents=True, exist_ok=False)
     rows = []
+    auxiliary = []
     for p in sorted((root/'reference').glob('run*/run_record_shard*.json')):
         record = json.loads(p.read_text())
         bank = p.with_name(p.name.replace('run_record', 'own_content').replace('.json', '.npz'))
@@ -33,6 +38,11 @@ def main() -> None:
             continue
         records = [json.loads(p.read_text()) for p in sorted(folder.glob('row-*.json'))]
         if not records:
+            for failure in sorted(folder.glob('*failure.json')):
+                auxiliary.append(dict(attempt=folder.name, kind='failed_before_timed_rows', artifact=str(failure), receipt=json.loads(failure.read_text())))
+            continue
+        if any('scope' not in r or 'seconds_per_row' not in r for r in records):
+            auxiliary.append(dict(attempt=folder.name, n=len(records), kind='auxiliary_measurement', reason='Not extraction timing; do not plot first-step proofs or sweep repeats as bank throughput'))
             continue
         scopes = {r['scope'] for r in records}
         if len(scopes) != 1:
@@ -50,10 +60,12 @@ def main() -> None:
                          fidelity=('failed' if failed else 'candidate_not_certified' if candidate
                                    else 'baseline_complete' if complete else 'partial'),
                          source=str(folder.relative_to(root))))
-    (root/'timing-ledger.json').write_text(json.dumps(rows,indent=2,allow_nan=False)+'\n')
+    rows.sort(key=lambda r: (r['utc'], r['attempt']))
+    (out/'auxiliary-attempts.json').write_text(json.dumps(auxiliary,indent=2,allow_nan=False)+'\n')
+    (out/'timing-ledger.json').write_text(json.dumps(rows,indent=2,allow_nan=False)+'\n')
     fields = ['kind','attempt','utc','n','seconds_per_row','scope','shard_wall_s_per_row',
               'startup_s','fidelity','source']
-    with (root/'timing-ledger.csv').open('w',newline='') as f:
+    with (out/'timing-ledger.csv').open('w',newline='') as f:
         writer = csv.DictWriter(f,fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
@@ -78,16 +90,18 @@ def main() -> None:
             for i,r in enumerate(group):
                 ax.scatter(i,r['seconds_per_row'],marker='x' if r['fidelity']=='failed' else 'o',
                            color='crimson' if r['fidelity']=='failed' else 'steelblue')
-                ax.annotate(f"n={r['n']} · {r['fidelity']}",(i,r['seconds_per_row']),
+                ax.annotate(f"n={r['n']}\n{r['fidelity'].replace('_', ' ')}",(i,r['seconds_per_row']),
                             xytext=(0,8),textcoords='offset points',ha='center',fontsize=8)
             ax.set_xticks(range(len(group)),[r['attempt'] for r in group],rotation=30)
+            ax.set_ylim(0, max(r['seconds_per_row'] for r in group) * 1.25)
+            ax.margins(x=0.3)
         else:
             ax.text(.5,.5,'No new completed row measurements yet',ha='center',va='center',transform=ax.transAxes)
         ax.set_title(scope.replace('+',' +\n'),fontsize=9)
         ax.set_ylabel('seconds / replayed span (not full shard)')
-    fig.suptitle('Extraction performance — all attempts retained; no GPU lane certified')
+    fig.suptitle('Extraction performance — measured timing scopes; failed pre-timing attempts retained in auxiliary ledger')
     for ext in ('png','svg'):
-        fig.savefig(root/f'timing-history.{ext}',dpi=160)
+        fig.savefig(out/f'timing-history.{ext}',dpi=160)
     plt.close(fig)
     paired=[]
     for folder in sorted(root.iterdir()):
@@ -100,7 +114,7 @@ def main() -> None:
                                cpu_mean=float(np.mean([r['cpu_matched_s'] for r in matched])),
                                candidate_mean=float(np.mean([r['seconds_per_row'] for r in matched])),
                                certified=False,failed=any(r.get('fidelity_status')=='failed' for r in matched)))
-    (root/'paired-timings.json').write_text(json.dumps(paired,indent=2,allow_nan=False)+'\n')
+    (out/'paired-timings.json').write_text(json.dumps(paired,indent=2,allow_nan=False)+'\n')
     if paired:
         fig,ax=plt.subplots(figsize=(9,4),layout='constrained')
         x=np.arange(len(paired))
@@ -112,9 +126,9 @@ def main() -> None:
         ax.set_title('Paired timings — fidelity qualification is separate; rejected attempts retained')
         ax.legend()
         for ext in ('png','svg'):
-            fig.savefig(root/f'paired-timings.{ext}',dpi=160)
+            fig.savefig(out/f'paired-timings.{ext}',dpi=160)
         plt.close(fig)
-    print(f'Wrote ledger ({len(rows)} records) and PNG/SVG under {root}')
+    print(f'Wrote ledger ({len(rows)} records) and PNG/SVG under {out}')
 
 
 if __name__ == '__main__':
