@@ -33,6 +33,21 @@ def test_timing_order_balanced_without_selecting_fast_repeats():
     assert orders.count(("batch", "single")) == 3
 
 
+def test_expanded_ruler_uses_tighter_condition_without_changing_path_bound():
+    doc = dict(
+        certification=True,
+        **dict.fromkeys(("G0", "G1", "G2", "G4", "G5"), True),
+        rows=[
+            dict(
+                key=["doc", "B", 0, "h1"],
+                floor_b_lower_bound=0.5,
+                condition_distance=2.0,
+            )
+        ],
+    )
+    assert module.ruler_bounds(doc)[("doc", "B", 0, "h1")] == 0.2
+
+
 def test_exact_shape_control_keeps_failing_row_and_has_no_padding():
     rows = [
         dict(key=[f"d{i}", "paraphrase_own", 0, "h1"], start=length, end=length + 128)

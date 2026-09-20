@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from extraction_perf_phase0 import rows_from_bank, sha, write_json
@@ -52,12 +53,35 @@ def main() -> None:
     parser.add_argument("--reference", type=Path, required=True)
     parser.add_argument("--ruling", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--roster-audit", type=Path)
+    parser.add_argument(
+        "--rule-version", choices=("legacy", "declared"), default="declared"
+    )
     args = parser.parse_args()
     if args.out.exists():
         raise FileExistsError(args.out)
-    rows, _ = rows_from_bank(args.reference)
-    entries = condition_entries([("rubric-140", *row["key"]) for row in rows])
-    write_json(args.out, dict(ruling_sha256=sha(args.ruling), rows=entries))
+    if args.roster_audit:
+        rows = json.loads(args.roster_audit.read_text())["row_manifest"]
+    else:
+        rows, _ = rows_from_bank(args.reference)
+    keys = [("rubric-140", *row["key"]) for row in rows]
+    if args.rule_version == "declared":
+        from extraction_perf_contrast_rules import declared_entries
+
+        entries = declared_entries(keys)
+    else:
+        entries = condition_entries(keys)
+    write_json(
+        args.out,
+        dict(
+            format="declared-contrasts-v2"
+            if args.rule_version == "declared"
+            else "legacy-v1",
+            ruling_sha256=sha(args.ruling),
+            roster_audit_sha256=sha(args.roster_audit) if args.roster_audit else None,
+            rows=entries,
+        ),
+    )
     print(f"Wrote {len(entries)} explicit condition mappings to {args.out}")
 
 

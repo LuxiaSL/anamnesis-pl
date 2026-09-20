@@ -122,6 +122,15 @@ def test_batch_feature_parity_repeat_and_cleanup(
         np.testing.assert_allclose(
             first[i].knnlm_baseline, reference.knnlm_baseline, atol=1e-6, rtol=1e-5
         )
+        logits = np.stack(raw.logits).astype(np.float64)
+        chosen = np.asarray(raw.chosen_token_ids, dtype=np.int64)
+        maxima = logits.max(axis=-1)
+        log_normalizer = maxima + np.log(np.exp(logits - maxima[:, None]).sum(axis=-1))
+        expected_logprob = float(
+            np.mean(logits[np.arange(len(chosen)), chosen] - log_normalizer)
+        )
+        assert np.isclose(first[i].mean_logprob, expected_logprob, atol=1e-6, rtol=1e-6)
+        assert first[i].mean_logprob == second[i].mean_logprob
 
     def fail(*args, **kwargs):
         raise RuntimeError("injected reduction failure")

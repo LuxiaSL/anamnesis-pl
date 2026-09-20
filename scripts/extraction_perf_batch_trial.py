@@ -25,6 +25,24 @@ def timing_order(round_index: int) -> tuple[str, str]:
     return ("single", "batch") if round_index % 2 == 0 else ("batch", "single")
 
 
+def ruler_bounds(rulers):
+    gates = rulers.get("gates", rulers)
+    if not all(gates[g] is True for g in ("G0", "G1", "G2", "G4", "G5")):
+        raise ValueError("bank prerequisite gates did not pass")
+    if "vectors" in rulers:
+        return {tuple(r["key"][1:]): r["bound"] for r in rulers["vectors"]["rows"]}
+    if rulers.get("certification") is not True:
+        raise ValueError("expanded roster needs completed single-row certification")
+    result = {}
+    for row in rulers["rows"]:
+        path = row["floor_b_lower_bound"]
+        condition = row["condition_distance"]
+        result[tuple(row["key"])] = (
+            path if condition is None else min(path, 0.1 * condition)
+        )
+    return result
+
+
 def select_rows(rows, pairing="ragged"):
     if pairing == "exact":
         buckets = {}
@@ -92,6 +110,9 @@ def main():
         help="Explicit diagnostic row indices; cannot combine with full bank",
     )
     parser.add_argument("--timing-rounds", type=int, default=0)
+    parser.add_argument("--roster", type=Path)
+    parser.add_argument("--reuse", type=Path)
+    parser.add_argument("--audit", type=Path)
     args = parser.parse_args()
     if (
         args.timing_rounds < 0
@@ -116,6 +137,31 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     rows, names = rows_from_bank(args.bank)
+    roster_files = []
+    if any((args.roster, args.reuse, args.audit)):
+        if not all((args.roster, args.reuse, args.audit)) or not args.full_bank:
+            raise ValueError(
+                "roster supplementation requires all manifests and complete-subset validation"
+            )
+        from extraction_perf_roster import roster_rows
+        from extraction_perf_roster_supplement import select_supplement
+
+        owner = json.loads(args.roster.read_text())
+        reuse = json.loads(args.reuse.read_text())
+        audit = json.loads(args.audit.read_text())
+        if (
+            sha(args.audit) != reuse["roster_audit_sha256"]
+            or sha(args.roster) != audit["roster_sha256"]
+        ):
+            raise ValueError("roster plan identity mismatch")
+        roster, names, roster_files = roster_rows(
+            args.roster,
+            {
+                str(Path(f["path"]).parents[1]): Path(f["path"]).parents[1]
+                for f in owner["files"]
+            },
+        )
+        rows = select_supplement(roster, reuse)
     if args.full_bank and args.pairing != "exact":
         raise ValueError("full bank requires the passing exact-shape policy")
     if args.indices:
@@ -146,9 +192,7 @@ def main():
         if sha(Path(filename)) != digest:
             raise ValueError(f"reference changed: {filename}")
     rulers = json.loads(args.rulers.read_text())
-    if not all(rulers["gates"][g] for g in ("G0", "G1", "G2", "G4", "G5")):
-        raise ValueError("bank prerequisite gates did not pass")
-    bounds = {tuple(r["key"][1:]): r["bound"] for r in rulers["vectors"]["rows"]}
+    bounds = ruler_bounds(rulers)
     with np.load(args.sigma) as z:
         sigma, weights = z["sigma_cal"].astype(float), z["weights"].astype(float)
         if z["feature_names"].astype(str).tolist() != names:
@@ -197,6 +241,10 @@ def main():
         if args.batch_pilot
         else None,
         reference_files=baseline["bank_files"],
+        supplemental_roster_files=roster_files,
+        roster_sha256=sha(args.roster) if args.roster else None,
+        reuse_sha256=sha(args.reuse) if args.reuse else None,
+        audit_sha256=sha(args.audit) if args.audit else None,
         selected=[dict(key=r["key"], start=r["start"], end=r["end"]) for r in selected],
         scope="bank cache263–299; full reference validation"
         if args.full_bank

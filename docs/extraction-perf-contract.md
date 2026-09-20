@@ -1,8 +1,9 @@
 # Extraction performance executable contract
 
-Status: full-bank G0/G1/G2/G4/G5 evidence recorded; synthetic sweep complete,
-with operating boundaries. Governing disposition permits bank-regime batching;
-wider scope and batch>1 remain unqualified. Authority: Anamnesis
+Status: frozen single-row lane passes G0–G5 on the 3,467-row owner roster
+(`roster-certification-001.json`); synthetic sweep complete with operating
+boundaries. Batch qualification is in progress; wider scope remains unqualified.
+See `extraction-perf-results.md` for implementation pins. Authority: Anamnesis
 extraction-perf brief (2026-09-19), optimization-agent ferry of the same date,
 and Luxia's authorization. This document consolidates those rulings; it does
 not relax a gate. P remains Palimpsest-owned. Registry edits remain out of scope.
@@ -127,7 +128,12 @@ after inventory and baseline profiles; no numerical forecast is an exit gate.
   does not support the intended length-axis test. G3 supplies the replacement.
   Also require each `abs(cpu_j-gpu_j) <= 0.1*sigma_cal_j`. This multiplier is
   provisionally ratified; an implementer cannot relax it after seeing results.
-  F/B rows use their matched F-B condition delta. Anchor A's contrast field is
+  Ratified declared-contrast minimum: base B uses min(F-B, B-E), base F uses
+  min(F-B, F-E), and E uses min(B-E, F-E), each norm computed per document in
+  the pinned standardized space. Null forks use their own fork-minus-A delta.
+  Missing partner endpoints remove only that term, with the reason recorded;
+  if no term remains the row still receives its path/feature bounds. The older
+  F-B-only base-cell interpretation requires re-evaluation. Anchor A's field is
   **null-by-rule**, with the reason recorded; its bounds are floor(b) and the
   same per-feature tolerance, without a fabricated A-A condition ceiling.
   Ratified zero-contrast amendment: relative ceilings range only over nonzero
@@ -145,7 +151,9 @@ after inventory and baseline profiles; no numerical forecast is an exit gate.
   Additionally test each null fork separately on its own CPU reference, with
   the same 0.25*se_CPU hard bounds. Flag SE drift above
   se_CPU/sqrt(2*(n_clusters-1)), about 0.036*se_CPU at n=383. This flag is not
-  a replacement for the hard gate. Palimpsest's reference confirmation is pending.
+  a replacement for the hard gate. Palimpsest's reference values are delivered
+  and pinned; the owner workspace probe and its source are retained alongside
+  the certification receipts.
 - G3 replacement: retain E, null forks and B-E/F-E coverage on the bank, and
   run a synthetic 70B cache-length sweep (six lengths, at least five spans each)
   reporting floor(c) and exact repeatability versus length. No 8B off-target
@@ -178,8 +186,9 @@ CPU-self must pass. Failures stop promotion; retain their receipts.
 
 ## Measurement and diary
 
-The brief reports 5.46 s/row, but its exact aggregation remains unreproduced;
-the recorded full-shard wall is 12.4611 s/emitted row. Record boundaries separately;
+The corrected historical aggregate is 6.53165 s/replay row over 2,719 rows;
+5.46 was one shard's rate, not the fleet mean. The recorded full-shard wall is
+12.4611 s/emitted row. Record boundaries separately;
 the optimization directly changes replay+features. Model/calibration/pool startup
 and generation remain separate costs. Record warmup policy, synchronized timing,
 per-row vectors, peak VRAM, parent/worker RSS, throughput and transfer bytes.
@@ -192,7 +201,10 @@ Delivery includes source changes/tests, complete gate receipts, measured-vs-pric
 ratios for any forecast made, scope limitations, and the registry wording issue
 as a hand-back. A contract-mandated stop is reported as such, not as success.
 
-## Measured receipts as of the first pilot
+## Historical receipts as of the first pilot
+
+The following records the early checkpoint, not current qualification status.
+Current results and remaining delivery work are in `extraction-perf-results.md`.
 
 - Node1 isolated deployment matched local Python source hashes; frozen caller
   and calibration/standardization inputs were pinned before GPU work.

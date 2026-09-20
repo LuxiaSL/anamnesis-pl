@@ -443,49 +443,71 @@ def main():
         )
         return
     if args.condition_map is not None:
-        entries = json.loads(args.condition_map.read_text())["rows"]
-        pairs = {
-            tuple(e["key"]): None
-            if e.get("contrast_status") == "null-by-rule"
-            else (tuple(e["left"]), tuple(e["right"]))
-            for e in entries
-        }
-        null_reasons = {
-            tuple(e["key"]): e["reason"]
-            for e in entries
-            if e.get("contrast_status") == "null-by-rule"
-        }
-        if any(k[2] != "own_cont" for k in null_reasons):
-            raise ValueError(
-                "this consumer ruling permits null-by-rule only for anchor A"
+        manifest = json.loads(args.condition_map.read_text())
+        entries = manifest["rows"]
+        contrast_receipts = None
+        if manifest.get("format") == "declared-contrasts-v2":
+            from extraction_perf_contrast_rules import resolve_entries
+
+            pairs, distances, null_reasons, contrast_receipts = resolve_entries(
+                entries,
+                full_keys,
+                cpu,
+                candidate,
+                repeat,
+                sigma,
+                weights,
+                dict(zip(full_keys, inputs, strict=True)),
+                {
+                    k: (r["start"], r["end"])
+                    for k, r in zip(full_keys, rows, strict=True)
+                },
             )
-        if len(pairs) != len(entries):
-            raise ValueError("duplicate condition mapping")
-        lookup = {k: i for i, k in enumerate(full_keys)}
-        distances = {
-            k: None
-            if pair is None
-            else float(
-                np.linalg.norm(
-                    (cpu[lookup[pair[0]]].astype(float) - cpu[lookup[pair[1]]])
-                    * weights
-                    / sigma
+            zero_pairs = set()
+        else:
+            pairs = {
+                tuple(e["key"]): None
+                if e.get("contrast_status") == "null-by-rule"
+                else (tuple(e["left"]), tuple(e["right"]))
+                for e in entries
+            }
+            null_reasons = {
+                tuple(e["key"]): e["reason"]
+                for e in entries
+                if e.get("contrast_status") == "null-by-rule"
+            }
+            if any(k[2] != "own_cont" for k in null_reasons):
+                raise ValueError(
+                    "this consumer ruling permits null-by-rule only for anchor A"
                 )
-            )
-            for k, pair in pairs.items()
-        }
-        zero_pairs = set()
-        if args.identical_input_zero_rule:
-            for k, pair in pairs.items():
-                if pair is None or distances[k] != 0.0:
-                    continue
-                left, right = [rows[lookup[p]] for p in pair]
-                if (
-                    left["start"] == right["start"]
-                    and left["end"] == right["end"]
-                    and left["tokens"][: left["end"]] == right["tokens"][: right["end"]]
-                ):
-                    zero_pairs.add(k)
+            if len(pairs) != len(entries):
+                raise ValueError("duplicate condition mapping")
+            lookup = {k: i for i, k in enumerate(full_keys)}
+            distances = {
+                k: None
+                if pair is None
+                else float(
+                    np.linalg.norm(
+                        (cpu[lookup[pair[0]]].astype(float) - cpu[lookup[pair[1]]])
+                        * weights
+                        / sigma
+                    )
+                )
+                for k, pair in pairs.items()
+            }
+            zero_pairs = set()
+            if args.identical_input_zero_rule:
+                for k, pair in pairs.items():
+                    if pair is None or distances[k] != 0.0:
+                        continue
+                    left, right = [rows[lookup[p]] for p in pair]
+                    if (
+                        left["start"] == right["start"]
+                        and left["end"] == right["end"]
+                        and left["tokens"][: left["end"]]
+                        == right["tokens"][: right["end"]]
+                    ):
+                        zero_pairs.add(k)
         ruler = Ruler(
             sigma,
             weights,
@@ -506,6 +528,7 @@ def main():
             condition_manifest_sha256=sha(args.condition_map),
         )
         vectors = verify_vectors(cpub, gpub, repeatb, ruler)
+        vectors["declared_contrast_evidence"] = contrast_receipts
     else:
         vectors["reason"] = "approved per-row condition manifest missing"
     by_key = {k: i for i, k in enumerate(keys)}
