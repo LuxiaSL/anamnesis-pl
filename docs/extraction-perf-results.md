@@ -1,6 +1,7 @@
 # Extraction performance: measured status
 
-This is a scoped results record, not a claim that the entire work is finished.
+The ratified extraction-performance delivery is complete for the scope below;
+this is not universal model, stack or context-length certification.
 Artifact paths below are relative to the experiment repository's
 `outputs/extraction_perf/` directory. P and registry edits remain owner tasks.
 
@@ -98,4 +99,5 @@ D2H16.68ms are separate activity durations, not additive host components.
 Gate-feature work is a better next profiling target than bulk transfer alone.
 No optimization or new numerical certificate follows from this trace.
 
-The final audit and consumer handoff are separate from optional future speed work.
+The final audit and consumer handoff are delivered separately from optional
+future speed work; no production default switch or sibling integration is implied.
