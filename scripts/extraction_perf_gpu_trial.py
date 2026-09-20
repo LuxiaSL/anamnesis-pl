@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
 import json
 import os
@@ -25,7 +26,7 @@ def main() -> None:
     ap.add_argument('--model',default='/models/Llama-3.1-70B')
     args=ap.parse_args()
     args.out.mkdir(parents=True,exist_ok=False)
-    os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':4096:8')
+    os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':16:8')
     import psutil
     import torch
     import transformers
@@ -35,6 +36,7 @@ def main() -> None:
     from anamnesis.extraction.model_loader import load_model
     from anamnesis.extraction.feature_pipeline import compute_features_v2_from_data
     from anamnesis.extraction.gpu_features import GpuFeatureLane
+    from extraction_perf_memory import ProcessMemorySampler
 
     torch.use_deterministic_algorithms(True)
     torch.backends.cuda.matmul.allow_tf32=False
@@ -70,6 +72,7 @@ def main() -> None:
              selected=[{k:v for k,v in r.items() if k not in ('tokens','bank')} for r in selected],
              torch=torch.__version__,transformers=transformers.__version__,numpy=np.__version__,
              deterministic_algorithms=True,tf32=False,scope='probe-free candidate pilot',
+             cublas_workspace_config=os.environ.get('CUBLAS_WORKSPACE_CONFIG'),
              cuda_visible_devices=os.environ.get('CUDA_VISIBLE_DEVICES'),
              calibration_sha256=calib_hash,standardizer_sha256=sha(args.sigma))
     write_json(args.out/'deployment.json',pin)
@@ -79,19 +82,24 @@ def main() -> None:
                     num_attention_heads=preset.num_attention_heads,num_kv_heads=preset.num_kv_heads,
                     head_dim=preset.head_dim,device_map='cuda:0',attn_implementation='eager')
     all_layers=list(range(preset.num_layers))
-    loaded=load_model(cfg,sampled_layers=preset.sampled_layers,register_gate_hooks=True,
-                      key_layers=all_layers,value_layers=all_layers,query_layers=all_layers,
-                      attn_output_layers=all_layers)
+    memory=ProcessMemorySampler()
+    atexit.register(lambda:write_json(args.out/'process-vram.json',memory.close()))
+    with memory.phase('model_load'):
+        loaded=load_model(cfg,sampled_layers=preset.sampled_layers,register_gate_hooks=True,
+                          key_layers=all_layers,value_layers=all_layers,query_layers=all_layers,
+                          attn_output_layers=all_layers)
     lane=GpuFeatureLane(extraction,families,names,calibration.positional_means,
                         calibration.pca_components,calibration.pca_mean,
                         device='cuda:0',calibration_sha256=calib_hash)
     write_json(args.out/'lane.json',lane.identity)
 
-    def timed(fn):
+    def timed(fn,phase):
         torch.cuda.synchronize()
         t=time.perf_counter()
-        result=fn()
-        torch.cuda.synchronize()
+        with memory.phase(phase):
+            result=fn()
+            torch.cuda.synchronize()
+        write_json(args.out/'process-vram.json',memory.snapshot())
         return result,time.perf_counter()-t
 
     def cpu(r):
@@ -107,32 +115,54 @@ def main() -> None:
         return lane.replay_span(loaded,r['tokens'],r['start'],r['end'])
 
     # Warm both execution paths before timed paired rows. Record, don't hide it.
-    warm_cpu,cpu_warmup_s=timed(lambda:cpu(selected[0]))
-    warm_gpu,gpu_warmup_s=timed(lambda:gpu(selected[0]))
+    warm_cpu,cpu_warmup_s=timed(lambda:cpu(selected[0]),'cpu_warmup')
+    warm_delta=warm_cpu[0].astype(float)-selected[0]['bank'].astype(float)
+    np.savez(args.out/'reference-before-gpu.npz',cpu=warm_cpu[0],bank=selected[0]['bank'])
+    write_json(args.out/'reference-before-gpu.json',dict(
+        byte_exact=warm_cpu[0].tobytes()==selected[0]['bank'].tobytes(),
+        max_abs=float(np.abs(warm_delta).max()),
+        standardized_l2=float(np.linalg.norm(warm_delta*weights/sigma)),
+        differing_features=int(np.count_nonzero(warm_delta))))
+    print('REFERENCE_BEFORE_GPU',json.dumps(json.loads((args.out/'reference-before-gpu.json').read_text())),flush=True)
+    warm_gpu,gpu_warmup_s=timed(lambda:gpu(selected[0]),'gpu_warmup')
     del warm_cpu,warm_gpu
     write_json(args.out/'startup.json',dict(cpu_warmup_s=cpu_warmup_s,gpu_warmup_s=gpu_warmup_s,pool_s=0.))
     for i,r in enumerate(selected):
         key=tuple(r['key'])
-        reference,cpu_s=timed(lambda:cpu(r))
+        reference,cpu_s=timed(lambda:cpu(r),'cpu_reference')
         f_cpu,lp_cpu=reference
         if f_cpu.tobytes()!=r['bank'].tobytes():
+            delta=f_cpu.astype(float)-r['bank'].astype(float)
+            worst=np.argsort(np.abs(delta)/sigma)[-20:][::-1]
+            np.savez(args.out/'reference-failure.npz',cpu=f_cpu,bank=r['bank'])
+            write_json(args.out/'reference-failure.json',dict(
+                utc=stamp(),key=r['key'],max_abs=float(np.abs(delta).max()),
+                standardized_l2=float(np.linalg.norm(delta*weights/sigma)),
+                differing_features=int(np.count_nonzero(delta)),
+                worst=[dict(name=names[j],cpu=float(f_cpu[j]),bank=float(r['bank'][j]),
+                            sigma_error=float(abs(delta[j])/sigma[j])) for j in worst]))
             raise RuntimeError('deterministic CPU reference differs from frozen bank; floors need revalidation')
         # Empty the allocator cache between paths, so the candidate's peak is
         # not the CPU reference's retained allocator blocks. Weights/PCA remain.
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
-        first,gpu_s=timed(lambda:gpu(r))
+        first,gpu_s=timed(lambda:gpu(r),'gpu_candidate')
+        second,repeat_s=timed(lambda:gpu(r),'gpu_repeat')
         allocated=torch.cuda.max_memory_allocated()/2**30
         reserved=torch.cuda.max_memory_reserved()/2**30
-        second,repeat_s=timed(lambda:gpu(r))
+        mem=memory.snapshot()
+        phases=('gpu_warmup','gpu_candidate','gpu_repeat')
+        if mem['errors'] or any(not mem['phases'].get(p,{}).get('samples') for p in phases):
+            raise RuntimeError('process VRAM measurements missing; resource gate cannot be evaluated')
+        process_peak=max(mem['phases'][p]['peak_bytes'] for p in phases)/2**30
         exact=first.features.tobytes()==second.features.tobytes()
         np.savez(args.out/f'row-{i:05d}.npz',cpu=f_cpu,gpu=first.features,repeat=second.features)
         record=dict(utc=stamp(),key=r['key'],lane=lane.lane_id,
                     scope='prefill+gpu_features+feature_D2H',seconds_per_row=gpu_s,
                     cpu_matched_s=cpu_s,gpu_repeat_s=repeat_s,speedup_vs_matched_cpu=cpu_s/gpu_s,
-                    peak=dict(allocated_gib=allocated,reserved_gib=reserved),
+                    peak=dict(allocated_gib=allocated,reserved_gib=reserved,process_gib=process_peak),
                     parent_rss_bytes=psutil.Process().memory_info().rss,worker_rss_bytes=0,
-                    G0=exact,G1=None,G5_historical_cap_check=max(allocated,reserved)<=135.3,
+                    G0=exact,G1=None,G5_historical_cap_check=process_peak<=135.29,
                     fidelity_status='pilot_incomplete',telemetry=first.metadata)
         if not exact:
             record['fidelity_status']='failed'

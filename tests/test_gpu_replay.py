@@ -54,6 +54,8 @@ def test_full_lane_matches_reference_and_repeats_with_fresh_cache(continuation):
     one=lane.replay_span(loaded,tokens,prefix,len(tokens))
     two=lane.replay_span(loaded,tokens,prefix,len(tokens))
     assert one.features.tobytes()==two.features.tobytes()
+    assert one.metadata['replay_id']!=two.metadata['replay_id']
+    assert one.metadata['input_tokens_sha256']==two.metadata['input_tokens_sha256']
     assert one.metadata['attention_layers_reduced']==3
     assert not one.metadata['certified']
     assert one.metadata['lane_id']==lane.lane_id

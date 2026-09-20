@@ -1,0 +1,359 @@
+"""Join complete immutable banks to the frozen fidelity harness.
+
+Missing rows/rulings are reported as incomplete, never intersected away or
+assigned a permissive default. An approved condition map names both endpoints
+for EVERY reference row, including anchor A.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+import numpy as np
+
+from extraction_perf_phase0 import rows_from_bank, sha, write_json
+from anamnesis.extraction.fidelity import (
+    ReplayBatch,
+    Ruler,
+    DownstreamAnchor,
+    verify_vectors,
+    verify_downstream,
+    verify_coverage,
+    verify_memory,
+    verify_within_tol,
+)
+
+
+def digest(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def row_files(folders):
+    found = {}
+    for folder in folders:
+        for path in sorted(folder.glob("row-*.json")):
+            record = json.loads(path.read_text())
+            key = tuple(record["key"])
+            if key in found:
+                raise ValueError(f"duplicate receipt row {key}")
+            found[key] = (record, path.with_suffix(".npz"))
+    return found
+
+
+def main():
+    import palimpsest.genpair as genpair
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--reference", type=Path, required=True)
+    ap.add_argument("--gpu", type=Path, required=True)
+    ap.add_argument("--floors", type=Path, nargs="+", required=True)
+    ap.add_argument("--anchor", type=Path, required=True)
+    ap.add_argument("--memory-reference", type=Path, required=True)
+    ap.add_argument("--condition-map", type=Path)
+    ap.add_argument("--coverage", type=Path)
+    ap.add_argument("--out", type=Path, required=True)
+    args = ap.parse_args()
+    rows, names = rows_from_bank(args.reference)
+    keys = [tuple(r["key"]) for r in rows]
+    gpu = row_files([args.gpu])
+    floors = row_files(args.floors)
+    missing = {
+        label: [list(k) for k in keys if k not in found]
+        for label, found in (("gpu", gpu), ("floor", floors))
+    }
+    extra = {
+        label: [list(k) for k in found if k not in set(keys)]
+        for label, found in (("gpu", gpu), ("floor", floors))
+    }
+    if any(extra.values()):
+        raise ValueError(f"unexpected receipt rows: {extra}")
+    known_failures = [
+        dict(key=list(k), kind="candidate", record=r)
+        for k, (r, _) in gpu.items()
+        if r.get("G0") is False or r.get("fidelity_status") == "failed"
+    ]
+    known_failures.extend(
+        dict(key=list(k), kind="reference", record=r)
+        for k, (r, _) in floors.items()
+        if r.get("bank_max_abs", 0) != 0 or r.get("cpu_repeat_bit_exact") is False
+    )
+    if known_failures:
+        write_json(
+            args.out,
+            dict(
+                passed=False,
+                status="failed",
+                known_failures=known_failures,
+                missing=missing,
+            ),
+        )
+        print("FAILED", len(known_failures), "known row failures; no certification")
+        return
+    if any(missing.values()):
+        write_json(
+            args.out,
+            dict(
+                passed=False,
+                status="incomplete",
+                expected=len(keys),
+                gpu_rows=len(gpu),
+                floor_rows=len(floors),
+                missing=missing,
+            ),
+        )
+        print("INCOMPLETE", len(gpu), len(floors), "of", len(keys))
+        return
+    if not all((p / "complete.json").exists() for p in [args.gpu, *args.floors]):
+        raise ValueError(
+            "complete-row files exist but end-of-run source verification is missing"
+        )
+    gpu_pin = json.loads((args.gpu / "deployment.json").read_text())
+    cpu_pins = [json.loads((p / "deployment.json").read_text()) for p in args.floors]
+    for pin in cpu_pins[1:]:
+        for field in (
+            "anamnesis",
+            "caller",
+            "files",
+            "torch",
+            "numpy",
+            "transformers",
+            "extraction",
+            "families",
+        ):
+            if pin[field] != cpu_pins[0][field]:
+                raise ValueError(f"CPU floor partitions differ in {field}")
+    if sha(Path(genpair.__file__)) != gpu_pin["caller"]["genpair.py"]:
+        raise ValueError("downstream estimator is not the frozen caller version")
+    sigma_path = args.reference / "standardization_floor_p05.npz"
+    if sha(sigma_path) != gpu_pin["standardizer_sha256"]:
+        raise ValueError("standardizer differs from capture")
+    with np.load(sigma_path) as z:
+        sigma = z["sigma_cal"].astype(float)
+        weights = z["weights"].astype(float)
+        if z["feature_names"].astype(str).tolist() != names:
+            raise ValueError("ruler schema mismatch")
+    cpu = []
+    candidate = []
+    repeat = []
+    metadata = []
+    repeats = []
+    floor_values = {}
+    for row in rows:
+        key = tuple(row["key"])
+        frecord, fpath = floors[key]
+        grecord, gpath = gpu[key]
+        with (
+            np.load(fpath, allow_pickle=False) as f,
+            np.load(gpath, allow_pickle=False) as g,
+        ):
+            if (
+                f["cpu"].tobytes() != row["bank"].tobytes()
+                or g["bank"].tobytes() != row["bank"].tobytes()
+            ):
+                raise ValueError(f"reference bytes differ for {key}")
+            measured = float(
+                np.linalg.norm(
+                    (f["incremental"].astype(float) - f["cpu"]) * weights / sigma
+                )
+            )
+            if not np.isclose(measured, frecord["floor_b"], rtol=1e-12, atol=1e-12):
+                raise ValueError(f"floor receipt does not reproduce for {key}")
+            floor_values[key] = min(measured, frecord["floor_b"])
+            cpu.append(f["cpu"].copy())
+            candidate.append(g["gpu"].copy())
+            repeat.append(g["repeat"].copy())
+        metadata.append(grecord["telemetry"])
+        repeats.append(grecord["repeat_telemetry"])
+    cpu, candidate, repeat = [np.stack(x) for x in (cpu, candidate, repeat)]
+    namespace = "rubric-140"
+    full_keys = tuple((namespace, *k) for k in keys)
+    schema = hashlib.sha256(json.dumps(names).encode()).hexdigest()
+    inputs = tuple(
+        hashlib.sha256(
+            np.asarray(r["tokens"][: r["end"]], dtype="<i8").tobytes()
+        ).hexdigest()
+        for r in rows
+    )
+    if any(
+        m["input_tokens_sha256"] != h or r["input_tokens_sha256"] != h
+        for m, r, h in zip(metadata, repeats, inputs, strict=True)
+    ):
+        raise ValueError("captured token inputs do not match frozen bank")
+    calib = gpu_pin["calibration_sha256"]
+    if any(
+        m["calibration_sha256"] != calib or m["feature_schema_sha256"] != schema
+        for m in [*metadata, *repeats]
+    ):
+        raise ValueError("per-row calibration/schema receipt mismatch")
+    cpub = ReplayBatch(
+        cpu,
+        full_keys,
+        tuple(names),
+        ("cpu-reference",) * len(keys),
+        inputs,
+        tuple(f"cpu/{k}" for k in keys),
+        digest(cpu_pins[0]["anamnesis"]),
+        calib,
+        schema,
+    )
+    gpub = ReplayBatch(
+        candidate,
+        full_keys,
+        tuple(names),
+        tuple(m["lane_id"] for m in metadata),
+        inputs,
+        tuple(m["replay_id"] for m in metadata),
+        digest(gpu_pin["source"]),
+        calib,
+        schema,
+        fresh_cache=all(m["fresh_cache"] for m in metadata),
+    )
+    repeatb = ReplayBatch(
+        repeat,
+        full_keys,
+        tuple(names),
+        tuple(m["lane_id"] for m in repeats),
+        inputs,
+        tuple(m["replay_id"] for m in repeats),
+        digest(gpu_pin["source"]),
+        calib,
+        schema,
+        fresh_cache=all(m["fresh_cache"] for m in repeats),
+    )
+    for batch in (cpub, gpub, repeatb):
+        batch.validate()
+    if set(gpub.replay_ids) & set(repeatb.replay_ids):
+        raise ValueError("same replay invocation reused")
+    if gpub.lane_ids[0] != repeatb.lane_ids[0]:
+        raise ValueError("repeat lane differs")
+    exact = candidate.tobytes() == repeat.tobytes()
+    vectors = dict(G0=exact, G1=None, G4=True)
+    if not exact:
+        write_json(
+            args.out,
+            dict(passed=False, status="G0 failed; G1 not evaluated", vectors=vectors),
+        )
+        return
+    if args.condition_map is not None:
+        entries = json.loads(args.condition_map.read_text())["rows"]
+        pairs = {
+            tuple(e["key"]): (tuple(e["left"]), tuple(e["right"])) for e in entries
+        }
+        if len(pairs) != len(entries):
+            raise ValueError("duplicate condition mapping")
+        lookup = {k: i for i, k in enumerate(full_keys)}
+        distances = {
+            k: float(
+                np.linalg.norm(
+                    (cpu[lookup[a]].astype(float) - cpu[lookup[b]]) * weights / sigma
+                )
+            )
+            for k, (a, b) in pairs.items()
+        }
+        ruler = Ruler(
+            sigma,
+            weights,
+            sha(sigma_path),
+            tuple(names),
+            {(namespace, *k): v for k, v in floor_values.items()},
+            distances,
+            pairs,
+            {k: r["start"] for k, r in zip(full_keys, rows, strict=True)},
+            full_keys,
+            calib,
+            schema,
+            digest(gpu_pin["reference_files"]),
+        )
+        vectors = verify_vectors(cpub, gpub, repeatb, ruler)
+    else:
+        vectors["reason"] = (
+            "approved per-row condition map missing; anchor A unresolved"
+        )
+    by_key = {k: i for i, k in enumerate(keys)}
+    docs = []
+    clusters = []
+    dc = []
+    dg = []
+    scale = weights / sigma
+    for doc in sorted({k[0] for k in keys}):
+        triplet = [
+            (doc, c, 0, "h1") for c in ("own_cont", "xfam_paraphrase", "paraphrase_own")
+        ]
+        if not all(k in by_key and not rows[by_key[k]]["excluded"] for k in triplet):
+            continue
+        ia, iff, ib = [by_key[k] for k in triplet]
+        for values, deltas in ((cpu, dc), (candidate, dg)):
+            a, f, b = [values[i].astype(float) * scale for i in (ia, iff, ib)]
+            deltas.append((f - a) - (b - a))
+        docs.append(doc)
+        clusters.append(rows[ia]["cluster"])
+    anchor_doc = json.loads(args.anchor.read_text())
+    ref = anchor_doc["fb_contrast"]
+    if ref["n_documents"] != len(docs):
+        raise ValueError("anchor population differs; matched-n required")
+    stat_sha = sha(Path(genpair.__file__))
+    anchor = DownstreamAnchor(
+        ref["ratio"],
+        ref["se_corrected"],
+        tuple(docs),
+        tuple(clusters),
+        sha(args.anchor),
+        stat_sha,
+    )
+    downstream = verify_downstream(
+        np.stack(dc),
+        np.stack(dg),
+        docs,
+        clusters,
+        anchor,
+        genpair.jackknife_coherence_ratio,
+        stat_sha,
+    )
+    if args.coverage:
+        regimes = {
+            name: [tuple(k) for k in value]
+            for name, value in json.loads(args.coverage.read_text()).items()
+        }
+        coverage = verify_coverage(gpub, full_keys, regimes)
+    else:
+        coverage = dict(G3=None, reason="approved coverage manifest missing")
+    memory = json.loads((args.gpu / "process-vram.json").read_text())
+    if memory["errors"] or any(
+        not v["samples"] for k, v in memory["phases"].items() if k != "setup"
+    ):
+        raise ValueError("missing/failed NVML evidence")
+    measured = max(
+        v["peak_bytes"]
+        for v in memory["phases"].values()
+        if v["peak_bytes"] is not None
+    )
+    historical = json.loads(args.memory_reference.read_text())
+    cap = round(historical["cap_gib"] * 2**30)
+    resource = verify_memory(
+        {"all_phases": [measured]},
+        {"all_phases": [cap]},
+        cap_bytes=cap,
+        metric="process",
+        baseline_sha256=sha(args.memory_reference),
+    )
+    result = verify_within_tol(vectors, downstream, coverage, resource)
+    result["n_rows"] = len(keys)
+    result["n_documents"] = len(docs)
+    result["certification_scope"] = "probe-free only; no adapter/excess coverage"
+    write_json(args.out, result)
+    print(
+        json.dumps(
+            {
+                k: v
+                for k, v in result.items()
+                if k not in ("vectors", "coverage", "downstream", "memory")
+            }
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

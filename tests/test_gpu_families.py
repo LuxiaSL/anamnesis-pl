@@ -19,10 +19,10 @@ def test_geometry_gate_and_residual_match_reference(steps):
     layers,heads,prefix,width=3,2,11,8
     hidden=[rng.normal(size=(layers+1,width)).astype(np.float32) for _ in range(steps)]
     def head_surface():
-        return {l:[rng.normal(size=(heads,4)).astype(np.float32) for _ in range(steps)] for l in range(layers)}
+        return {layer:[rng.normal(size=(heads,4)).astype(np.float32) for _ in range(steps)] for layer in range(layers)}
     keys,values,queries=head_surface(),head_surface(),head_surface()
     # Rounded values deliberately produce top-k ties.
-    gates={l:[np.round(rng.normal(size=40),1).astype(np.float32) for _ in range(steps)] for l in range(layers)}
+    gates={layer:[np.round(rng.normal(size=40),1).astype(np.float32) for _ in range(steps)] for layer in range(layers)}
     attention=[np.ones((layers,heads,prefix+t+1),dtype=np.float32)/(prefix+t+1) for t in range(steps)]
     raw=RawGenerationData(hidden_states=hidden,attentions=attention,logits=[],
                           chosen_token_ids=np.zeros(steps,dtype=np.float32),pre_rope_keys=keys,
@@ -39,13 +39,13 @@ def test_geometry_gate_and_residual_match_reference(steps):
     expected.update(zip(r.feature_names,r.features,strict=True))
     out=FeatureCollector('cpu')
     reducer=FamilyReducer(out,config,families)
-    for l in config.sampled_layers:
-        reducer.key(l,torch.from_numpy(np.stack(keys[l])))
-        reducer.value(l,torch.from_numpy(np.stack(values[l])))
-        reducer.query(l,torch.from_numpy(np.stack(queries[l])))
-        reducer.gate(l,torch.from_numpy(np.stack(gates[l])))
-        h=torch.from_numpy(np.stack([v[l+1] for v in hidden]))
-        reducer.residual_trajectory(l,h,h[0].norm())
+    for layer in config.sampled_layers:
+        reducer.key(layer,torch.from_numpy(np.stack(keys[layer])))
+        reducer.value(layer,torch.from_numpy(np.stack(values[layer])))
+        reducer.query(layer,torch.from_numpy(np.stack(queries[layer])))
+        reducer.gate(layer,torch.from_numpy(np.stack(gates[layer])))
+        h=torch.from_numpy(np.stack([v[layer+1] for v in hidden]))
+        reducer.residual_trajectory(layer,h,h[0].norm())
     reducer.finish()
     assert set(out.values)==set(expected)
     for name,actual in out.values.items():

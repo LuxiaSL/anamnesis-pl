@@ -1,6 +1,7 @@
 # Extraction performance executable contract
 
-Status: Phase 0 in progress; no optimized lane certified. Authority: Anamnesis
+Status: pilot baseline and harness checks complete; full floor survey and GPU
+pilot running; no optimized lane certified. Authority: Anamnesis
 extraction-perf brief (2026-09-19), optimization-agent ferry of the same date,
 and Luxia's authorization. This document consolidates those rulings; it does
 not relax a gate. P remains Palimpsest-owned. Registry edits remain out of scope.
@@ -71,10 +72,11 @@ the declared parity and resource gates.
 ## GPU design and priced retention exceptions
 
 Eager attention remains mandatory. Install per-layer attention hooks which
-reduce the returned rows while alive, then replace the retained attention
-return with no matrix. Confirm the installed Transformers model call contract
-before wiring this; changing model output bookkeeping must not alter its
-attention arithmetic. Do not accumulate the full all-layer `out.attentions`.
+reduce the returned rows while alive. The verified Transformers 4.57.6 Llama
+eager implementation returns weights to the attention-module hook even with
+`output_attentions=False`; the decoder then discards them. Use that behavior
+without changing returned tensors or attention arithmetic. Do not accumulate
+`out.attentions`.
 
 Named exception SPECTRAL: retain only subsampled head-mean causal rows until
 the within-layer cross-step Gram is computed. For T=127, stride10, C<=299,
@@ -88,6 +90,18 @@ The one-layer attention tensor still exists during eager computation; its
 peak and reduction workspaces count. Do not upload the full positional-means
 bank blindly: stage needed positions/layers, and report H2D bytes/time as well
 as D2H. Do not hide shifted transfer costs in feature-only timing.
+
+Named v1 exception GATE-TOPK: preserve NumPy's historical unstable argsort tie
+ordering for gate Jaccard. Transfer sampled pre-SiLU gates as float32 and run
+the reference SiLU/argsort/top-k-set intersection on CPU; all other gate
+statistics stay on device. Price: 7×127×28672×4 = 101,957,632 bytes/span
+(97.2 MiB) at the banked shape, plus CPU sort time. This is an explicit hybrid
+exception, not an all-GPU claim. CUDA topk without verified tie equivalence
+would change the features. The withdrawn 32-KB target is not met by this v1.
+Positional correction stages only the needed positions, one layer at a time:
+80×127×8192×4 = 332,922,880 H2D bytes/span before any caching optimization.
+These dimension-derived costs must be confirmed in telemetry and included in
+end-to-end timing. PCA components/mean are uploaded once per lane instance.
 
 No handwritten CUDA. Start with deterministic Torch reductions with the
 reference dtype transitions. Compilation/graphs are later measured variants.
@@ -127,11 +141,12 @@ after inventory and baseline profiles; no numerical forecast is an exit gate.
   identity. Refuse mixed lanes inside a scientific contrast. CPU-vs-GPU
   validation is an explicitly labeled equivalence comparison.
 - G5: per-device/phase peak allocated AND reserved VRAM, with units and process
-  sampling recorded. Do not exceed the declared 135.3-GiB baseline constraint;
-  also compare matched current CPU measurements. A 145-GiB scheduler budget is
-  a separate quantity. Resolve the historical peak's measurement definition
-  from its artifact before claiming G5; one inspected bank already records
-  133.09 allocated and 136.41 reserved GiB.
+  sampling recorded. The historical receipt is resolved: process-group NVML
+  peak **135.29 GiB**, printed as 135.3 GB by Heimdall. Gate the process metric
+  against that receipt, and compare matched current CPU measurements. A
+  145-GiB scheduler budget is separate. Allocated/reserved counters are not
+  substituted for the process metric; the first inspected historical shard
+  records 133.09 allocated and 136.41 reserved GiB, a different run/metric.
 
 Harness negative controls: nonfinite values, feature-name permutation,
 duplicate/missing row, mixed lanes, changed calibration, changed n/clusters,
@@ -153,3 +168,26 @@ including failed setup/submission attempts. Never overwrite prior measurements.
 Delivery includes source changes/tests, complete gate receipts, measured-vs-priced
 ratios for any forecast made, scope limitations, and the registry wording issue
 as a hand-back. A contract-mandated stop is reported as such, not as success.
+
+## Measured receipts as of the first pilot
+
+- Node1 isolated deployment matched local Python source hashes; frozen caller
+  and calibration/standardization inputs were pinned before GPU work.
+- CPU pilot: 25/25 vectors byte-identical to their banked counterpart; 25/25
+  fresh-cache repeat vectors byte-identical. Floor(b): 0.503943–3.652998.
+- Replay+pooled-feature timing on this pilot: mean 7.5454 s/span, median 5.7600,
+  range 5.3464–17.0933. Outliers are retained. Pool startup 435.65 s; maximum
+  observed worker RSS 95.08 GiB; peak allocated 132.8142, reserved 132.9902 GiB.
+- Full bank audit: 2,719 rows in 12 shards. Recorded weighted shard-wall time
+  12.4611 s/emitted row; replay time 6.5317. The source's 3,447 was a priced
+  future extension in notes/199, not this bank. The reported 5.46 denominator
+  remains unreproduced and is not relabeled as a fresh measurement.
+- CPU-self G2 reproduces the owner's frozen estimator: ratio 1.1952486631696086,
+  SE 0.08761776823641536, matched n=383. This is not a GPU G2 pass.
+- Full per-row floors are being surveyed in two disjoint partitions. GPU trial
+  is a pilot on known-floor rows. No batch>1 work or certification yet.
+- Execution-stack control: `CUBLAS_WORKSPACE_CONFIG=:4096:8` moves the CPU
+  reference by 0.850491 L2 on the first row, even with deterministic mode off.
+  `:16:8` preserves its exact banked bytes with deterministic algorithms ON.
+  Pin `:16:8` and validate broader coverage; do not change a threshold to
+  accommodate the incompatible setting. Failed attempts remain in the ledger.

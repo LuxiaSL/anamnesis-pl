@@ -39,13 +39,16 @@ def main() -> None:
             raise ValueError(f'mixed timing scopes in {folder}')
         startup = folder/'startup.json'
         complete = (folder/'complete.json').exists()
-        failed = any(r.get('cpu_repeat_bit_exact') is False for r in records)
+        failed = any(r.get('cpu_repeat_bit_exact') is False or r.get('fidelity_status')=='failed'
+                     for r in records)
+        candidate=any(str(r.get('lane','')).startswith('torch-eager') for r in records)
         rows.append(dict(kind='measured', attempt=folder.name, utc=records[0]['utc'],
                          n=len(records),
                          seconds_per_row=float(np.mean([r['seconds_per_row'] for r in records])),
                          scope=scopes.pop(), shard_wall_s_per_row=None,
                          startup_s=json.loads(startup.read_text())['pool_s'] if startup.exists() else None,
-                         fidelity='failed' if failed else ('baseline_complete' if complete else 'partial'),
+                         fidelity=('failed' if failed else 'candidate_not_certified' if candidate
+                                   else 'baseline_complete' if complete else 'partial'),
                          source=str(folder.relative_to(root))))
     (root/'timing-ledger.json').write_text(json.dumps(rows,indent=2,allow_nan=False)+'\n')
     fields = ['kind','attempt','utc','n','seconds_per_row','scope','shard_wall_s_per_row',
@@ -86,6 +89,31 @@ def main() -> None:
     for ext in ('png','svg'):
         fig.savefig(root/f'timing-history.{ext}',dpi=160)
     plt.close(fig)
+    paired=[]
+    for folder in sorted(root.iterdir()):
+        if not folder.is_dir() or folder.name=='reference':
+            continue
+        records=[json.loads(p.read_text()) for p in sorted(folder.glob('row-*.json'))]
+        matched=[r for r in records if 'cpu_matched_s' in r]
+        if matched:
+            paired.append(dict(attempt=folder.name,n=len(matched),keys=[r['key'] for r in matched],
+                               cpu_mean=float(np.mean([r['cpu_matched_s'] for r in matched])),
+                               candidate_mean=float(np.mean([r['seconds_per_row'] for r in matched])),
+                               certified=False,failed=any(r.get('fidelity_status')=='failed' for r in matched)))
+    (root/'paired-timings.json').write_text(json.dumps(paired,indent=2,allow_nan=False)+'\n')
+    if paired:
+        fig,ax=plt.subplots(figsize=(9,4),layout='constrained')
+        x=np.arange(len(paired))
+        ax.bar(x-.18,[p['cpu_mean'] for p in paired],width=.36,label='Same-row CPU reference')
+        ax.bar(x+.18,[p['candidate_mean'] for p in paired],width=.36,label='Candidate (not certified)',
+               color=['crimson' if p['failed'] else 'darkorange' for p in paired])
+        ax.set_xticks(x,[f"{p['attempt']}\nn={p['n']}" for p in paired])
+        ax.set_ylabel('seconds / span, including feature calculation')
+        ax.set_title('Paired timings — fidelity qualification is separate; rejected attempts retained')
+        ax.legend()
+        for ext in ('png','svg'):
+            fig.savefig(root/f'paired-timings.{ext}',dpi=160)
+        plt.close(fig)
     print(f'Wrote ledger ({len(rows)} records) and PNG/SVG under {root}')
 
 

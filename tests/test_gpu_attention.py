@@ -18,7 +18,7 @@ def test_attention_matches_all_reference_consumers(steps):
     layers,heads,prefix,width=2,3,11,8
     attention=[]
     hidden=[rng.normal(size=(layers+1,width)).astype(np.float32) for _ in range(steps)]
-    keys={l:[rng.normal(size=(2,4)).astype(np.float32) for _ in range(steps)] for l in range(layers)}
+    keys={layer:[rng.normal(size=(2,4)).astype(np.float32) for _ in range(steps)] for layer in range(layers)}
     for t in range(steps):
         a=rng.uniform(.001,1,size=(layers,heads,prefix+t+1)).astype(np.float32)
         a/=a.sum(axis=-1,keepdims=True)

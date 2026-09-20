@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
+import transformers
 from torch import Tensor
 
 from anamnesis.config import ExtractionConfig, FeaturePipelineConfig
@@ -83,6 +86,8 @@ class GpuFeatureLane:
         if len(calibration_sha256) != 64:
             raise ValueError("calibration SHA256 is mandatory")
         self.device = torch.device(device)
+        if self.device.type == 'cuda' and self.device.index is None:
+            self.device = torch.device('cuda', torch.cuda.current_device())
         self.config = extraction
         self.families = families
         self.names = tuple(feature_names)
@@ -110,6 +115,11 @@ class GpuFeatureLane:
             calibration=calibration_sha256,
             device_type=self.device.type,
             torch=torch.__version__,
+            transformers=transformers.__version__,
+            numpy=np.__version__,
+            cuda_runtime=torch.version.cuda,
+            cublas_workspace_config=os.environ.get('CUBLAS_WORKSPACE_CONFIG'),
+            feature_schema_sha256=hashlib.sha256(json.dumps(feature_names).encode()).hexdigest(),
             deterministic=torch.are_deterministic_algorithms_enabled(),
             tf32=torch.backends.cuda.matmul.allow_tf32,
         )
@@ -177,6 +187,10 @@ class GpuFeatureLane:
     def replay_span(
         self, loaded: LoadedModel, token_ids: list[int], start: int, end: int
     ) -> GpuFeatureResult:
+        if (torch.are_deterministic_algorithms_enabled() != self.identity['deterministic']
+                or torch.backends.cuda.matmul.allow_tf32 != self.identity['tf32']
+                or os.environ.get('CUBLAS_WORKSPACE_CONFIG') != self.identity['cublas_workspace_config']):
+            raise ValueError('arithmetic settings changed after lane construction')
         if not 0 < start < end <= len(token_ids) or end - start < 2:
             raise ValueError(
                 "invalid span; a nonempty full prefix and >=2 tokens are required"
@@ -315,6 +329,12 @@ class GpuFeatureLane:
             ancillary = 8 + (knnlm.nbytes if knnlm is not None else 0)
             receipt = dict(
                 lane_id=self.lane_id,
+                replay_id=str(uuid.uuid4()),
+                fresh_cache=True,
+                span_start=start,
+                span_end=end,
+                input_tokens_sha256=hashlib.sha256(np.asarray(token_ids[:end],dtype='<i8').tobytes()).hexdigest(),
+                feature_schema_sha256=self.identity['feature_schema_sha256'],
                 calibration_sha256=self.calibration_sha256,
                 channel="probe-free",
                 certified=False,
