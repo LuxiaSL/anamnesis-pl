@@ -10,6 +10,7 @@ from anamnesis.extraction.fidelity import (
     ReplayBatch,
     Ruler,
     verify_coverage,
+    verify_sweep_coverage,
     verify_downstream,
     verify_memory,
     verify_vectors,
@@ -59,12 +60,99 @@ def evidence():
     return cpu, gpu, repeat, ruler
 
 
+def test_identical_input_null_common_shift_still_fails_literal_condition_gate(evidence):
+    cpu, gpu, repeat, ruler = evidence
+    values = cpu.features.copy()
+    values[1] = values[0]
+    cpu = replace(cpu, features=values)
+    shifted = values.copy()
+    shifted[:, 0] += np.float32(0.00005)
+    gpu = replace(gpu, features=shifted)
+    repeat = replace(repeat, features=shifted.copy())
+    pairs = dict(ruler.condition_pair)
+    pairs[cpu.keys[0]] = (cpu.keys[0], cpu.keys[1])
+    pairs[cpu.keys[1]] = (cpu.keys[1], cpu.keys[0])
+    lookup = {k: i for i, k in enumerate(cpu.keys)}
+    distances = {
+        k: float(np.linalg.norm(values[lookup[a]].astype(float) - values[lookup[b]]))
+        for k, (a, b) in pairs.items()
+    }
+    ruler = replace(ruler, condition_pair=pairs, condition_distance=distances)
+    assert np.array_equal(
+        cpu.features[0] - cpu.features[1], gpu.features[0] - gpu.features[1]
+    )
+    result = verify_vectors(cpu, gpu, repeat, ruler)
+    assert result["G0"] is True
+    assert result["G1"] is False
+    assert result["rows"][0]["bound"] == 0
+    assert result["rows"][0]["floor_c"] < ruler.floor_b[cpu.keys[0]]
+    assert result["max_feature_sigma_error"] < 0.1
+
+    ruled = replace(
+        ruler,
+        identical_input_zero_pairs=frozenset(cpu.keys[:2]),
+        condition_manifest_sha256="a" * 64,
+    )
+    assert verify_vectors(cpu, gpu, repeat, ruled)["G1"] is True
+    different_inputs = list(cpu.input_sha256)
+    different_inputs[1] = "f" * 64
+    with pytest.raises(FidelityError, match="inputs differ"):
+        verify_vectors(
+            *[
+                replace(b, input_sha256=tuple(different_inputs))
+                for b in (cpu, gpu, repeat)
+            ],
+            ruled,
+        )
+    bad = shifted.copy()
+    bad[1, 0] += np.float32(0.00001)
+    with pytest.raises(FidelityError, match="cancellation"):
+        verify_vectors(
+            cpu, replace(gpu, features=bad), replace(repeat, features=bad), ruled
+        )
+
+
 def test_cpu_self_passes_all_vector_gates(evidence):
     cpu, _, _, ruler = evidence
     other = replace(cpu, replay_ids=tuple(f"repeat{i}" for i in range(6)))
     result = verify_vectors(cpu, cpu, other, ruler)
     assert result["G0"] and result["G1"] and result["G4"]
     assert [t["n"] for t in result["terciles"]] == [2, 2, 2]
+
+
+def test_ratified_sweep_composition_is_scoped(evidence):
+    _, gpu, _, _ = evidence
+    regimes = {
+        name: gpu.keys
+        for name in (
+            "near-floor-B-E",
+            "near-floor-F-E",
+            "E",
+            "null-fork-0",
+            "null-fork-1",
+            "null-fork-2",
+        )
+    }
+    sweep = dict(
+        lane_id="gpu",
+        coverage_complete=True,
+        independent_repeats_exact=True,
+        per_feature_pass=True,
+        lengths=[
+            dict(cache_length=n, n=5, delta_self=0)
+            for n in (64, 128, 299, 512, 1024, 2048)
+        ],
+    )
+    result = verify_sweep_coverage(gpu, gpu.keys, regimes, sweep)
+    assert result["G3"] is True
+    assert result["consumer_scope"] == "banked regime only"
+    with pytest.raises(FidelityError, match="lane differs"):
+        verify_sweep_coverage(gpu, gpu.keys, regimes, dict(sweep, lane_id="other"))
+    assert not verify_sweep_coverage(
+        gpu, gpu.keys, regimes, dict(sweep, independent_repeats_exact=False)
+    )["G3"]
+    with pytest.raises(FidelityError, match="missing bank regime"):
+        verify_sweep_coverage(gpu, gpu.keys, {"E": gpu.keys}, sweep)
 
 
 def test_known_bad_path_distance_fails_despite_per_feature_pass(evidence):

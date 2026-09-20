@@ -1,7 +1,7 @@
 # Extraction performance executable contract
 
-Status: pilot baseline and harness checks complete; full floor survey and GPU
-pilot running; no optimized lane certified. Authority: Anamnesis
+Status: full-bank G0/G1/G2/G4/G5 evidence recorded; G3 length sweep outstanding;
+no optimized lane fully certified. Authority: Anamnesis
 extraction-perf brief (2026-09-19), optimization-agent ferry of the same date,
 and Luxia's authorization. This document consolidates those rulings; it does
 not relax a gate. P remains Palimpsest-owned. Registry edits remain out of scope.
@@ -129,6 +129,12 @@ after inventory and baseline profiles; no numerical forecast is an exit gate.
   F/B rows use their matched F-B condition delta. Anchor A's contrast field is
   **null-by-rule**, with the reason recorded; its bounds are floor(b) and the
   same per-feature tolerance, without a fabricated A-A condition ceiling.
+  Ratified zero-contrast amendment: relative ceilings range only over nonzero
+  declared contrasts. Exact-zero contrasts arising from identical inputs may
+  omit that term only with byte-exact cancellation proved in each lane; retain
+  the endpoints, row, path-floor and feature checks. Different-input zero or
+  small nonzero contrasts receive no such relief. Pin the condition manifest
+  alongside the roster. Null-fork statistic gates remain mandatory.
 - G2: exact same included documents/clusters and frozen analysis code;
   delete-one-cluster jackknife coherence ratio of F-B document deltas.
   Require both ratio and SE absolute changes <=0.25*reference_SE; report each

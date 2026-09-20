@@ -24,6 +24,7 @@ from anamnesis.extraction.fidelity import (
     verify_vectors,
     verify_downstream,
     verify_coverage,
+    verify_sweep_coverage,
     verify_memory,
     verify_within_tol,
 )
@@ -56,7 +57,10 @@ def main():
     ap.add_argument("--anchor", type=Path, required=True)
     ap.add_argument("--memory-reference", type=Path, required=True)
     ap.add_argument("--condition-map", type=Path)
+    ap.add_argument("--identical-input-zero-rule", type=Path)
     ap.add_argument("--coverage", type=Path)
+    ap.add_argument("--sweep-cpu", type=Path)
+    ap.add_argument("--sweep-gpu", type=Path)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
     rows, names = rows_from_bank(args.reference)
@@ -366,6 +370,18 @@ def main():
             )
             for k, pair in pairs.items()
         }
+        zero_pairs = set()
+        if args.identical_input_zero_rule:
+            for k, pair in pairs.items():
+                if pair is None or distances[k] != 0.0:
+                    continue
+                left, right = [rows[lookup[p]] for p in pair]
+                if (
+                    left["start"] == right["start"]
+                    and left["end"] == right["end"]
+                    and left["tokens"][: left["end"]] == right["tokens"][: right["end"]]
+                ):
+                    zero_pairs.add(k)
         ruler = Ruler(
             sigma,
             weights,
@@ -382,6 +398,8 @@ def main():
             null_contrast_reasons=null_reasons,
             floor_kinds={(namespace, *k): v for k, v in floor_kinds.items()},
             floor_proof_sha256={(namespace, *k): v for k, v in floor_proofs.items()},
+            identical_input_zero_pairs=frozenset(zero_pairs),
+            condition_manifest_sha256=sha(args.condition_map),
         )
         vectors = verify_vectors(cpub, gpub, repeatb, ruler)
     else:
@@ -426,7 +444,49 @@ def main():
         genpair.jackknife_coherence_ratio,
         stat_sha,
     )
-    if args.coverage:
+    from extraction_perf_downstream import evaluate
+
+    all_downstream = evaluate(args)
+    if all_downstream["results"]["F-B"]["G2"] != downstream["G2"]:
+        raise ValueError("downstream implementations disagree")
+    downstream = dict(
+        G2=all_downstream["all_numeric_bounds_pass"],
+        separate_forks=True,
+        results=all_downstream["results"],
+        anchor_sha256=all_downstream["anchor_sha256"],
+    )
+    if args.sweep_cpu or args.sweep_gpu:
+        if not (args.sweep_cpu and args.sweep_gpu):
+            raise ValueError("both sweep lanes required")
+        from extraction_perf_verify_sweep import verify as verify_sweep
+
+        sweep = verify_sweep(args.sweep_cpu, args.sweep_gpu, sigma_path)
+        regimes = {
+            "E": [k for k in full_keys if k[2] == "rung_control"],
+            **{
+                f"null-fork-{i}": [
+                    k for k in full_keys if k[2] == "null::own_cont" and k[3] == i
+                ]
+                for i in range(3)
+            },
+        }
+        # Include every B-E/F-E pair, hence also the weakest/near-floor cells;
+        # never select a favorable subset after observing GPU error.
+        for name, cell in (
+            ("near-floor-B-E", "paraphrase_own"),
+            ("near-floor-F-E", "xfam_paraphrase"),
+        ):
+            endpoints = set()
+            for key in full_keys:
+                if key[2] == cell:
+                    control = (namespace, key[1], "rung_control", 0, key[4])
+                    if control not in full_keys:
+                        raise ValueError("bank coverage lacks matched E endpoint")
+                    endpoints.update((key, control))
+            regimes[name] = sorted(endpoints)
+        coverage = verify_sweep_coverage(gpub, full_keys, regimes, sweep)
+        coverage["sweep_evidence"] = sweep
+    elif args.coverage:
         regimes = {
             name: [tuple(k) for k in value]
             for name, value in json.loads(args.coverage.read_text()).items()
@@ -455,6 +515,12 @@ def main():
     )
     result = verify_within_tol(vectors, downstream, coverage, resource)
     result["n_rows"] = len(keys)
+    result["condition_manifest_sha256"] = (
+        sha(args.condition_map) if args.condition_map else None
+    )
+    result["zero_rule_sha256"] = (
+        sha(args.identical_input_zero_rule) if args.identical_input_zero_rule else None
+    )
     result["n_documents"] = len(docs)
     result["certification_scope"] = "probe-free only; no adapter/excess coverage"
     write_json(args.out, result)

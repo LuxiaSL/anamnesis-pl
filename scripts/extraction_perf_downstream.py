@@ -12,15 +12,10 @@ from extraction_perf_phase0 import rows_from_bank, sha, write_json
 from anamnesis.extraction.fidelity import DownstreamAnchor, verify_downstream
 
 
-def main():
+def evaluate(args):
+    """Recompute all four gates from arrays; never trust a prior pass flag."""
     import palimpsest.genpair as genpair
 
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--reference", type=Path, required=True)
-    ap.add_argument("--gpu", type=Path, required=True)
-    ap.add_argument("--anchor", type=Path, required=True)
-    ap.add_argument("--out", type=Path, required=True)
-    args = ap.parse_args()
     if not (args.gpu / "complete.json").exists():
         raise ValueError("complete GPU bank required")
     rows, names = rows_from_bank(args.reference)
@@ -113,17 +108,24 @@ def main():
             ),
             flush=True,
         )
-    write_json(
-        args.out,
-        dict(
-            consumer_acceptance="pending confirmation of current anchor/references",
-            anchor_sha256=sha(args.anchor),
-            separate_forks=True,
-            results=results,
-            all_numeric_bounds_pass=all(r["G2"] for r in results.values()),
-            certification=False,
-        ),
+    return dict(
+        consumer_acceptance="pending confirmation of current anchor/references",
+        anchor_sha256=sha(args.anchor),
+        separate_forks=True,
+        results=results,
+        all_numeric_bounds_pass=all(r["G2"] for r in results.values()),
+        certification=False,
     )
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--reference", type=Path, required=True)
+    ap.add_argument("--gpu", type=Path, required=True)
+    ap.add_argument("--anchor", type=Path, required=True)
+    ap.add_argument("--out", type=Path, required=True)
+    args = ap.parse_args()
+    write_json(args.out, evaluate(args))
 
 
 if __name__ == "__main__":

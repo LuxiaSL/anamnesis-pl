@@ -113,9 +113,14 @@ class Ruler:
     null_contrast_reasons: Mapping[RowKey, str] = field(default_factory=dict)
     floor_kinds: Mapping[RowKey, str] = field(default_factory=dict)
     floor_proof_sha256: Mapping[RowKey, str] = field(default_factory=dict)
+    identical_input_zero_pairs: frozenset[RowKey] = frozenset()
+    condition_manifest_sha256: str | None = None
 
     def validate(self) -> None:
         keys = set(self.reference_keys)
+        _require(self.identical_input_zero_pairs <= keys, "unknown zero-pair row")
+        if self.identical_input_zero_pairs:
+            _digest(self.condition_manifest_sha256 or "", "condition manifest")
         _require(
             bool(keys) and len(keys) == len(self.reference_keys),
             "empty/duplicate reference keys",
@@ -265,12 +270,26 @@ def verify_vectors(
     }
     if not result["G0"]:
         return result
+    for key in ruler.identical_input_zero_pairs:
+        pair = ruler.condition_pair[key]
+        _require(pair is not None, "zero-pair proof requires endpoints")
+        left, right = pair
+        _require(
+            ruler.condition_distance[key] == 0.0, "nonzero contrast cannot be exempted"
+        )
+        _require(inputs[0][left] == inputs[0][right], "zero-pair inputs differ")
+        for values in (ref, candidate, again):
+            _require(
+                values[positions[left]].tobytes() == values[positions[right]].tobytes(),
+                "zero-pair cancellation is not byte-exact",
+            )
     delta = candidate.astype(np.float64) - ref.astype(np.float64)
     distances = np.linalg.norm(delta * ruler.weights / ruler.sigma, axis=1)
     bounds = np.asarray(
         [
             ruler.floor_b[k]
             if ruler.condition_distance[k] is None
+            or k in ruler.identical_input_zero_pairs
             else min(ruler.floor_b[k], CONDITION_FRACTION * ruler.condition_distance[k])
             for k in keys
         ],
@@ -282,6 +301,7 @@ def verify_vectors(
     condition_ok = np.asarray(
         [
             ruler.condition_distance[k] is None
+            or k in ruler.identical_input_zero_pairs
             or distances[i] <= CONDITION_FRACTION * ruler.condition_distance[k]
             for i, k in enumerate(keys)
         ]
@@ -337,6 +357,8 @@ def verify_vectors(
                 condition_pair=[list(x) for x in ruler.condition_pair[k]]
                 if ruler.condition_pair[k] is not None
                 else None,
+                exact_zero_condition_term_excluded=k
+                in ruler.identical_input_zero_pairs,
                 contrast_status="null-by-rule"
                 if ruler.condition_pair[k] is None
                 else "paired",
@@ -458,6 +480,58 @@ def verify_coverage(
         unpopulated_regimes=empty,
         absent_regimes=absent,
         adapter_coverage=False,
+    )
+
+
+def verify_sweep_coverage(
+    actual: ReplayBatch,
+    required_keys: Sequence[RowKey],
+    regime_rows: Mapping[str, Sequence[RowKey]],
+    sweep: dict,
+) -> dict:
+    """Ratified 70B G3 replacement; no automatic calibrated-scope extension.
+
+    The caller must supply a sweep recomputed from its pinned arrays, not an
+    unchecked saved pass flag. This checks its composition with bank coverage.
+    """
+    actual.validate()
+    _require(set(actual.keys) == set(required_keys), "G3: reference set incomplete")
+    required = {
+        "near-floor-B-E",
+        "near-floor-F-E",
+        "E",
+        "null-fork-0",
+        "null-fork-1",
+        "null-fork-2",
+    }
+    _require(required <= set(regime_rows), "G3: missing bank regime")
+    for name in required:
+        _require(bool(regime_rows[name]), f"G3: empty regime {name}")
+        _require(
+            set(regime_rows[name]) <= set(actual.keys), f"G3: unknown rows in {name}"
+        )
+    _require(sweep["lane_id"] == actual.lane_ids[0], "G3: sweep lane differs from bank")
+    lengths = sweep["lengths"]
+    _require(
+        len(lengths) == 6 and len({r["cache_length"] for r in lengths}) == 6,
+        "G3: six distinct lengths required",
+    )
+    _require(all(r["n"] >= 5 for r in lengths), "G3: five spans per length required")
+    _require(max(r["cache_length"] for r in lengths) > 299, "G3: no length extension")
+    passed = (
+        sweep["coverage_complete"] is True
+        and sweep["independent_repeats_exact"] is True
+        and sweep["per_feature_pass"] is True
+        and all(r["delta_self"] == 0 for r in lengths)
+    )
+    return dict(
+        G3=passed,
+        replacement="70B instrument cache-length sweep",
+        bank_regime_counts={k: len(regime_rows[k]) for k in sorted(required)},
+        lengths=lengths,
+        adapter_coverage=False,
+        consumer_scope="banked regime only",
+        wider_calibrated_scope="not automatically certified; inspect floor(c) trend",
     )
 
 
