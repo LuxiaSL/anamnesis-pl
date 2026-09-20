@@ -13,6 +13,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import torch
@@ -47,12 +48,16 @@ class GpuFeatureLane:
         families: FeaturePipelineConfig,
         feature_names: list[str],
         positional_means: np.ndarray,
-        pca_components: np.ndarray,
-        pca_mean: np.ndarray,
+        pca_components: np.ndarray | dict[int, np.ndarray],
+        pca_mean: np.ndarray | dict[int, np.ndarray],
         *,
         device: str | torch.device,
         calibration_sha256: str,
+        replay_path: Literal["cached", "full"] = "cached",
     ):
+        if replay_path not in ("cached", "full"):
+            raise ValueError("replay_path must be cached or full")
+        self.replay_path = replay_path
         required = (
             "include_baseline_tiers",
             "enable_residual_trajectory",
@@ -86,18 +91,39 @@ class GpuFeatureLane:
         if len(calibration_sha256) != 64:
             raise ValueError("calibration SHA256 is mandatory")
         self.device = torch.device(device)
-        if self.device.type == 'cuda' and self.device.index is None:
-            self.device = torch.device('cuda', torch.cuda.current_device())
+        if self.device.type == "cuda" and self.device.index is None:
+            self.device = torch.device("cuda", torch.cuda.current_device())
         self.config = extraction
         self.families = families
         self.names = tuple(feature_names)
         self.pm = positional_means
-        self.pca = torch.as_tensor(
-            pca_components, device=self.device, dtype=torch.float64
-        )
-        self.pca_mean = torch.as_tensor(
-            pca_mean, device=self.device, dtype=torch.float64
-        )
+        if isinstance(pca_components, dict):
+            if (
+                not isinstance(pca_mean, dict)
+                or pca_components.keys() != pca_mean.keys()
+            ):
+                raise ValueError(
+                    "per-layer PCA components and means must have matching layers"
+                )
+            if not set(extraction.pca_layers).issubset(pca_components):
+                raise ValueError("per-layer PCA is missing a configured layer")
+            self.pca = {
+                layer: torch.as_tensor(value, device=self.device, dtype=torch.float64)
+                for layer, value in pca_components.items()
+            }
+            self.pca_mean = {
+                layer: torch.as_tensor(value, device=self.device, dtype=torch.float64)
+                for layer, value in pca_mean.items()
+            }
+        else:
+            if isinstance(pca_mean, dict):
+                raise ValueError("pooled PCA requires a pooled mean")
+            self.pca = torch.as_tensor(
+                pca_components, device=self.device, dtype=torch.float64
+            )
+            self.pca_mean = torch.as_tensor(
+                pca_mean, device=self.device, dtype=torch.float64
+            )
         self.calibration_sha256 = calibration_sha256
         sources = {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -114,12 +140,15 @@ class GpuFeatureLane:
             families=families.model_dump(mode="json"),
             calibration=calibration_sha256,
             device_type=self.device.type,
+            replay_path=replay_path,
             torch=torch.__version__,
             transformers=transformers.__version__,
             numpy=np.__version__,
             cuda_runtime=torch.version.cuda,
-            cublas_workspace_config=os.environ.get('CUBLAS_WORKSPACE_CONFIG'),
-            feature_schema_sha256=hashlib.sha256(json.dumps(feature_names).encode()).hexdigest(),
+            cublas_workspace_config=os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+            feature_schema_sha256=hashlib.sha256(
+                json.dumps(feature_names).encode()
+            ).hexdigest(),
             deterministic=torch.are_deterministic_algorithms_enabled(),
             tf32=torch.backends.cuda.matmul.allow_tf32,
         )
@@ -187,10 +216,17 @@ class GpuFeatureLane:
     def replay_span(
         self, loaded: LoadedModel, token_ids: list[int], start: int, end: int
     ) -> GpuFeatureResult:
-        if (torch.are_deterministic_algorithms_enabled() != self.identity['deterministic']
-                or torch.backends.cuda.matmul.allow_tf32 != self.identity['tf32']
-                or os.environ.get('CUBLAS_WORKSPACE_CONFIG') != self.identity['cublas_workspace_config']):
-            raise ValueError('arithmetic settings changed after lane construction')
+        if (
+            torch.are_deterministic_algorithms_enabled()
+            != self.identity["deterministic"]
+            or torch.backends.cuda.matmul.allow_tf32 != self.identity["tf32"]
+            or os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+            != self.identity["cublas_workspace_config"]
+            or self.replay_path != self.identity["replay_path"]
+            or self.config.model_dump(mode="json") != self.identity["extraction"]
+            or self.families.model_dump(mode="json") != self.identity["families"]
+        ):
+            raise ValueError("arithmetic settings changed after lane construction")
         if not 0 < start < end <= len(token_ids) or end - start < 2:
             raise ValueError(
                 "invalid span; a nonempty full prefix and >=2 tokens are required"
@@ -225,9 +261,12 @@ class GpuFeatureLane:
         ).unsqueeze(0)
         loaded.clear_hook_state()
         loaded.disable_hooks()
-        pre = loaded.model(ids[:, :start], use_cache=True, return_dict=True)
-        cache = pre.past_key_values
-        del pre
+        offset = start if self.replay_path == "full" else 0
+        cache = None
+        if self.replay_path == "cached":
+            pre = loaded.model(ids[:, :start], use_cache=True, return_dict=True)
+            cache = pre.past_key_values
+            del pre
         handles = []
         h2d_bytes = 0
         try:
@@ -243,28 +282,42 @@ class GpuFeatureLane:
                         raise RuntimeError(
                             "installed eager attention does not expose weights to hook"
                         )
-                    attention.consume(layer, result[1])
+                    attention.consume(
+                        layer, result[1][:, :, offset : offset + steps + 1, :]
+                    )
 
                 handles.append(module.self_attn.register_forward_hook(hook))
             loaded.clear_hook_state()
             loaded.enable_hooks()
-            result = loaded.model(
-                ids[:, start:end],
-                past_key_values=cache,
-                use_cache=True,
-                output_hidden_states=True,
-                output_attentions=False,
-                return_dict=True,
-                position_ids=torch.arange(start, end, device=self.device).unsqueeze(0),
-                cache_position=torch.arange(start, end, device=self.device),
-            )
+            if self.replay_path == "full":
+                # Preserve replay_extract's one-pass, no-cache arithmetic path.
+                result = loaded.model(
+                    ids,
+                    use_cache=False,
+                    output_hidden_states=True,
+                    output_attentions=False,
+                    return_dict=True,
+                )
+            else:
+                result = loaded.model(
+                    ids[:, start:end],
+                    past_key_values=cache,
+                    use_cache=True,
+                    output_hidden_states=True,
+                    output_attentions=False,
+                    return_dict=True,
+                    position_ids=torch.arange(start, end, device=self.device).unsqueeze(
+                        0
+                    ),
+                    cache_position=torch.arange(start, end, device=self.device),
+                )
             if attention.seen != set(range(len(layers))):
                 raise RuntimeError("not every eager attention layer was reduced")
             if getattr(result, "attentions", None):
                 raise RuntimeError("GPU lane unexpectedly retained attention outputs")
             previous = None
             for layer in range(len(layers)):
-                h = result.hidden_states[layer + 1][0, :steps].float()
+                h = result.hidden_states[layer + 1][0, offset : offset + steps].float()
                 pm = np.ascontiguousarray(self.pm[layer + 1, start : start + steps])
                 h2d_bytes += pm.nbytes
                 corrected = h - torch.as_tensor(pm, device=self.device)
@@ -288,17 +341,27 @@ class GpuFeatureLane:
                 if layer in self.families.trajectory_layers:
                     reducer.residual_trajectory(layer, corrected, h[0].norm())
                 if layer in self.config.pca_layers:
+                    components = (
+                        self.pca[layer] if isinstance(self.pca, dict) else self.pca
+                    )
+                    mean = (
+                        self.pca_mean[layer]
+                        if isinstance(self.pca_mean, dict)
+                        else self.pca_mean
+                    )
                     indices = trajectory_indices(
                         steps, self.config.pca_temporal_samples
                     )
-                    projections = (
-                        corrected[indices].double() - self.pca_mean
-                    ) @ self.pca[: self.config.pca_components].T
+                    projections = (corrected[indices].double() - mean) @ components[
+                        : self.config.pca_components
+                    ].T
                     for ti, projection in enumerate(projections):
                         for ci, value in enumerate(projection):
                             collector.put(f"pca_L{layer}_t{ti}_c{ci}", value)
             logprob = self._outputs(
-                collector, result.logits[0, :steps], ids[0, start + 1 : end]
+                collector,
+                result.logits[0, offset : offset + steps],
+                ids[0, start + 1 : end],
             )
             for layer in self.config.sampled_layers:
 
@@ -306,7 +369,11 @@ class GpuFeatureLane:
                     values = getattr(loaded.hook_state, name).get(layer)
                     if values is None or len(values) != 1:
                         raise RuntimeError(f"missing/duplicate {name} layer {layer}")
-                    return values[0][0, :, :steps, :].permute(1, 0, 2).float()
+                    return (
+                        values[0][0, :, offset : offset + steps, :]
+                        .permute(1, 0, 2)
+                        .float()
+                    )
 
                 keys = head("pre_rope_keys")
                 reducer.key(layer, keys)
@@ -316,13 +383,17 @@ class GpuFeatureLane:
                 gate = loaded.hook_state.gate_activations.get(layer)
                 if gate is None or len(gate) != 1:
                     raise RuntimeError(f"missing gate layer {layer}")
-                reducer.gate(layer, gate[0][0, :steps].float())
+                reducer.gate(layer, gate[0][0, offset : offset + steps].float())
             reducer.finish()
             vector = collector.finish(list(self.names)).cpu().numpy()
             if not np.isfinite(vector).all():
                 raise RuntimeError("nonfinite GPU feature")
             knnlm = (
-                result.hidden_states[-1][0, steps - 1].float().cpu().numpy().copy()
+                result.hidden_states[-1][0, offset + steps - 1]
+                .float()
+                .cpu()
+                .numpy()
+                .copy()
                 if self.config.enable_knnlm_baseline
                 else None
             )
@@ -331,10 +402,16 @@ class GpuFeatureLane:
                 lane_id=self.lane_id,
                 replay_id=str(uuid.uuid4()),
                 fresh_cache=True,
+                replay_path=self.replay_path,
+                cache_policy="none"
+                if self.replay_path == "full"
+                else "fresh-full-prefix",
                 span_start=start,
                 span_end=end,
-                input_tokens_sha256=hashlib.sha256(np.asarray(token_ids[:end],dtype='<i8').tobytes()).hexdigest(),
-                feature_schema_sha256=self.identity['feature_schema_sha256'],
+                input_tokens_sha256=hashlib.sha256(
+                    np.asarray(token_ids[:end], dtype="<i8").tobytes()
+                ).hexdigest(),
+                feature_schema_sha256=self.identity["feature_schema_sha256"],
                 calibration_sha256=self.calibration_sha256,
                 channel="probe-free",
                 certified=False,
