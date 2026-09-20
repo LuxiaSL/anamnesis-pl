@@ -47,6 +47,95 @@ def row_files(folders):
     return found
 
 
+def validate_floor_origin(adaptive, cpu, candidate, origin, origin_sha, helper_sha):
+    """A CPU-path lower bound is candidate-independent, but its lineage is not."""
+    if (
+        adaptive["source"] != cpu["anamnesis"]
+        or adaptive["caller"] != cpu["caller"]
+        or adaptive["gpu_deployment_sha256"] != origin_sha
+        or adaptive["helper_sha256"] != helper_sha
+    ):
+        raise ValueError("adaptive reference/helper/origin provenance mismatch")
+    for field in (
+        "calibration_sha256",
+        "standardizer_sha256",
+        "reference_files",
+        "caller",
+    ):
+        if candidate[field] != origin[field]:
+            raise ValueError(f"floor reuse reference mismatch: {field}")
+    if adaptive["standardizer_sha256"] != candidate["standardizer_sha256"]:
+        raise ValueError("adaptive standardizer mismatch")
+
+
+def validate_batch_schedule(folder, pin, rows, receipts):
+    from extraction_perf_batch_plan import exact_batches
+    from anamnesis.extraction.batch_layout import ReplaySpan, pack_spans
+
+    path = folder / "batch-plan.json"
+    if sha(path) != pin["batch_plan_sha256"]:
+        raise ValueError("batch schedule changed")
+    plans = json.loads(path.read_text())
+    if pin["pairing_policy"] != "exact" or plans != exact_batches(rows):
+        raise ValueError(
+            "batch schedule is not the declared complete exact-shape policy"
+        )
+    invocations = set()
+    for batch_index, plan in enumerate(plans):
+        spans = tuple(
+            ReplaySpan(tuple(rows[i]["tokens"]), rows[i]["start"], rows[i]["end"])
+            for i in plan["indices"]
+        )
+        vocab = max(max(s.tokens[: s.end]) for s in spans) + 1
+        composition = pack_spans(spans, vocab).composition_sha256
+        candidate_ids = set()
+        repeat_ids = set()
+        timings = set()
+        for slot, index in enumerate(plan["emitted_indices"]):
+            record, _ = receipts[tuple(rows[index]["key"])]
+            if (
+                record["batch_index"] != batch_index
+                or record["emitted_rows_in_batch"] != len(plan["emitted_indices"])
+                or record["filler_rows"] != plan["filler_count"]
+                or not record["filler_identity_exact"]
+            ):
+                raise ValueError("batch membership/filler accounting mismatch")
+            for key, ids in (
+                ("telemetry", candidate_ids),
+                ("repeat_telemetry", repeat_ids),
+            ):
+                meta = record[key]
+                if (
+                    meta["batch_size"] != 2
+                    or meta["batch_row"] != slot
+                    or meta["batch_composition_sha256"] != composition
+                ):
+                    raise ValueError("batch composition mismatch")
+                ids.add(meta["batch_invocation_id"])
+            if record["seconds_per_row"] != record["batch_seconds"] / len(
+                plan["emitted_indices"]
+            ):
+                raise ValueError("singleton overhead hidden from timing")
+            timings.add((record["batch_seconds"], record["batch_repeat_seconds"]))
+        if (
+            len(candidate_ids) != 1
+            or len(repeat_ids) != 1
+            or len(timings) != 1
+            or candidate_ids & repeat_ids
+        ):
+            raise ValueError("inconsistent/reused batch invocation")
+        current = candidate_ids | repeat_ids
+        if current & invocations:
+            raise ValueError("batch invocation reused across groups")
+        invocations.update(current)
+    return dict(
+        batches=len(plans),
+        fillers=sum(p["filler_count"] for p in plans),
+        plan_sha256=sha(path),
+        all_reference_rows_emitted_once=True,
+    )
+
+
 def main():
     import palimpsest.genpair as genpair
 
@@ -55,6 +144,11 @@ def main():
     ap.add_argument("--gpu", type=Path, required=True)
     ap.add_argument("--floors", type=Path, nargs="+", required=True)
     ap.add_argument("--adaptive", type=Path)
+    ap.add_argument(
+        "--floor-candidate-origin",
+        type=Path,
+        help="Original candidate deployment pinned by adaptive proofs; never substitute its errors for the current candidate",
+    )
     ap.add_argument("--anchor", type=Path, required=True)
     ap.add_argument("--memory-reference", type=Path, required=True)
     ap.add_argument("--condition-map", type=Path)
@@ -150,17 +244,23 @@ def main():
                 "adaptive proof was not validated against all full-floor rows"
             )
     gpu_pin = json.loads((args.gpu / "deployment.json").read_text())
+    batch_schedule = (
+        validate_batch_schedule(args.gpu, gpu_pin, rows, gpu)
+        if gpu_pin.get("full_bank")
+        else None
+    )
+    origin_path = (args.floor_candidate_origin or args.gpu) / "deployment.json"
+    origin_pin = json.loads(origin_path.read_text())
     cpu_pins = [json.loads((p / "deployment.json").read_text()) for p in args.floors]
     if adaptive_pin is not None:
-        if (
-            adaptive_pin["source"] != cpu_pins[0]["anamnesis"]
-            or adaptive_pin["caller"] != cpu_pins[0]["caller"]
-            or adaptive_pin["gpu_deployment_sha256"]
-            != sha(args.gpu / "deployment.json")
-            or adaptive_pin["standardizer_sha256"] != gpu_pin["standardizer_sha256"]
-            or adaptive_pin["helper_sha256"] != sha(Path(path_floor_module.__file__))
-        ):
-            raise ValueError("adaptive reference/helper/candidate provenance mismatch")
+        validate_floor_origin(
+            adaptive_pin,
+            cpu_pins[0],
+            gpu_pin,
+            origin_pin,
+            sha(origin_path),
+            sha(Path(path_floor_module.__file__)),
+        )
         if set(tuple(k) for k in adaptive_pin["row_keys"]) != set(keys):
             raise ValueError("adaptive reference population mismatch")
     for pin in cpu_pins[1:]:
@@ -535,6 +635,8 @@ def main():
     )
     result = verify_within_tol(vectors, downstream, coverage, resource)
     result["n_rows"] = len(keys)
+    result["batch_schedule"] = batch_schedule
+    result["floor_certificate_origin_sha256"] = sha(origin_path)
     result["condition_manifest_sha256"] = (
         sha(args.condition_map) if args.condition_map else None
     )
