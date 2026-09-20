@@ -115,28 +115,39 @@ after inventory and baseline profiles; no numerical forecast is an exit gate.
   reference row. Re-reducing one tensor is insufficient. Record determinism
   scope; no claim of universality across software/GPU/batch layouts.
 - G0.1: bank incremental-vs-cached teacher-forced replay floor(b) on the
-  actual model, 4,086 names and pinned standardizer, per row.
+  actual model, 4,086 names and pinned standardizer. User-authorized amendment:
+  retain the 945 complete measurements, then use validated per-row lower-bound
+  certificates when they suffice to prove G1; otherwise compute the full floor.
+  A lower bound is never reported as a full floor or used to quote effect sizes.
 - G1: `z(e)=w*(e/sigma_cal)`, no mean subtraction; L2. Match by
   `(doc_id,cell,replicate,span)` with a bank namespace. Require
   `||z(cpu-gpu)|| <= min(floor_b_row, 0.1*||z(d_row)||)` for EVERY row.
-  Report prefix-length terciles separately, including their worst row.
+  Report prefix-length distribution; the desk ruled that the bank's narrow band
+  does not support the intended length-axis test. G3 supplies the replacement.
   Also require each `abs(cpu_j-gpu_j) <= 0.1*sigma_cal_j`. This multiplier is
   provisionally ratified; an implementer cannot relax it after seeing results.
-  Anchor-A condition-delta definition has been asked of the governing agent:
-  A-A is zero and would otherwise impose an exact cross-backend bound. Until
-  resolved, no certification based on an invented nonzero comparator.
+  F/B rows use their matched F-B condition delta. Anchor A's contrast field is
+  **null-by-rule**, with the reason recorded; its bounds are floor(b) and the
+  same per-feature tolerance, without a fabricated A-A condition ceiling.
 - G2: exact same included documents/clusters and frozen analysis code;
   delete-one-cluster jackknife coherence ratio of F-B document deltas.
   Require both ratio and SE absolute changes <=0.25*reference_SE; report each
   change in SE units. Pin reference artifact, do not encode headline constants.
   Current artifact is rubric-140 final (383 documents); the n=750 delivery
   supersedes it when available, on matched-n data only.
-- G3: probe-free certification only, length extremes, E, null forks, B-E and
-  F-E near-floor contrasts, and the named off-target pair. Missing coverage is
-  visible, never an implicit pass. Corpus currently inspected has 12 shards,
-  2,719 emitted rows (not the brief's 3,447); resolve that discrepancy before
-  declaring full-reference coverage. All inspected holder spans are length128;
-  short-span coverage cannot be claimed from this bank alone.
+  Additionally test each null fork separately on its own CPU reference, with
+  the same 0.25*se_CPU hard bounds. Flag SE drift above
+  se_CPU/sqrt(2*(n_clusters-1)), about 0.036*se_CPU at n=383. This flag is not
+  a replacement for the hard gate. Palimpsest's reference confirmation is pending.
+- G3 replacement: retain E, null forks and B-E/F-E coverage on the bank, and
+  run a synthetic 70B cache-length sweep (six lengths, at least five spans each)
+  reporting floor(c) and exact repeatability versus length. No 8B off-target
+  bank is needed for this replacement. Proposed lengths 64,128,299,512,1024,2048
+  at continuation128 all fit the VERIFIED 70B calibration extent4096, with
+  >5 observations at their used positions. Label calibration coverage per point.
+  Longer out-of-calibration points would be determinism/drift evidence only.
+  Palimpsest's certificate remains bank-regime-scoped. Per-length floor(b) is
+  optional and does not block the sweep.
 - G4: signatures and analysis inputs carry lane and source/config/calibration
   identity. Refuse mixed lanes inside a scientific contrast. CPU-vs-GPU
   validation is an explicitly labeled equivalence comparison.
@@ -155,8 +166,8 @@ CPU-self must pass. Failures stop promotion; retain their receipts.
 
 ## Measurement and diary
 
-Historical 5.46 s/row is capture-shard wall divided by emitted rows. A replay
-microbenchmark does not rederive that number. Record both boundaries separately;
+The brief reports 5.46 s/row, but its exact aggregation remains unreproduced;
+the recorded full-shard wall is 12.4611 s/emitted row. Record boundaries separately;
 the optimization directly changes replay+features. Model/calibration/pool startup
 and generation remain separate costs. Record warmup policy, synchronized timing,
 per-row vectors, peak VRAM, parent/worker RSS, throughput and transfer bytes.

@@ -15,6 +15,8 @@ from pathlib import Path
 import numpy as np
 
 from extraction_perf_phase0 import rows_from_bank, sha, write_json
+from anamnesis.extraction.path_floor import coordinate_lower_bound
+import anamnesis.extraction.path_floor as path_floor_module
 from anamnesis.extraction.fidelity import (
     ReplayBatch,
     Ruler,
@@ -50,6 +52,7 @@ def main():
     ap.add_argument("--reference", type=Path, required=True)
     ap.add_argument("--gpu", type=Path, required=True)
     ap.add_argument("--floors", type=Path, nargs="+", required=True)
+    ap.add_argument("--adaptive", type=Path)
     ap.add_argument("--anchor", type=Path, required=True)
     ap.add_argument("--memory-reference", type=Path, required=True)
     ap.add_argument("--condition-map", type=Path)
@@ -60,13 +63,16 @@ def main():
     keys = [tuple(r["key"]) for r in rows]
     gpu = row_files([args.gpu])
     floors = row_files(args.floors)
+    adaptive = row_files([args.adaptive]) if args.adaptive else {}
+    path_rows = dict(floors)
+    path_rows.update(adaptive)
     missing = {
         label: [list(k) for k in keys if k not in found]
-        for label, found in (("gpu", gpu), ("floor", floors))
+        for label, found in (("gpu", gpu), ("floor", path_rows))
     }
     extra = {
         label: [list(k) for k in found if k not in set(keys)]
-        for label, found in (("gpu", gpu), ("floor", floors))
+        for label, found in (("gpu", gpu), ("floor", path_rows))
     }
     if any(extra.values()):
         raise ValueError(f"unexpected receipt rows: {extra}")
@@ -79,6 +85,11 @@ def main():
         dict(key=list(k), kind="reference", record=r)
         for k, (r, _) in floors.items()
         if r.get("bank_max_abs", 0) != 0 or r.get("cpu_repeat_bit_exact") is False
+    )
+    known_failures.extend(
+        dict(key=list(k), kind="path-proof", record=r)
+        for k, (r, _) in adaptive.items()
+        if r.get("path_gate_proven") is False
     )
     if known_failures:
         write_json(
@@ -106,12 +117,46 @@ def main():
         )
         print("INCOMPLETE", len(gpu), len(floors), "of", len(keys))
         return
-    if not all((p / "complete.json").exists() for p in [args.gpu, *args.floors]):
+    if not (args.gpu / "complete.json").exists() or not all(
+        (p / "complete.json").exists() or (p / "stopped.json").exists()
+        for p in args.floors
+    ):
         raise ValueError(
             "complete-row files exist but end-of-run source verification is missing"
         )
+    for folder in args.floors:
+        if (folder / "stopped.json").exists():
+            sealed = json.loads((folder / "stopped.json").read_text())
+            for name, value in sealed["files"].items():
+                if sha(folder / name) != value:
+                    raise ValueError("sealed full-floor receipt changed")
+    adaptive_pin = None
+    if args.adaptive:
+        if (
+            not (args.adaptive / "complete.json").exists()
+            or not (args.adaptive / "validation-pass.json").exists()
+        ):
+            raise ValueError("adaptive validation/completion evidence missing")
+        adaptive_pin = json.loads((args.adaptive / "deployment.json").read_text())
+        validation = json.loads((args.adaptive / "validation-pass.json").read_text())
+        if not validation["bit_exact"] or validation["n"] != len(floors):
+            raise ValueError(
+                "adaptive proof was not validated against all full-floor rows"
+            )
     gpu_pin = json.loads((args.gpu / "deployment.json").read_text())
     cpu_pins = [json.loads((p / "deployment.json").read_text()) for p in args.floors]
+    if adaptive_pin is not None:
+        if (
+            adaptive_pin["source"] != cpu_pins[0]["anamnesis"]
+            or adaptive_pin["caller"] != cpu_pins[0]["caller"]
+            or adaptive_pin["gpu_deployment_sha256"]
+            != sha(args.gpu / "deployment.json")
+            or adaptive_pin["standardizer_sha256"] != gpu_pin["standardizer_sha256"]
+            or adaptive_pin["helper_sha256"] != sha(Path(path_floor_module.__file__))
+        ):
+            raise ValueError("adaptive reference/helper/candidate provenance mismatch")
+        if set(tuple(k) for k in adaptive_pin["row_keys"]) != set(keys):
+            raise ValueError("adaptive reference population mismatch")
     for pin in cpu_pins[1:]:
         for field in (
             "anamnesis",
@@ -141,28 +186,80 @@ def main():
     metadata = []
     repeats = []
     floor_values = {}
+    floor_kinds = {}
+    floor_proofs = {}
     for row in rows:
         key = tuple(row["key"])
-        frecord, fpath = floors[key]
         grecord, gpath = gpu[key]
-        with (
-            np.load(fpath, allow_pickle=False) as f,
-            np.load(gpath, allow_pickle=False) as g,
-        ):
-            if (
-                f["cpu"].tobytes() != row["bank"].tobytes()
-                or g["bank"].tobytes() != row["bank"].tobytes()
-            ):
-                raise ValueError(f"reference bytes differ for {key}")
-            measured = float(
-                np.linalg.norm(
-                    (f["incremental"].astype(float) - f["cpu"]) * weights / sigma
+        if key in floors:
+            frecord, fpath = floors[key]
+            with np.load(fpath, allow_pickle=False) as f:
+                if f["cpu"].tobytes() != row["bank"].tobytes():
+                    raise ValueError(f"reference bytes differ for {key}")
+                measured = float(
+                    np.linalg.norm(
+                        (f["incremental"].astype(float) - f["cpu"]) * weights / sigma
+                    )
                 )
-            )
-            if not np.isclose(measured, frecord["floor_b"], rtol=1e-12, atol=1e-12):
-                raise ValueError(f"floor receipt does not reproduce for {key}")
-            floor_values[key] = min(measured, frecord["floor_b"])
-            cpu.append(f["cpu"].copy())
+                if not np.isclose(measured, frecord["floor_b"], rtol=1e-12, atol=1e-12):
+                    raise ValueError(f"floor receipt does not reproduce for {key}")
+                floor_values[key] = min(measured, frecord["floor_b"])
+                floor_kinds[key] = "measured"
+                if key in adaptive:
+                    _, apath = adaptive[key]
+                    with np.load(apath, allow_pickle=False) as a:
+                        if (
+                            a["incremental_coordinates"].tobytes()
+                            != f["incremental"][a["coordinate_indices"]].tobytes()
+                        ):
+                            raise ValueError(
+                                "adaptive/full coordinate equality does not reproduce"
+                            )
+        else:
+            arecord, apath = adaptive[key]
+            with np.load(apath, allow_pickle=False) as a:
+                idx = a["coordinate_indices"]
+                expected = [
+                    names.index(f"activation_norm_traj0_L{layer}")
+                    for layer in range(80)
+                ]
+                if (
+                    idx.tolist() != expected
+                    or a["reference_coordinates"].tobytes()
+                    != row["bank"][idx].tobytes()
+                ):
+                    raise ValueError("coordinate proof schema/reference mismatch")
+                if arecord["proof_kind"] == "full_floor_fallback":
+                    floor_values[key] = float(
+                        np.linalg.norm(
+                            (a["incremental_full"].astype(float) - row["bank"])
+                            * weights
+                            / sigma
+                        )
+                    )
+                    floor_kinds[key] = "measured"
+                else:
+                    bound = coordinate_lower_bound(
+                        a["incremental_coordinates"],
+                        a["reference_coordinates"],
+                        sigma[idx],
+                        weights[idx],
+                    )
+                    if bound["floor_b_lower_bound"] != arecord["floor_b_lower_bound"]:
+                        raise ValueError("lower-bound certificate does not reproduce")
+                    floor_values[key] = bound["floor_b_lower_bound"]
+                    floor_kinds[key] = "lower_bound"
+                    floor_proofs[key] = digest(
+                        {
+                            "record": sha(apath.with_suffix(".json")),
+                            "arrays": sha(apath),
+                            "deployment": sha(args.adaptive / "deployment.json"),
+                        }
+                    )
+        with np.load(gpath, allow_pickle=False) as g:
+            if g["bank"].tobytes() != row["bank"].tobytes():
+                raise ValueError(f"reference bytes differ for {key}")
+            cpu.append(row["bank"].copy())
             candidate.append(g["gpu"].copy())
             repeat.append(g["repeat"].copy())
         metadata.append(grecord["telemetry"])
@@ -240,18 +337,34 @@ def main():
     if args.condition_map is not None:
         entries = json.loads(args.condition_map.read_text())["rows"]
         pairs = {
-            tuple(e["key"]): (tuple(e["left"]), tuple(e["right"])) for e in entries
+            tuple(e["key"]): None
+            if e.get("contrast_status") == "null-by-rule"
+            else (tuple(e["left"]), tuple(e["right"]))
+            for e in entries
         }
+        null_reasons = {
+            tuple(e["key"]): e["reason"]
+            for e in entries
+            if e.get("contrast_status") == "null-by-rule"
+        }
+        if any(k[2] != "own_cont" for k in null_reasons):
+            raise ValueError(
+                "this consumer ruling permits null-by-rule only for anchor A"
+            )
         if len(pairs) != len(entries):
             raise ValueError("duplicate condition mapping")
         lookup = {k: i for i, k in enumerate(full_keys)}
         distances = {
-            k: float(
+            k: None
+            if pair is None
+            else float(
                 np.linalg.norm(
-                    (cpu[lookup[a]].astype(float) - cpu[lookup[b]]) * weights / sigma
+                    (cpu[lookup[pair[0]]].astype(float) - cpu[lookup[pair[1]]])
+                    * weights
+                    / sigma
                 )
             )
-            for k, (a, b) in pairs.items()
+            for k, pair in pairs.items()
         }
         ruler = Ruler(
             sigma,
@@ -266,12 +379,13 @@ def main():
             calib,
             schema,
             digest(gpu_pin["reference_files"]),
+            null_contrast_reasons=null_reasons,
+            floor_kinds={(namespace, *k): v for k, v in floor_kinds.items()},
+            floor_proof_sha256={(namespace, *k): v for k, v in floor_proofs.items()},
         )
         vectors = verify_vectors(cpub, gpub, repeatb, ruler)
     else:
-        vectors["reason"] = (
-            "approved per-row condition map missing; anchor A unresolved"
-        )
+        vectors["reason"] = "approved per-row condition manifest missing"
     by_key = {k: i for i, k in enumerate(keys)}
     docs = []
     clusters = []

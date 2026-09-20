@@ -7,7 +7,7 @@ never fits a ruler, chooses a condition comparator, or certifies absent coverage
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Mapping, Sequence
 
 import numpy as np
@@ -102,14 +102,17 @@ class Ruler:
     weights: F64
     standardizer_sha256: str
     feature_names: tuple[str, ...]
-    floor_b: Mapping[RowKey, float]
-    condition_distance: Mapping[RowKey, float]
-    condition_pair: Mapping[RowKey, tuple[RowKey, RowKey]]
+    floor_b: Mapping[RowKey, float]  # measured floor or explicitly typed lower bound
+    condition_distance: Mapping[RowKey, float | None]
+    condition_pair: Mapping[RowKey, tuple[RowKey, RowKey] | None]
     prefix_lengths: Mapping[RowKey, int]
     reference_keys: tuple[RowKey, ...]
     calibration_sha256: str
     schema_sha256: str
     reference_manifest_sha256: str
+    null_contrast_reasons: Mapping[RowKey, str] = field(default_factory=dict)
+    floor_kinds: Mapping[RowKey, str] = field(default_factory=dict)
+    floor_proof_sha256: Mapping[RowKey, str] = field(default_factory=dict)
 
     def validate(self) -> None:
         keys = set(self.reference_keys)
@@ -151,7 +154,15 @@ class Ruler:
                 f"{name}: missing/extra reference rows",
             )
         for name in ("floor_b", "condition_distance"):
-            values = np.asarray(list(getattr(self, name).values()), dtype=np.float64)
+            if name == "floor_b":
+                _require(
+                    all(v is not None for v in self.floor_b.values()),
+                    "missing path bound",
+                )
+            values = np.asarray(
+                [v for v in getattr(self, name).values() if v is not None],
+                dtype=np.float64,
+            )
             _require(
                 bool(np.isfinite(values).all() and (values >= 0).all()),
                 f"invalid {name}",
@@ -160,10 +171,33 @@ class Ruler:
             all(v >= 1 for v in self.prefix_lengths.values()), "invalid prefix lengths"
         )
         for key, pair in self.condition_pair.items():
+            if pair is None:
+                _require(
+                    self.condition_distance[key] is None
+                    and bool(self.null_contrast_reasons.get(key)),
+                    "null-by-rule requires an explicit reason and null distance",
+                )
+                continue
+            _require(
+                self.condition_distance[key] is not None,
+                "paired contrast has null distance",
+            )
             _require(
                 len(pair) == 2 and all(k in keys for k in pair),
                 f"unknown condition pair: {key}",
             )
+        _require(
+            set(self.null_contrast_reasons)
+            == {k for k, p in self.condition_pair.items() if p is None},
+            "null-by-rule reasons do not match null contrasts",
+        )
+        if self.floor_kinds:
+            _require(set(self.floor_kinds) == keys, "floor kinds missing/extra rows")
+        for key in keys:
+            kind = self.floor_kinds.get(key, "measured")
+            _require(kind in ("measured", "lower_bound"), "unknown path-bound kind")
+            if kind == "lower_bound":
+                _digest(self.floor_proof_sha256.get(key, ""), "lower-bound proof")
 
 
 def _aligned(batch: ReplayBatch, keys: tuple[RowKey, ...]) -> F32:
@@ -197,7 +231,10 @@ def verify_vectors(
     keys = ruler.reference_keys
     ref, candidate, again = [_aligned(b, keys) for b in (cpu, gpu, repeat)]
     positions = {k: i for i, k in enumerate(keys)}
-    for key, (left, right) in ruler.condition_pair.items():
+    for key, pair in ruler.condition_pair.items():
+        if pair is None:
+            continue
+        left, right = pair
         actual = float(
             np.linalg.norm(
                 (
@@ -232,7 +269,9 @@ def verify_vectors(
     distances = np.linalg.norm(delta * ruler.weights / ruler.sigma, axis=1)
     bounds = np.asarray(
         [
-            min(ruler.floor_b[k], CONDITION_FRACTION * ruler.condition_distance[k])
+            ruler.floor_b[k]
+            if ruler.condition_distance[k] is None
+            else min(ruler.floor_b[k], CONDITION_FRACTION * ruler.condition_distance[k])
             for k in keys
         ],
         dtype=np.float64,
@@ -240,6 +279,23 @@ def verify_vectors(
     feature_error = np.abs(delta) / ruler.sigma
     per_feature_pass = np.all(feature_error <= FEATURE_SIGMA_FRACTION, axis=1)
     passed = (distances <= bounds) & per_feature_pass
+    condition_ok = np.asarray(
+        [
+            ruler.condition_distance[k] is None
+            or distances[i] <= CONDITION_FRACTION * ruler.condition_distance[k]
+            for i, k in enumerate(keys)
+        ]
+    )
+    lower = np.asarray(
+        [ruler.floor_kinds.get(k, "measured") == "lower_bound" for k in keys]
+    )
+    path_ok = np.asarray([distances[i] <= ruler.floor_b[k] for i, k in enumerate(keys)])
+    failed = (~per_feature_pass) | (~condition_ok) | ((~lower) & (~path_ok))
+    pending = lower & (~path_ok) & (~failed)
+
+    def verdict(mask):
+        return False if failed[mask].any() else None if pending[mask].any() else True
+
     prefix = np.asarray([ruler.prefix_lengths[k] for k in keys])
     # Quantile bins preserve equal-length prefixes as one regime. Empty bins
     # are reported, never counted as a tested tercile.
@@ -252,7 +308,7 @@ def verify_vectors(
             dict(
                 tercile=group,
                 n=int(mask.sum()),
-                passed=bool(passed[mask].all()) if mask.any() else None,
+                passed=verdict(mask) if mask.any() else None,
                 max_distance=float(distances[mask].max()) if mask.any() else None,
                 max_excess=float((distances - bounds)[mask].max())
                 if mask.any()
@@ -260,7 +316,7 @@ def verify_vectors(
             )
         )
     result.update(
-        G1=bool(passed.all()),
+        G1=verdict(np.ones(len(keys), dtype=bool)),
         max_feature_sigma_error=float(feature_error.max()),
         prefix_cutpoints=cuts.tolist(),
         terciles=groups,
@@ -269,11 +325,25 @@ def verify_vectors(
                 key=list(k),
                 floor_c=float(distances[i]),
                 bound=float(bounds[i]),
-                floor_b=float(ruler.floor_b[k]),
-                condition_distance=float(ruler.condition_distance[k]),
-                condition_pair=[list(x) for x in ruler.condition_pair[k]],
+                floor_b=float(ruler.floor_b[k])
+                if ruler.floor_kinds.get(k, "measured") == "measured"
+                else None,
+                floor_b_lower_bound=float(ruler.floor_b[k])
+                if ruler.floor_kinds.get(k) == "lower_bound"
+                else None,
+                path_bound_kind=ruler.floor_kinds.get(k, "measured"),
+                floor_proof_sha256=ruler.floor_proof_sha256.get(k),
+                condition_distance=ruler.condition_distance[k],
+                condition_pair=[list(x) for x in ruler.condition_pair[k]]
+                if ruler.condition_pair[k] is not None
+                else None,
+                contrast_status="null-by-rule"
+                if ruler.condition_pair[k] is None
+                else "paired",
+                contrast_reason=ruler.null_contrast_reasons.get(k),
                 feature_sigma_max=float(feature_error[i].max()),
-                passed=bool(passed[i]),
+                requires_full_floor=bool(pending[i]),
+                passed=False if failed[i] else None if pending[i] else bool(passed[i]),
             )
             for i, k in enumerate(keys)
         ],
@@ -299,6 +369,8 @@ def verify_downstream(
     anchor: DownstreamAnchor,
     statistic: Callable,
     statistic_source_sha256: str,
+    *,
+    flag_se_sampling_scale: bool = False,
 ) -> dict:
     """G2 via the pinned owner's statistic, with exact matched-n/cohort checks.
 
@@ -342,6 +414,8 @@ def verify_downstream(
     )
     point_change = abs(candidate.point - reference.point) / anchor.se
     se_change = abs(candidate.se - reference.se) / anchor.se
+    n_clusters = len(set(clusters))
+    se_warning_scale = 1 / np.sqrt(2 * (n_clusters - 1)) if n_clusters > 1 else None
     return dict(
         G2=bool(max(point_change, se_change) <= SE_FRACTION),
         point_change_in_reference_se=float(point_change),
@@ -352,6 +426,13 @@ def verify_downstream(
         gpu_se=float(candidate.se),
         n=len(documents),
         anchor_sha256=anchor.artifact_sha256,
+        se_sampling_scale_in_reference_se=float(se_warning_scale)
+        if flag_se_sampling_scale and se_warning_scale is not None
+        else None,
+        se_change_warning=bool(se_change > se_warning_scale)
+        if flag_se_sampling_scale and se_warning_scale is not None
+        else False,
+        warning_is="diagnostic only; hard gate remains 0.25 reference SE",
     )
 
 
