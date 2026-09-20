@@ -25,6 +25,7 @@ from anamnesis.extraction.fidelity import (
     verify_downstream,
     verify_coverage,
     verify_sweep_coverage,
+    verify_bank_scope_coverage,
     verify_memory,
     verify_within_tol,
 )
@@ -61,6 +62,7 @@ def main():
     ap.add_argument("--coverage", type=Path)
     ap.add_argument("--sweep-cpu", type=Path)
     ap.add_argument("--sweep-gpu", type=Path)
+    ap.add_argument("--bank-scope-ruling", type=Path)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
     rows, names = rows_from_bank(args.reference)
@@ -455,12 +457,16 @@ def main():
         results=all_downstream["results"],
         anchor_sha256=all_downstream["anchor_sha256"],
     )
-    if args.sweep_cpu or args.sweep_gpu:
-        if not (args.sweep_cpu and args.sweep_gpu):
+    if args.sweep_cpu or args.sweep_gpu or args.bank_scope_ruling:
+        if bool(args.sweep_cpu) != bool(args.sweep_gpu):
             raise ValueError("both sweep lanes required")
         from extraction_perf_verify_sweep import verify as verify_sweep
 
-        sweep = verify_sweep(args.sweep_cpu, args.sweep_gpu, sigma_path)
+        sweep = (
+            verify_sweep(args.sweep_cpu, args.sweep_gpu, sigma_path)
+            if args.sweep_cpu
+            else None
+        )
         regimes = {
             "E": [k for k in full_keys if k[2] == "rung_control"],
             **{
@@ -484,8 +490,22 @@ def main():
                         raise ValueError("bank coverage lacks matched E endpoint")
                     endpoints.update((key, control))
             regimes[name] = sorted(endpoints)
-        coverage = verify_sweep_coverage(gpub, full_keys, regimes, sweep)
-        coverage["sweep_evidence"] = sweep
+        if args.bank_scope_ruling:
+            coverage = verify_bank_scope_coverage(
+                gpub,
+                full_keys,
+                regimes,
+                {
+                    key: (row["start"], row["end"])
+                    for key, row in zip(full_keys, rows, strict=True)
+                },
+                sha(args.bank_scope_ruling),
+            )
+            if sweep is not None:
+                coverage["wider_sweep_evidence"] = sweep
+        else:
+            coverage = verify_sweep_coverage(gpub, full_keys, regimes, sweep)
+            coverage["sweep_evidence"] = sweep
     elif args.coverage:
         regimes = {
             name: [tuple(k) for k in value]

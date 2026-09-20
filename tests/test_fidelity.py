@@ -11,6 +11,7 @@ from anamnesis.extraction.fidelity import (
     Ruler,
     verify_coverage,
     verify_sweep_coverage,
+    verify_bank_scope_coverage,
     verify_downstream,
     verify_memory,
     verify_vectors,
@@ -144,6 +145,13 @@ def test_ratified_sweep_composition_is_scoped(evidence):
         ],
     )
     result = verify_sweep_coverage(gpu, gpu.keys, regimes, sweep)
+    bounds = dict.fromkeys(gpu.keys, (299, 427))
+    bank = verify_bank_scope_coverage(gpu, gpu.keys, regimes, bounds, "a" * 64)
+    assert bank["G3"] and not bank["wider_scope_certified"]
+    with pytest.raises(FidelityError, match="geometry"):
+        verify_bank_scope_coverage(
+            gpu, gpu.keys, regimes, dict.fromkeys(gpu.keys, (64, 192)), "a" * 64
+        )
     assert result["G3"] is True
     assert result["consumer_scope"] == "banked regime only"
     with pytest.raises(FidelityError, match="lane differs"):

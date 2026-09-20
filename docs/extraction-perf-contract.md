@@ -1,7 +1,8 @@
 # Extraction performance executable contract
 
-Status: full-bank G0/G1/G2/G4/G5 evidence recorded; G3 length sweep outstanding;
-no optimized lane fully certified. Authority: Anamnesis
+Status: full-bank G0/G1/G2/G4/G5 evidence recorded; synthetic sweep complete,
+with operating boundaries. Governing disposition permits bank-regime batching;
+wider scope and batch>1 remain unqualified. Authority: Anamnesis
 extraction-perf brief (2026-09-19), optimization-agent ferry of the same date,
 and Luxia's authorization. This document consolidates those rulings; it does
 not relax a gate. P remains Palimpsest-owned. Registry edits remain out of scope.
@@ -154,6 +155,11 @@ after inventory and baseline profiles; no numerical forecast is an exit gate.
   Longer out-of-calibration points would be determinism/drift evidence only.
   Palimpsest's certificate remains bank-regime-scoped. Per-length floor(b) is
   optional and does not block the sweep.
+  Clarified disposition: sweep results govern widening the instrument scope,
+  not permission to certify/work within banked cache263–299/continuation128.
+  The cache64 feature-bound failures remain recorded as wider-stack failures;
+  they do not revoke the independently passing bank-regime gates. Do not infer
+  a continuous passing interval or minimum span length from six cache points.
 - G4: signatures and analysis inputs carry lane and source/config/calibration
   identity. Refuse mixed lanes inside a scientific contrast. CPU-vs-GPU
   validation is an explicitly labeled equivalence comparison.

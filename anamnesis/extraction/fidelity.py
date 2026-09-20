@@ -535,6 +535,49 @@ def verify_sweep_coverage(
     )
 
 
+def verify_bank_scope_coverage(
+    actual: ReplayBatch,
+    required_keys: Sequence[RowKey],
+    regime_rows: Mapping[str, Sequence[RowKey]],
+    span_bounds: Mapping[RowKey, tuple[int, int]],
+    ruling_sha256: str,
+) -> dict:
+    """Explicitly ratified bank scope; does not certify the sweep envelope."""
+    _digest(ruling_sha256, "bank-scope ruling")
+    actual.validate()
+    keys = set(required_keys)
+    _require(set(actual.keys) == keys == set(span_bounds), "G3: incomplete bank scope")
+    _require(
+        all(
+            263 <= start <= 299 and end - start == 128
+            for start, end in span_bounds.values()
+        ),
+        "G3: outside ratified bank geometry",
+    )
+    required = {
+        "near-floor-B-E",
+        "near-floor-F-E",
+        "E",
+        "null-fork-0",
+        "null-fork-1",
+        "null-fork-2",
+    }
+    _require(required <= set(regime_rows), "G3: missing bank regime")
+    for name in required:
+        _require(
+            bool(regime_rows[name]) and set(regime_rows[name]) <= keys,
+            f"G3: empty/unknown regime {name}",
+        )
+    return dict(
+        G3=True,
+        scope="bank cache263–299 / continuation128 only",
+        ruling_sha256=ruling_sha256,
+        bank_regime_counts={k: len(regime_rows[k]) for k in sorted(required)},
+        adapter_coverage=False,
+        wider_scope_certified=False,
+    )
+
+
 def verify_memory(
     candidate: Mapping[str, Sequence[int]],
     baseline: Mapping[str, Sequence[int]],
