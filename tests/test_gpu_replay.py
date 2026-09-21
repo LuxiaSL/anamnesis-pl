@@ -123,6 +123,26 @@ def test_full_lane_matches_reference_and_repeats_with_fresh_cache(
     )
     one = lane.replay_span(loaded, tokens, prefix, len(tokens))
     two = lane.replay_span(loaded, tokens, prefix, len(tokens))
+    cached_lane = GpuFeatureLane(
+        extraction,
+        families,
+        ref.feature_names,
+        pm,
+        components,
+        mean,
+        device="cpu",
+        calibration_sha256="a" * 64,
+        replay_path=replay_path,
+        positional_cache_range=(prefix, len(tokens)),
+    )
+    cached = cached_lane.replay_span(loaded, tokens, prefix, len(tokens))
+    assert cached.features.tobytes() == one.features.tobytes()
+    assert cached.mean_logprob == one.mean_logprob
+    assert cached_lane.lane_id != lane.lane_id
+    assert cached.metadata["positional_calibration_h2d_bytes"] == 0
+    assert (
+        cached.metadata["positional_cache_construction_bytes"] == pm[1:, prefix:].nbytes
+    )
     assert one.features.tobytes() == two.features.tobytes()
     assert one.metadata["replay_id"] != two.metadata["replay_id"]
     assert one.metadata["input_tokens_sha256"] == two.metadata["input_tokens_sha256"]

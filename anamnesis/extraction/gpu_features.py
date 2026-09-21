@@ -55,6 +55,7 @@ class GpuFeatureLane:
         device: str | torch.device,
         calibration_sha256: str,
         replay_path: Literal["cached", "full"] = "cached",
+        positional_cache_range: tuple[int, int] | None = None,
     ):
         if replay_path not in ("cached", "full"):
             raise ValueError("replay_path must be cached or full")
@@ -98,6 +99,25 @@ class GpuFeatureLane:
         self.families = families
         self.names = tuple(feature_names)
         self.pm = positional_means
+        self.positional_cache_range = positional_cache_range
+        self.positional_cache = None
+        self.positional_cache_bytes = 0
+        if positional_cache_range is not None:
+            lo, hi = positional_cache_range
+            if not 0 <= lo < hi <= positional_means.shape[1]:
+                raise ValueError("invalid positional calibration cache range")
+            cache_bytes = (
+                (positional_means.shape[0] - 1)
+                * (hi - lo)
+                * positional_means.shape[2]
+                * positional_means.dtype.itemsize
+            )
+            if cache_bytes > 512 * 1024**2:
+                raise ValueError("positional cache exceeds experimental 512MiB cap")
+            self.positional_cache = torch.as_tensor(
+                np.ascontiguousarray(positional_means[1:, lo:hi]), device=self.device
+            )
+            self.positional_cache_bytes = cache_bytes
         if isinstance(pca_components, dict):
             if (
                 not isinstance(pca_mean, dict)
@@ -143,6 +163,8 @@ class GpuFeatureLane:
             calibration=calibration_sha256,
             device_type=self.device.type,
             replay_path=replay_path,
+            positional_cache_range=positional_cache_range,
+            positional_cache_policy="bounded-window-v1",
             torch=torch.__version__,
             transformers=transformers.__version__,
             numpy=np.__version__,
@@ -162,6 +184,14 @@ class GpuFeatureLane:
                 :20
             ]
         )
+
+    def _positional_slice(self, layer: int, start: int, steps: int):
+        if self.positional_cache is not None:
+            lo, hi = self.positional_cache_range
+            if lo <= start and start + steps <= hi:
+                return self.positional_cache[layer, start - lo : start - lo + steps], 0
+        pm = np.ascontiguousarray(self.pm[layer + 1, start : start + steps])
+        return torch.as_tensor(pm, device=self.device), pm.nbytes
 
     def _outputs(self, out: FeatureCollector, logits: Tensor, chosen: Tensor) -> Tensor:
         entropy, top1, top5, ranks, prob, logprob = [], [], [], [], [], []
@@ -535,9 +565,9 @@ class GpuFeatureLane:
             h = result.hidden_states[layer + 1][
                 batch_index, offset : offset + steps
             ].float()
-            pm = np.ascontiguousarray(self.pm[layer + 1, start : start + steps])
-            h2d_bytes += pm.nbytes
-            corrected = h - torch.as_tensor(pm, device=self.device)
+            pm, transferred = self._positional_slice(layer, start, steps)
+            h2d_bytes += transferred
+            corrected = h - pm
             norms = corrected.norm(dim=-1).float()
             collector.put(f"activation_norm_mean_L{layer}", norms.mean())
             collector.put(f"activation_norm_std_L{layer}", std(norms))
@@ -634,6 +664,7 @@ class GpuFeatureLane:
             + ancillary
             + reducer.gate_tie_exception_d2h_bytes,
             positional_calibration_h2d_bytes=h2d_bytes,
+            positional_cache_construction_bytes=self.positional_cache_bytes,
             input_token_h2d_bytes=ids.numel() * ids.element_size(),
         )
         return GpuFeatureResult(
