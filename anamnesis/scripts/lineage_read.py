@@ -5,7 +5,7 @@ checkpoint over ONE import file (``lineage_import_rows.py``), all on the same en
 calibration. A row's bytes therefore differ across readers only by the weights: a declared lineage contrast
 under one reference calibration.
 
-``--signed label=dir`` names each reader. The first is the reference; features are z-scored by their across-row
+``--signed label=dir[,dir...]`` names each reader (several signed dirs of one reader are merged). The first is the reference; features are z-scored by their across-row
 SD under it. ``--contrast a-b`` names each reader contrast (D = Z_a - Z_b on the same rows), and
 ``--contrast-delta a-b=<deltas.tsv column>`` ties a contrast to its weight change in posttraining's ``deltas.tsv``
 (per tensor: key, layer, module, numel, and rel columns).
@@ -117,8 +117,15 @@ def main(argv: list[str] | None = None) -> int:
 
     readers: dict[str, dict[str, Any]] = {}
     for s in args.signed:
-        label, _, path = s.partition("=")
-        readers[label] = p2.load_signed(Path(path))
+        label, _, paths = s.partition("=")
+        rows: dict[str, Any] = {}
+        for path in paths.split(","):
+            part = p2.load_signed(Path(path))
+            dup = set(rows) & set(part)
+            if dup:
+                raise SystemExit(f"{label}: {len(dup)} row ids appear in two of its signed dirs")
+            rows.update(part)
+        readers[label] = rows
         print(f"[lineage] {label}: {len(readers[label])} rows", flush=True)
     labels = list(readers)
     common = sorted(set.intersection(*(set(r) for r in readers.values())))
@@ -194,12 +201,12 @@ def main(argv: list[str] | None = None) -> int:
                                            for k, v in w.items()}
             entry["spearman_vs_weights"] = corr
         ws = sorted(set(writer))
-        if len(ws) == 2:
-            m0, m1 = np.nanmean(D[writer == ws[0]], axis=0), np.nanmean(D[writer == ws[1]], axis=0)
-            entry["writers"] = dict(cos_mean_d=cosine(m0, m1),
-                                    magnitude_ratio=round(float(np.median(mag[writer == ws[0]]) /
-                                                                max(np.median(mag[writer == ws[1]]), 1e-12)), 4),
-                                    pair=ws)
+        if len(ws) >= 2:
+            means = {w: np.nanmean(D[writer == w], axis=0) for w in ws}
+            entry["writers"] = {f"{a}|{b}": dict(cos_mean_d=cosine(means[a], means[b]),
+                                                 magnitude_ratio=round(float(np.median(mag[writer == a]) /
+                                                                             max(np.median(mag[writer == b]), 1e-12)), 4))
+                                for i, a in enumerate(ws) for b in ws[i + 1:]}
         mean_d[c] = np.nanmean(D, axis=0)
         report["contrasts"][c] = entry
         print(f"[lineage] {c}: {json.dumps(dict(magnitude=entry['magnitude'], top_sources=list(entry['sources_median_rms'].items())[:4]))}",
