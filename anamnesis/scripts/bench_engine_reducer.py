@@ -16,6 +16,18 @@ the span has c - 1 steps), after ``--warmup`` rows:
   profile   with ``--profile``, the top operators by self CPU time and by self CUDA time for
             one row, to tell launch-bound from device-bound.
 
+With ``--batched`` (an anamnesis tree with ``batched_stats``), per cell and per batch size B
+in ``--batch-sizes``, the hybrid reduction (block-output family batched across B rows of one
+step count, every other family per row) against the per-row reduction:
+  per_row         ms/row of the per-row reduce, its finish, and the hybrid finish of the same
+                  row without the block-output loop; their difference is the per-row loop;
+  batched[B]      ms/row of the whole hybrid reduce of B rows, of block_output_features alone,
+                  and of attention_stats and the remaining finish;
+  invariance[B]   row 0 reduced alone vs inside the batch of B: coordinates that differ (0 is
+                  the lane's definition);
+  agreement       hybrid vs per-row on ``--rows`` rows: per name group, max abs and rel
+                  difference; and whether every non-ported coordinate is byte-identical.
+
 Environment: PYTHONPATH with an anamnesis tree that has ``engine_reducer`` (main 7e4a410 or
 later) and ANAMNESIS_MODELS pointing at pleroma's registry extension (the tsumugi preset).
 """
@@ -112,6 +124,118 @@ def synthetic_row(torch, prompt: int, completion: int, sampled: list[int], devic
     return row, token_ids
 
 
+PORTED = ("activation_norm_", "delta_norm_", "delta_cosine_", "spectral_smoothness_",
+          "res_traj_", "pca_")
+
+
+def batched_bench(args, torch, reducer, device, report) -> None:
+    """The hybrid against the per-row reduction (``--batched``)."""
+    import numpy as np
+
+    from anamnesis.extraction.fast import batched_stats as bs
+    from anamnesis.extraction.fast import engine_reducer as er
+    from anamnesis.extraction.fast.external_stats import ExternalStatsSpan
+
+    hybrid = er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir, device="cuda",
+                              batched=True)
+    report["hybrid_reducer_identity"] = hybrid.reducer_identity
+    phase: dict[str, float] = {}
+
+    def timed(name, fn):
+        def wrapper(*a, **kw):
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            out = fn(*a, **kw)
+            torch.cuda.synchronize()
+            phase[name] = phase.get(name, 0.0) + time.perf_counter() - t0
+            return out
+        return wrapper
+
+    ExternalStatsSpan.attention_stats = timed("attention_stats", ExternalStatsSpan.attention_stats)
+    ExternalStatsSpan.finish = timed("finish", ExternalStatsSpan.finish)
+    bs.HybridStatsSpan.finish = timed("hybrid_finish", bs.HybridStatsSpan.finish)
+    er.block_output_features = timed("block_outputs", er.block_output_features)
+    engine = {"producer": "bench-synthetic", "width": 128}
+    sizes = [int(b) for b in args.batch_sizes.split(",")]
+
+    def run(red, rows, ids):
+        phase.clear()
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        out = red.reduce(rows, token_ids=ids, engine=engine)
+        torch.cuda.synchronize()
+        return out, time.perf_counter() - t0, dict(phase)
+
+    for prompt, completion in _cells(args.cells):
+        sampled = list(reducer.lane(completion - 1).config.sampled_layers)
+        made = [synthetic_row(torch, prompt, completion, sampled, device, seed=i)
+                for i in range(max(sizes + [args.rows]))]
+        for i in range(args.warmup):   # compile Triton, warm the allocator
+            run(reducer, [made[i][0]], [made[i][1]])
+            run(hybrid, [made[i][0]], [made[i][1]])
+            run(hybrid, [r for r, _ in made[:8]], [x for _, x in made[:8]])
+
+        per_row, alone, totals, fin, hfin = [], [], [], [], []
+        for i in range(args.rows):
+            out, dt, ph = run(reducer, [made[i][0]], [made[i][1]])
+            per_row.append(out[0])
+            totals.append(dt)
+            fin.append(ph["finish"])
+            out, _, ph = run(hybrid, [made[i][0]], [made[i][1]])
+            alone.append(out[0])
+            hfin.append(ph["hybrid_finish"])
+        med = statistics.median
+        cell: dict = dict(prompt=prompt, completion=completion, steps=completion - 1,
+                          rows=args.rows, features=int(per_row[0].features.size),
+                          per_row=dict(ms_per_row=round(1e3 * med(totals), 2),
+                                       ms_finish=round(1e3 * med(fin), 2),
+                                       ms_finish_without_block_loop=round(1e3 * med(hfin), 2),
+                                       ms_block_loop=round(1e3 * (med(fin) - med(hfin)), 2)),
+                          batched={}, invariance={})
+
+        names = per_row[0].meta["feature_names"]
+        ported = np.array([n.startswith(PORTED) for n in names])
+        groups: dict[str, list[float]] = {p: [0.0, 0.0] for p in PORTED}
+        exact_rest = True
+        for h, p in zip(alone, per_row):
+            assert h.meta["feature_names"] == names
+            exact_rest &= h.features[~ported].tobytes() == p.features[~ported].tobytes()
+            for prefix in PORTED:
+                sel = np.array([n.startswith(prefix) for n in names])
+                a, b = h.features[sel].astype(np.float64), p.features[sel].astype(np.float64)
+                d = np.abs(a - b)
+                big = np.abs(b) > 1e-6
+                groups[prefix][0] = max(groups[prefix][0], float(d.max(initial=0)))
+                groups[prefix][1] = max(groups[prefix][1],
+                                        float((d[big] / np.abs(b[big])).max(initial=0)))
+        cell["agreement"] = dict(non_ported_bytes_identical=bool(exact_rest),
+                                 max_abs_rel={k: [float(f"{v[0]:.3g}"), float(f"{v[1]:.3g}")]
+                                              for k, v in groups.items()},
+                                 hybrid_lane_id=alone[0].lane_id,
+                                 per_row_lane_id=per_row[0].lane_id)
+
+        for size in sizes:
+            rows, ids = [r for r, _ in made[:size]], [x for _, x in made[:size]]
+            reps = []
+            for _ in range(args.reps):
+                out, dt, ph = run(hybrid, rows, ids)
+                reps.append((dt, ph))
+            dt, ph = sorted(reps, key=lambda r: r[0])[len(reps) // 2]
+            cell["batched"][str(size)] = dict(
+                ms_per_row=round(1e3 * dt / size, 2),
+                ms_block_outputs_per_row=round(1e3 * ph["block_outputs"] / size, 2),
+                ms_attention_stats_per_row=round(1e3 * ph["attention_stats"] / size, 2),
+                ms_rest_of_finish_per_row=round(1e3 * ph["hybrid_finish"] / size, 2))
+            moved = 0
+            for b in range(min(size, args.rows)):
+                moved += int((out[b].features.view(np.uint32)
+                              != alone[b].features.view(np.uint32)).sum())
+            cell["invariance"][str(size)] = dict(rows_checked=min(size, args.rows),
+                                                 coordinates_moved=moved)
+        report["cells"][f"p{prompt}c{completion}"] = cell
+        print(json.dumps(cell), flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--calib-dir", required=True, type=Path)
@@ -120,6 +244,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--warmup", type=int, default=3)
     ap.add_argument("--rows", type=int, default=12)
     ap.add_argument("--profile", action="store_true")
+    ap.add_argument("--batched", action="store_true",
+                    help="bench the hybrid (batched block-output family) against the per-row reduction")
+    ap.add_argument("--batch-sizes", default="1,8,32,128")
+    ap.add_argument("--reps", type=int, default=3, help="--batched: timed repeats per batch size")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args(argv)
 
@@ -136,6 +264,13 @@ def main(argv: list[str] | None = None) -> int:
     engine = {"producer": "bench-synthetic", "width": 128}
     report: dict[str, Any] = dict(preset=args.preset, calib_dir=str(args.calib_dir),
                                   reducer_identity=reducer.reducer_identity, cells={})
+
+    if args.batched:
+        batched_bench(args, torch, reducer, device, report)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(report, indent=1))
+        print(f"wrote {args.out}")
+        return 0
 
     phase: dict[str, float] = {}
     orig_stats, orig_finish = ExternalStatsSpan.attention_stats, ExternalStatsSpan.finish
