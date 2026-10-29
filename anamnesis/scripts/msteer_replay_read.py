@@ -403,6 +403,113 @@ def read_b(Z: np.ndarray, meta: list[dict], text: np.ndarray, arms: list[str], n
     return out
 
 
+# ------------------------------------------------------------------------ follow-ups
+
+CROSS = (("P_d1", "-P_d2"), ("P_d2", "-P_d2"), ("P_d3", "-P_d2"), ("R_d2", "-P_d2"),
+         ("-P_d2", "P_d2"), ("P_d2", "P_d1"), ("P_d2", "P_d3"), ("W_d2", "-P_d2"), ("P_d2", "W_d2"))
+
+
+def arm_pairs(meta: list[dict], arm: str) -> tuple[np.ndarray, np.ndarray]:
+    """(steered, unworn) row pairs at the same (context, slot), in meta order (as read_b builds them)."""
+    key = {(m["context_index"], m["arm"], m["slot"]): i for i, m in enumerate(meta)}
+    pairs, pctx = [], []
+    for (c, a, s), i in key.items():
+        if a == arm and (c, UNWORN, s) in key:
+            pairs.append((i, key[(c, UNWORN, s)]))
+            pctx.append(c)
+    return np.array(pairs), np.array(pctx)
+
+
+def _score(m, pairs: np.ndarray, V: np.ndarray) -> np.ndarray:
+    s = (V[pairs[:, 0]] - V[pairs[:, 1]]) @ m.coef_.ravel()
+    return np.where(s > 0, 1.0, np.where(s < 0, 0.0, 0.5))
+
+
+def _cross_worker(args: tuple[str, str, str]) -> tuple[str, str, str, dict]:
+    """Train on source-arm pairs, score target-arm pairs oriented target-steered minus unworn.
+
+    cross_fit: GroupKFold(5) over the union of contexts; the model for a fold never saw a context
+    (so never saw the unworn child) that it scores. all_pairs: one model on every source pair,
+    scored on every target pair (shares unworn children between train and test; for the record)."""
+    from sklearn.model_selection import GroupKFold
+    src, tgt, ranker = args
+    V = _G["_V"][ranker]
+    sp, sc = _G["pairs"][src]
+    tp, tc = _G["pairs"][tgt]
+    allc = np.unique(np.concatenate([sc, tc]))
+    fold_of = {c: k for k, (_, te) in enumerate(GroupKFold(n_splits=5).split(allc, groups=allc)) for c in allc[te]}
+    sf, tf = np.array([fold_of[c] for c in sc]), np.array([fold_of[c] for c in tc])
+    correct = np.empty(len(tp))
+    Cs = []
+    for k in range(5):
+        tr, te = sf != k, tf == k
+        C = pick_c(sp[tr], V, sc[tr])
+        Cs.append(C)
+        x, y = design(sp[tr], V)
+        correct[te] = _score(fit(x, y, C), tp[te], V)
+    C_all = pick_c(sp, V, sc)
+    x, y = design(sp, V)
+    correct_all = _score(fit(x, y, C_all), tp, V)
+    ident = np.all(_G["_V"]["signature"][tp[:, 0]] == _G["_V"]["signature"][tp[:, 1]], axis=1)
+    out = dict(n_pairs=int(len(tp)), n_contexts=int(len(np.unique(tc))), n_identical=int(ident.sum()),
+               cross_fit=dict(acc=r4(correct.mean()), ci95=ctx_bootstrap(correct, tc, np.mean, seed=11), C_per_fold=Cs),
+               cross_fit_non_identical=dict(n=int((~ident).sum()), acc=r4(correct[~ident].mean()),
+                                            ci95=ctx_bootstrap(correct[~ident], tc[~ident], np.mean, seed=12)),
+               all_pairs=dict(acc=r4(correct_all.mean()), ci95=ctx_bootstrap(correct_all, tc, np.mean, seed=13), C=C_all))
+    return src, tgt, ranker, out
+
+
+def _oof_worker(args: tuple[str, str]) -> tuple[str, str, np.ndarray]:
+    from sklearn.model_selection import GroupKFold
+    arm, ranker = args
+    pairs, pctx = _G["pairs"][arm]
+    folds = list(GroupKFold(n_splits=5).split(pairs, groups=pctx))
+    correct, _ = oof_correct(pairs, _G["_V"][ranker], pctx, folds, None)
+    return arm, ranker, correct
+
+
+def paired_diff_bootstrap(a: np.ndarray, b: np.ndarray, ctx: np.ndarray, n: int = 2000, seed: int = 0) -> dict:
+    """Context bootstrap of mean(a) - mean(b), both computed on the same resample of contexts."""
+    rng = np.random.default_rng(seed)
+    uniq = np.unique(ctx)
+    by = [np.flatnonzero(ctx == c) for c in uniq]
+    diffs = np.empty(n)
+    for k in range(n):
+        idx = np.concatenate([by[i] for i in rng.integers(0, len(uniq), len(uniq))])
+        diffs[k] = a[idx].mean() - b[idx].mean()
+    return dict(diff=r4(a.mean() - b.mean()), ci95=[r4(np.percentile(diffs, 2.5)), r4(np.percentile(diffs, 97.5))],
+                share_le_0=r4(np.mean(diffs <= 0)))
+
+
+def followups(Z: np.ndarray, meta: list[dict], text: np.ndarray, arms: list[str], workers: int) -> dict[str, Any]:
+    T = (text - text.mean(axis=0)) / np.where(text.std(axis=0) > 0, text.std(axis=0), 1.0)
+    _G["_V"] = {"signature": Z, "text_all": T, "sig+text": np.concatenate([Z, T], axis=1)}
+    steered = [a for a in arms if a != UNWORN]
+    _G["pairs"] = {a: arm_pairs(meta, a) for a in steered}
+    out: dict[str, Any] = dict(paired_diff={}, cross_arm={})
+    t0 = time.time()
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        oof = {}
+        for arm, ranker, correct in ex.map(_oof_worker, [(a, r) for a in steered for r in _G["_V"]], chunksize=1):
+            oof[(arm, ranker)] = correct
+        print(f"[follow] out-of-fold rankers done ({time.time() - t0:.0f}s)", flush=True)
+        jobs = [(s, t, r) for s, t in CROSS if s in _G["pairs"] and t in _G["pairs"] for r in ("signature", "text_all")]
+        for src, tgt, ranker, res in ex.map(_cross_worker, jobs, chunksize=1):
+            out["cross_arm"].setdefault(f"{src} -> {tgt}", {})[ranker] = res
+            print(f"[follow] {src} -> {tgt} {ranker}: cross-fit {res['cross_fit']['acc']} {res['cross_fit']['ci95']}, "
+                  f"all-pairs {res['all_pairs']['acc']}", flush=True)
+    for a in steered:
+        ctx = _G["pairs"][a][1]
+        sig, txt, both = oof[(a, "signature")], oof[(a, "text_all")], oof[(a, "sig+text")]
+        out["paired_diff"][a] = dict(
+            n_pairs=int(len(ctx)), n_contexts=int(len(np.unique(ctx))),
+            signature_acc=r4(sig.mean()), text_all_acc=r4(txt.mean()), sig_text_acc=r4(both.mean()),
+            signature_minus_text=paired_diff_bootstrap(sig, txt, ctx, seed=21),
+            sig_text_minus_text=paired_diff_bootstrap(both, txt, ctx, seed=22))
+        print(f"[follow] {a}: sig - text {out['paired_diff'][a]['signature_minus_text']}", flush=True)
+    return out
+
+
 # ------------------------------------------------------------------------ write-up
 
 def markdown(rep: dict[str, Any], arms: list[str]) -> str:
@@ -501,6 +608,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--permutations", type=int, default=200)
     ap.add_argument("--workers", type=int, default=32)
     ap.add_argument("--skip-read-b", action="store_true")
+    ap.add_argument("--followups-only", action="store_true",
+                    help="run only the cross-arm axis test and the paired sig-minus-text bootstrap; write them to --out")
     ap.add_argument("--out", required=True, type=Path, help="output JSON (an .md and .per_child.npz beside it)")
     ap.add_argument("--date", default=time.strftime("%Y-%m-%d"))
     args = ap.parse_args(argv)
@@ -570,6 +679,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[read] source classification failed: {type(exc).__name__}: {exc}", flush=True)
 
     arms = [UNWORN] + sorted({m["arm"] for m in meta} - {UNWORN})
+    if args.followups_only:
+        text = np.stack([np.log(np.array([m["n_tokens"] for m in meta], dtype=float)), lp,
+                         np.array([float(m.get("ended_by") == "length") for m in meta])], axis=1)
+        fu = followups(Z, meta, text, arms, args.workers)
+        fu.update(date=args.date, admit_steps=admit, n_features=len(fnames), rows_in_read=len(meta),
+                  wall_seconds=round(time.time() - t0, 1))
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(fu, indent=2))
+        print(f"[follow] wrote {args.out}", flush=True)
+        return 0
     A = read_a(Z, meta, groups, arms, args.grade_cut)
     per_child = A.pop("_per_child")
 
