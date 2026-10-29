@@ -125,7 +125,30 @@ def synthetic_row(torch, prompt: int, completion: int, sampled: list[int], devic
 
 
 PORTED = ("activation_norm_", "delta_norm_", "delta_cosine_", "spectral_smoothness_",
-          "res_traj_", "pca_")
+          "res_traj_", "pca_",
+          # the key/value/query/gate, per-head, output and routing families
+          "kv_", "value_", "qk_", "q_crosslayer", "gate_", "ph_", "epoch_",
+          "logit_entropy", "top1_prob", "top5_mass", "mean_chosen_rank", "std_chosen_rank",
+          "mean_surprise", "std_surprise", "surprise_", "attnres_")
+"""Name prefixes of the families a hybrid tree may compute batched. A family the tree
+still reduces per row shows as an exact zero difference in the agreement table."""
+
+EFF_DIM = ("_eff_dim",)
+"""Names containing these are the effective dimensions: SVD per row, Frobenius norms
+batched. Reported as their own group."""
+
+BATCHED_GROUP_FUNCTIONS = ("block_output_features", "kvqg_features", "outputs_features",
+                           "routing_features", "validate_batch")
+"""The batched reducer's per-group functions, timed where the tree has them."""
+
+
+def _group(name: str) -> str:
+    if "_eff_dim" in name and not name.startswith("gate_"):
+        return "eff_dim(norms-vs-svd)"
+    for prefix in PORTED:
+        if name.startswith(prefix):
+            return prefix
+    return "other"
 
 
 def profile_batched(torch, hybrid, er, made, size: int, engine: dict) -> dict:
@@ -197,6 +220,28 @@ def batched_bench(args, torch, reducer, device, report) -> None:
     ExternalStatsSpan.finish = timed("finish", ExternalStatsSpan.finish)
     bs.HybridStatsSpan.finish = timed("hybrid_finish", bs.HybridStatsSpan.finish)
     er.block_output_features = timed("block_outputs", er.block_output_features)
+    # Per family group: every function the hybrid finish (or the batched reducer around it)
+    # spends time in, whichever of them the tree has. Timers synchronise, so each group's
+    # time is its own host and device time.
+    from anamnesis.extraction.fast import external as ext
+    from anamnesis.extraction.fast import external_stats as es
+    from anamnesis.extraction.fast import families as fam
+    from anamnesis.extraction.fast.attention import AttentionReducer
+    from anamnesis.extraction.fast.ops import FeatureCollector
+    targets = [(ext.ExternalSpan, "_validate", "g_validate"),
+               (fam.FamilyReducer, "key", "g_key"), (fam.FamilyReducer, "value", "g_value"),
+               (fam.FamilyReducer, "query", "g_query"), (fam.FamilyReducer, "gate", "g_gate"),
+               (fam.FamilyReducer, "finish", "g_family_finish"),
+               (AttentionReducer, "head_features", "g_head_features"),
+               (FeatureCollector, "finish", "g_collector_finish"),
+               (bs, "_outputs_from_stats", "g_outputs"), (bs, "_routing_from_stats", "g_routing"),
+               (es, "_outputs_from_stats", "g_outputs"), (es, "_routing_from_stats", "g_routing"),
+               (er, "_finish_arguments", "g_finish_arguments")]
+    for name in BATCHED_GROUP_FUNCTIONS:
+        targets.append((er, name, "g_" + name))
+    for owner, attr, label in targets:
+        if hasattr(owner, attr):
+            setattr(owner, attr, timed(label, getattr(owner, attr)))
     engine = {"producer": "bench-synthetic", "width": 128}
     sizes = [int(b) for b in args.batch_sizes.split(",")]
 
@@ -218,39 +263,51 @@ def batched_bench(args, torch, reducer, device, report) -> None:
             run(hybrid, [r for r, _ in made[:8]], [x for _, x in made[:8]])
 
         per_row, alone, totals, fin, hfin = [], [], [], [], []
+        per_row_groups: list[dict[str, float]] = []
         for i in range(args.rows):
             out, dt, ph = run(reducer, [made[i][0]], [made[i][1]])
             per_row.append(out[0])
             totals.append(dt)
             fin.append(ph["finish"])
+            per_row_groups.append({k: v for k, v in ph.items() if k.startswith("g_")})
             out, _, ph = run(hybrid, [made[i][0]], [made[i][1]])
             alone.append(out[0])
             hfin.append(ph["hybrid_finish"])
         med = statistics.median
+        labels = sorted({k for g in per_row_groups for k in g})
         cell: dict = dict(prompt=prompt, completion=completion, steps=completion - 1,
                           rows=args.rows, features=int(per_row[0].features.size),
                           per_row=dict(ms_per_row=round(1e3 * med(totals), 2),
                                        ms_finish=round(1e3 * med(fin), 2),
                                        ms_finish_without_block_loop=round(1e3 * med(hfin), 2),
-                                       ms_block_loop=round(1e3 * (med(fin) - med(hfin)), 2)),
+                                       ms_block_loop=round(1e3 * (med(fin) - med(hfin)), 2),
+                                       groups_ms={k[2:]: round(1e3 * med([g.get(k, 0.0) for g in
+                                                                          per_row_groups]), 2)
+                                                  for k in labels}),
                           batched={}, invariance={})
 
         names = per_row[0].meta["feature_names"]
-        ported = np.array([n.startswith(PORTED) for n in names])
-        groups: dict[str, list[float]] = {p: [0.0, 0.0] for p in PORTED}
-        exact_rest = True
+        label = [_group(n) for n in names]
+        groups: dict[str, list[float]] = {}
+        exact = {g: True for g in set(label)}
         for h, p in zip(alone, per_row):
             assert h.meta["feature_names"] == names
-            exact_rest &= h.features[~ported].tobytes() == p.features[~ported].tobytes()
-            for prefix in PORTED:
-                sel = np.array([n.startswith(prefix) for n in names])
+            for g in exact:
+                sel = np.array([x == g for x in label])
                 a, b = h.features[sel].astype(np.float64), p.features[sel].astype(np.float64)
+                exact[g] &= a.tobytes() == b.tobytes()
                 d = np.abs(a - b)
                 big = np.abs(b) > 1e-6
-                groups[prefix][0] = max(groups[prefix][0], float(d.max(initial=0)))
-                groups[prefix][1] = max(groups[prefix][1],
-                                        float((d[big] / np.abs(b[big])).max(initial=0)))
+                acc = groups.setdefault(g, [0.0, 0.0])
+                acc[0] = max(acc[0], float(d.max(initial=0)))
+                acc[1] = max(acc[1], float((d[big] / np.abs(b[big])).max(initial=0)))
+        exact_rest = exact.get("other", True)
         cell["agreement"] = dict(non_ported_bytes_identical=bool(exact_rest),
+                                 bytes_identical_by_group=dict(sorted(exact.items())),
+                                 count_by_group={g: label.count(g) for g in sorted(exact)},
+                                 mean_logprob_max_abs=max(abs(h.meta["mean_logprob"]
+                                                              - p.meta["mean_logprob"])
+                                                          for h, p in zip(alone, per_row)),
                                  max_abs_rel={k: [float(f"{v[0]:.3g}"), float(f"{v[1]:.3g}")]
                                               for k, v in groups.items()},
                                  hybrid_lane_id=alone[0].lane_id,
@@ -267,7 +324,9 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                 ms_per_row=round(1e3 * dt / size, 2),
                 ms_block_outputs_per_row=round(1e3 * ph["block_outputs"] / size, 2),
                 ms_attention_stats_per_row=round(1e3 * ph["attention_stats"] / size, 2),
-                ms_rest_of_finish_per_row=round(1e3 * ph["hybrid_finish"] / size, 2))
+                ms_rest_of_finish_per_row=round(1e3 * ph["hybrid_finish"] / size, 2),
+                groups_ms_per_row={k[2:]: round(1e3 * v / size, 3) for k, v in sorted(ph.items())
+                                   if k.startswith("g_")})
             moved = 0
             for b in range(min(size, args.rows)):
                 moved += int((out[b].features.view(np.uint32)
