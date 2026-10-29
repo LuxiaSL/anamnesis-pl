@@ -65,6 +65,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -729,6 +730,51 @@ def selftest(args) -> int:
     return 0 if ok else 1
 
 
+def diff(args) -> int:
+    """Two signings of the same rows (e.g. two processes) compared feature by feature.
+
+    Rows are matched by generation id. Per block (``full`` and each ``s<k>_<window>``):
+    the count of differing coordinates, the max absolute difference, and the row L2 of
+    the difference in z units, where each feature's scale is its across-row SD in
+    ``--scale-dir`` (a large signing of the same lane). Features constant in the scale
+    bank are left out of the z distance."""
+    na, fa, (ma, _) = _load_shards([args.a])
+    nb, fb, (mb, _) = _load_shards([args.b])
+    ns, fs, _ = _load_shards([args.scale_dir])
+    ga, gb = [int(x) for x in ma["gid"]], [int(x) for x in mb["gid"]]
+    common = sorted(set(ga) & set(gb))
+    if not common:
+        raise SystemExit("no generation ids in common")
+    ia = np.array([ga.index(g) for g in common])
+    ib = np.array([gb.index(g) for g in common])
+    report: dict[str, Any] = dict(rows=len(common), a=str(args.a), b=str(args.b), blocks={})
+    for key in sorted(fa):
+        if key not in fb:
+            continue
+        group = "full" if key == "full" else key.split("_")[0]
+        if na[group] != nb[group]:
+            raise SystemExit(f"schemas differ for {group}")
+        xa, xb = fa[key][ia].astype(np.float64), fb[key][ib].astype(np.float64)
+        d = xb - xa
+        sd = fs[key].astype(np.float64).std(0) if key in fs and ns.get(group) == na[group] else None
+        entry = dict(n_coords=int(d.size), n_differ=int((d != 0).sum()),
+                     max_abs=float(np.abs(d).max()),
+                     features_differ=int((d != 0).any(0).sum()), n_features=int(d.shape[1]))
+        if sd is not None:
+            live = sd > 1e-12
+            z = d[:, live] / sd[live]
+            l2 = np.sqrt((z ** 2).sum(1))
+            entry.update(z_l2_median=float(np.median(l2)), z_l2_max=float(l2.max()),
+                         z_abs_max=float(np.abs(z).max()), z_features=int(live.sum()))
+        report["blocks"][key] = entry
+        print(key, json.dumps(entry), flush=True)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(report, indent=1))
+        print(f"[diff] wrote {args.out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -761,8 +807,13 @@ def main(argv: list[str] | None = None) -> int:
     an.add_argument("--tag", default="meaning_floor_tsumugi_2026-10-28")
     st = sub.add_parser("selftest")
     st.add_argument("--out-dir", type=Path, required=True)
+    df = sub.add_parser("diff")
+    df.add_argument("--a", type=Path, required=True)
+    df.add_argument("--b", type=Path, required=True)
+    df.add_argument("--scale-dir", type=Path, required=True)
+    df.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
-    return {"sign": sign, "analyse": analyse, "selftest": selftest}[args.cmd](args)
+    return {"sign": sign, "analyse": analyse, "selftest": selftest, "diff": diff}[args.cmd](args)
 
 
 if __name__ == "__main__":
