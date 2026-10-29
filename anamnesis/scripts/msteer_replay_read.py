@@ -218,6 +218,8 @@ def read_a(Z: np.ndarray, meta: list[dict], groups: dict[str, np.ndarray], arms:
         arms={}, families={}, sources={},
     )
     for k, a in enumerate(arms):
+        if a == UNWORN:
+            continue
         sel = carm == a
         entry = summary(R[sel, 0], cctx[sel], seed=10 + k)
         entry["median_zL2"] = r4(np.median(np.array(child_dist)[sel]))
@@ -295,23 +297,33 @@ def oof_correct(pairs: np.ndarray, V: np.ndarray, pctx: np.ndarray, folds: list,
     return correct, chosen
 
 
-def _perm_worker(args: tuple[str, str, int]) -> float:
+def _perm_worker(args: tuple[str, str, int]) -> tuple[str, str, float]:
     arm, ranker, seed = args
     g = _G[arm]
-    c, _ = oof_correct(g["pairs"], g["V"][ranker], g["pctx"], g["folds"], g["Cs"][ranker], flip_seed=seed)
-    return float(c.mean())
+    c, _ = oof_correct(g["pairs"], _G["_V"][ranker], g["pctx"], g["folds"], g["Cs"][ranker], flip_seed=seed)
+    return arm, ranker, float(c.mean())
+
+
+def _ranker_worker(args: tuple[str, str]) -> tuple[str, str, np.ndarray, list[float]]:
+    arm, ranker = args
+    g = _G[arm]
+    correct, chosen = oof_correct(g["pairs"], _G["_V"][ranker], g["pctx"], g["folds"], None)
+    return arm, ranker, correct, chosen
 
 
 def read_b(Z: np.ndarray, meta: list[dict], text: np.ndarray, arms: list[str], n_perm: int,
            workers: int, len_ratio: float) -> dict[str, Any]:
+    """Phase 1 fits every (arm, ranker) in a fork pool; phase 2 runs every permutation in one pool."""
     from sklearn.model_selection import GroupKFold
     key = {(m["context_index"], m["arm"], m["slot"]): i for i, m in enumerate(meta)}
     ntok = np.array([m["n_tokens"] for m in meta], dtype=float)
     # text columns: 0 log length, 1 mean log-prob, 2 ended_by length
     T = (text - text.mean(axis=0)) / np.where(text.std(axis=0) > 0, text.std(axis=0), 1.0)
-    rankers = {"length": T[:, [0]], "mean_logprob": T[:, [1]], "ended_by": T[:, [2]],
-               "text_all": T, "signature": Z, "sig+text": np.concatenate([Z, T], axis=1)}
+    _G["_V"] = {"length": T[:, [0]], "mean_logprob": T[:, [1]], "ended_by": T[:, [2]],
+                "text_all": T, "signature": Z, "sig+text": np.concatenate([Z, T], axis=1)}
+    names = list(_G["_V"])
     out: dict[str, Any] = {}
+    live_arms = []
     for arm in arms:
         if arm == UNWORN:
             continue
@@ -321,40 +333,47 @@ def read_b(Z: np.ndarray, meta: list[dict], text: np.ndarray, arms: list[str], n
                 pairs.append((i, key[(c, UNWORN, s)]))
                 pctx.append(c)
         pairs_a, pctx_a = np.array(pairs), np.array(pctx)
-        if len(np.unique(pctx_a)) < 5:
+        if len(pairs_a) == 0 or len(np.unique(pctx_a)) < 5:
             out[arm] = dict(n_pairs=len(pairs), note="too few contexts")
             continue
         folds = list(GroupKFold(n_splits=5).split(pairs_a, groups=pctx_a))
-        lr = np.abs(np.log(ntok[pairs_a[:, 0]] / ntok[pairs_a[:, 1]]))
-        lm = lr <= np.log(len_ratio)
-        entry: dict[str, Any] = dict(n_pairs=int(len(pairs_a)), n_contexts=int(len(np.unique(pctx_a))),
-                                     n_len_matched=int(lm.sum()), rankers={})
-        Cs: dict[str, list[float]] = {}
-        for name, V in rankers.items():
-            correct, chosen = oof_correct(pairs_a, V, pctx_a, folds, None)
-            Cs[name] = chosen
+        lm = np.abs(np.log(ntok[pairs_a[:, 0]] / ntok[pairs_a[:, 1]])) <= np.log(len_ratio)
+        _G[arm] = dict(pairs=pairs_a, pctx=pctx_a, folds=folds, lm=lm, Cs={})
+        out[arm] = dict(n_pairs=int(len(pairs_a)), n_contexts=int(len(np.unique(pctx_a))),
+                        n_len_matched=int(lm.sum()), rankers={})
+        live_arms.append(arm)
+
+    t0 = time.time()
+    tasks = [(a, n) for a in live_arms for n in names]
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        for arm, name, correct, chosen in ex.map(_ranker_worker, tasks, chunksize=1):
+            g = _G[arm]
+            g["Cs"][name] = chosen
+            pctx_a, lm = g["pctx"], g["lm"]
             e = dict(acc=r4(correct.mean()), ci95=ctx_bootstrap(correct, pctx_a, np.mean, seed=len(name)),
                      C_per_fold=chosen)
             if lm.sum() >= 20:
                 e["len_matched"] = dict(n=int(lm.sum()), acc=r4(correct[lm].mean()),
                                         ci95=ctx_bootstrap(correct[lm], pctx_a[lm], np.mean, seed=len(name) + 7))
-            entry["rankers"][name] = e
-            print(f"[readB] {arm} {name}: {e['acc']} {e['ci95']}", flush=True)
-        if n_perm:
-            _G[arm] = dict(pairs=pairs_a, V=rankers, pctx=pctx_a, folds=folds, Cs=Cs)
-            for name in ("signature", "sig+text"):
-                t0 = time.time()
-                jobs = [(arm, name, 1000 + k) for k in range(n_perm)]
-                with ProcessPoolExecutor(max_workers=workers) as ex:
-                    null = np.array(list(ex.map(_perm_worker, jobs, chunksize=1)))
-                obs = entry["rankers"][name]["acc"]
-                entry["rankers"][name]["p_signflip"] = r4((np.sum(null >= obs) + 1) / (n_perm + 1))
-                entry["rankers"][name]["null_mean_sd"] = [r4(null.mean()), r4(null.std())]
-                entry["rankers"][name]["n_perm"] = n_perm
-                print(f"[readB] {arm} {name} perm p={entry['rankers'][name]['p_signflip']} "
-                      f"null={null.mean():.3f}±{null.std():.3f} ({time.time() - t0:.0f}s)", flush=True)
-            _G.pop(arm, None)
-        out[arm] = entry
+            out[arm]["rankers"][name] = e
+            print(f"[readB] {arm} {name}: {e['acc']} {e['ci95']} C={chosen} ({time.time() - t0:.0f}s)", flush=True)
+
+    if n_perm:
+        t0 = time.time()
+        tasks_p = [(a, n, 1000 + k) for a in live_arms for n in ("signature", "sig+text") for k in range(n_perm)]
+        null: dict[tuple[str, str], list[float]] = {}
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for k, (arm, name, acc) in enumerate(ex.map(_perm_worker, tasks_p, chunksize=4), 1):
+                null.setdefault((arm, name), []).append(acc)
+                if k % 500 == 0:
+                    print(f"[readB] permutations {k}/{len(tasks_p)} ({time.time() - t0:.0f}s)", flush=True)
+        for (arm, name), vals in null.items():
+            v = np.array(vals)
+            e = out[arm]["rankers"][name]
+            e["p_signflip"] = r4((np.sum(v >= e["acc"]) + 1) / (len(v) + 1))
+            e["null_mean_sd"] = [r4(v.mean()), r4(v.std())]
+            e["n_perm"] = int(len(v))
+            print(f"[readB] {arm} {name} perm p={e['p_signflip']} null={v.mean():.3f}+-{v.std():.3f}", flush=True)
     return out
 
 
