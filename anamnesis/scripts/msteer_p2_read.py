@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import glob
+import importlib.util
+import sys
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -64,11 +66,20 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--signed", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--feature-map", type=Path, default=None, help="staged feature_map.py (else import)")
     args = ap.parse_args(argv)
+    classify = None
     try:
-        from anamnesis.analysis.feature_map import classify
-    except ImportError:
-        classify = None
+        if args.feature_map is not None:
+            spec = importlib.util.spec_from_file_location("feature_map_staged", args.feature_map)
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["feature_map_staged"] = mod
+            spec.loader.exec_module(mod)
+            classify = mod.classify
+        else:
+            from anamnesis.analysis.feature_map import classify
+    except Exception as exc:
+        print(f"[read] feature_map.classify unavailable ({type(exc).__name__}: {exc}); families by name prefix")
 
     rows = load_signed(args.signed)
     if not rows:
@@ -105,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     # Lever children: worn - unworn on the same ids.
     deltas: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
     gaps: dict[str, list[float]] = defaultdict(list)
+    by_payload: dict[str, list[np.ndarray]] = defaultdict(list)
     missing_twin = 0
     for rid in ids:
         if not rid.endswith(".worn"):
@@ -116,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         ci, arm, _ = cid_parts(rid)
         d = Z[row_of[rid]] - Z[row_of[twin]]
         deltas[arm].append((ci, d))
+        by_payload[str(rows[rid]["meta"].get("payload") or arm)].append(d)
         gaps[arm].append(float(np.sqrt(np.nansum(d ** 2))))
 
     # Sibling spread: two unworn-arm slots at one context (a natural resample of the same node).
@@ -155,9 +168,35 @@ def main(argv: list[str] | None = None) -> int:
             ok = np.isfinite(x) & np.isfinite(y)
             cos[f"{a}|{b}"] = round(float(x[ok] @ y[ok] / (np.linalg.norm(x[ok]) * np.linalg.norm(y[ok]) + 1e-30)), 4)
 
+    def cosine(x: np.ndarray, y: np.ndarray) -> float:
+        ok = np.isfinite(x) & np.isfinite(y)
+        return round(float(x[ok] @ y[ok] / (np.linalg.norm(x[ok]) * np.linalg.norm(y[ok]) + 1e-30)), 4)
+
+    # Per payload: the three R directions at one dose answer whether the response follows the lever's direction
+    # or is a generic response to being steered at all.
+    pmean = {k: np.nanmean(np.stack(v), axis=0) for k, v in sorted(by_payload.items())}
+    payload_cos = {f"{a}|{b}": cosine(pmean[a], pmean[b])
+                   for i, a in enumerate(sorted(pmean)) for b in sorted(pmean)[i + 1:]}
+    # Generic component: the unit mean of the R arms' mean deltas. Each arm's cosine with it, and the arm
+    # cosines after projecting it out.
+    generic = None
+    r_arms = [k for k in keys if k.startswith("R_")]
+    if r_arms:
+        g = np.nanmean(np.stack([mean_delta[k] for k in r_arms]), axis=0)
+        g = np.nan_to_num(g)
+        generic = g / (np.linalg.norm(g) + 1e-30)
+    resid = {}
+    if generic is not None:
+        for k in keys:
+            m = np.nan_to_num(mean_delta[k])
+            resid[k] = m - (m @ generic) * generic
+    generic_cos = {k: cosine(mean_delta[k], generic) for k in keys} if generic is not None else {}
+    resid_cos = {f"{a}|{b}": cosine(resid[a], resid[b]) for i, a in enumerate(keys) for b in keys[i + 1:]} if resid else {}
+
     report = dict(signed=str(args.signed), rows=len(ids), features_live=int(live.sum()),
                   missing_twin=missing_twin, engine_floor_z_l2=ENGINE_FLOOR_Z_L2,
-                  sibling_spread=pct(sib) if sib else None, arms=arms, arm_cosines=cos)
+                  sibling_spread=pct(sib) if sib else None, arms=arms, arm_cosines=cos,
+                  payload_cosines=payload_cos, generic_cosine=generic_cos, cosines_generic_removed=resid_cos)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=1))
     print(json.dumps(dict(rows=len(ids), features_live=int(live.sum()), missing_twin=missing_twin,
@@ -166,6 +205,13 @@ def main(argv: list[str] | None = None) -> int:
         print(arm, json.dumps(dict(gap=v["gap"], split=v["split_half_cos"], bitwise=v["bitwise_equal_children"])))
     for k, v in cos.items():
         print("cos", k, v)
+    for k, v in payload_cos.items():
+        if k.startswith("R") and k.split("|")[1].startswith("R") and k.split("_")[1][:2] == k.split("_")[-1][:2]:
+            print("payload cos", k, v)
+    for k, v in generic_cos.items():
+        print("generic cos", k, v)
+    for k, v in resid_cos.items():
+        print("resid cos", k, v)
     return 0
 
 
