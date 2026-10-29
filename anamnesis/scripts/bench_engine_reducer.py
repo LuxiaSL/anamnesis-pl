@@ -521,6 +521,36 @@ def real_rows_bench(args, torch, report) -> None:
         torch.cuda.synchronize()
         return out, time.perf_counter() - t0
 
+    if args.settle:
+        # Cold to warm in one fresh process, under the first rule: the same batch repeated, then new
+        # random length mixes. Repeats that get fast are warm-up (compiles, allocator growth); new mixes
+        # that stay slow mean the cost follows the mix.
+        reducer = er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir, device="cuda",
+                                   batched=True, buckets=rules[0])
+        rng = random.Random(4321)
+        flat = [(bi, i) for bi, b in enumerate(batches) for i in range(len(b["rows"]))]
+        first = batches[0]
+        steps_log = []
+
+        def mixed(size: int) -> dict[str, Any]:
+            members = [flat[rng.randrange(len(flat))] for _ in range(size)]
+            return dict(engine=first["engine"], rows=[batches[a]["rows"][c] for a, c in members],
+                        ids=[batches[a]["ids"][c] for a, c in members])
+
+        plan = [("repeat", first)] * 3 + [("new-mix", mixed(args.settle_rows)) for _ in range(args.settle)]
+        plan += [("repeat-mix", plan[3][1])] if args.settle else []
+        for label, batch in plan:
+            _, dt = run(reducer, batch)
+            steps_log.append(dict(kind=label, rows=len(batch["rows"]), seconds=round(dt, 4),
+                                  ms_per_row=round(1e3 * dt / len(batch["rows"]), 3),
+                                  reserved_gb=round(torch.cuda.memory_reserved() / 2**30, 3),
+                                  allocated_gb=round(torch.cuda.memory_allocated() / 2**30, 3),
+                                  distinct_steps=len({r.positions for r in batch["rows"]}),
+                                  one_step_rows=sum(1 for r in batch["rows"] if r.positions == 1)))
+            print(json.dumps(steps_log[-1]), flush=True)
+        report["settle"] = dict(rule=rules[0], steps=steps_log)
+        return
+
     reducers = {rule: er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir, device="cuda",
                                        batched=True, buckets=rule) for rule in rules}
     if args.per_row:
@@ -620,6 +650,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rules", default="exact-steps,pow2,pow4,tail256",
                     help="--real-rows: bucket rules to reduce under")
     ap.add_argument("--per-row", action="store_true", help="--real-rows: also the per-row reduction")
+    ap.add_argument("--settle", type=int, default=0,
+                    help="--real-rows: time cold to warm under the first rule (3 repeats, then this many new mixes)")
+    ap.add_argument("--settle-rows", type=int, default=128, help="--settle: rows per new mix")
     ap.add_argument("--targets", type=int, default=8, help="--real-rows: rows checked for invariance")
     ap.add_argument("--signed-out", type=Path, default=None,
                     help="--real-rows: write each rule's features here in the drain's signed layout")
