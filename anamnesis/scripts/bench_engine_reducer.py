@@ -125,6 +125,9 @@ def main(argv: list[str] | None = None) -> int:
 
     import torch
 
+    # the fast lane's reductions refuse to run without deterministic algorithms (lane safety)
+    torch.use_deterministic_algorithms(True)
+
     from anamnesis.extraction.fast import engine_reducer as er
     from anamnesis.extraction.fast.external_stats import ExternalStatsSpan
 
