@@ -128,6 +128,48 @@ PORTED = ("activation_norm_", "delta_norm_", "delta_cosine_", "spectral_smoothne
           "res_traj_", "pca_")
 
 
+def profile_batched(torch, hybrid, er, made, size: int, engine: dict) -> dict:
+    """One hybrid reduce of ``size`` rows under the profiler: kernel launches and host time
+    inside the batched block-output call against the whole reduce, and the top host ops of
+    the block-output call."""
+    from torch.profiler import ProfilerActivity, profile, record_function
+
+    inner = er.block_output_features
+
+    def marked(*a, **kw):
+        with record_function("block_outputs"):
+            return inner(*a, **kw)
+
+    er.block_output_features = marked
+    rows, ids = [r for r, _ in made[:size]], [x for _, x in made[:size]]
+    try:
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            hybrid.reduce(rows, token_ids=ids, engine=engine)
+            torch.cuda.synchronize()
+    finally:
+        er.block_output_features = inner
+    events = list(prof.events())
+    spans = [(e.time_range.start, e.time_range.end) for e in events if e.name == "block_outputs"]
+
+    def inside(e) -> bool:
+        return any(a <= e.time_range.start and e.time_range.end <= b for a, b in spans)
+
+    launches = [e for e in events if e.name == "cudaLaunchKernel"]
+    block_ops: dict[str, list[float]] = {}
+    for e in events:
+        if e.name.startswith("aten::") and inside(e):
+            acc = block_ops.setdefault(e.name, [0.0, 0])
+            acc[0] += e.self_cpu_time_total
+            acc[1] += 1
+    return dict(
+        batch=size,
+        launches_total=len(launches),
+        launches_block_outputs=sum(1 for e in launches if inside(e)),
+        host_ms_block_outputs=round(sum(b - a for a, b in spans) / 1e3, 2),
+        top_block_output_ops=[(k, round(v[0] / 1e3, 2), int(v[1])) for k, v in
+                              sorted(block_ops.items(), key=lambda kv: -kv[1][0])[:12]])
+
+
 def batched_bench(args, torch, reducer, device, report) -> None:
     """The hybrid against the per-row reduction (``--batched``)."""
     import numpy as np
@@ -232,6 +274,8 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                               != alone[b].features.view(np.uint32)).sum())
             cell["invariance"][str(size)] = dict(rows_checked=min(size, args.rows),
                                                  coordinates_moved=moved)
+        if args.profile:
+            cell["batched_profile"] = profile_batched(torch, hybrid, er, made, max(sizes), engine)
         report["cells"][f"p{prompt}c{completion}"] = cell
         print(json.dumps(cell), flush=True)
 
