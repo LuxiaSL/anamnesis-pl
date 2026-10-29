@@ -525,8 +525,9 @@ def real_rows_bench(args, torch, report) -> None:
         # Cold to warm in one fresh process, under the first rule: the same batch repeated, then new
         # random length mixes. Repeats that get fast are warm-up (compiles, allocator growth); new mixes
         # that stay slow mean the cost follows the mix.
+        extra = {} if args.max_group_rows is None else dict(max_group_rows=args.max_group_rows)
         reducer = er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir, device="cuda",
-                                   batched=True, buckets=rules[0])
+                                   batched=True, buckets=rules[0], **extra)
         rng = random.Random(4321)
         flat = [(bi, i) for bi, b in enumerate(batches) for i in range(len(b["rows"]))]
         first = batches[0]
@@ -539,16 +540,44 @@ def real_rows_bench(args, torch, report) -> None:
 
         plan = [("repeat", first)] * 3 + [("new-mix", mixed(args.settle_rows)) for _ in range(args.settle)]
         plan += [("repeat-mix", plan[3][1])] if args.settle else []
+        # Each batched group's own peak above what was live when it started (the reducer's
+        # module-level names, wrapped for the run).
+        group_peaks: dict[str, float] = {}
+        batch_peak = [0.0]
+        wrapped = {g: getattr(er, g) for g in BATCHED_GROUP_FUNCTIONS if hasattr(er, g)}
+
+        def peaked(g):
+            def call(*a, **kw):
+                torch.cuda.synchronize()
+                base = torch.cuda.memory_allocated()
+                torch.cuda.reset_peak_memory_stats()
+                out = wrapped[g](*a, **kw)
+                torch.cuda.synchronize()
+                gb = (torch.cuda.max_memory_allocated() - base) / 2**30
+                group_peaks[g] = round(max(group_peaks.get(g, 0.0), gb), 3)
+                batch_peak[0] = max(batch_peak[0], torch.cuda.max_memory_allocated() / 2**30)
+                return out
+            return call
+
+        for g in wrapped:
+            setattr(er, g, peaked(g))
         for label, batch in plan:
+            torch.cuda.reset_peak_memory_stats()
+            batch_peak[0] = 0.0
             _, dt = run(reducer, batch)
             steps_log.append(dict(kind=label, rows=len(batch["rows"]), seconds=round(dt, 4),
+                                  max_group_rows=args.max_group_rows, peak_gb=round(batch_peak[0], 3),
                                   ms_per_row=round(1e3 * dt / len(batch["rows"]), 3),
                                   reserved_gb=round(torch.cuda.memory_reserved() / 2**30, 3),
                                   allocated_gb=round(torch.cuda.memory_allocated() / 2**30, 3),
                                   distinct_steps=len({r.positions for r in batch["rows"]}),
                                   one_step_rows=sum(1 for r in batch["rows"] if r.positions == 1)))
             print(json.dumps(steps_log[-1]), flush=True)
-        report["settle"] = dict(rule=rules[0], steps=steps_log)
+        for g, fn in wrapped.items():
+            setattr(er, g, fn)
+        report["settle"] = dict(rule=rules[0], max_group_rows=args.max_group_rows, steps=steps_log,
+                                group_peak_gb_above_live=group_peaks)
+        print(json.dumps(dict(group_peak_gb_above_live=group_peaks)), flush=True)
         return
 
     reducers = {rule: er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir, device="cuda",
@@ -653,6 +682,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--settle", type=int, default=0,
                     help="--real-rows: time cold to warm under the first rule (3 repeats, then this many new mixes)")
     ap.add_argument("--settle-rows", type=int, default=128, help="--settle: rows per new mix")
+    ap.add_argument("--max-group-rows", type=int, default=None,
+                    help="--settle: EngineReducer(max_group_rows=...), the rows reduced together")
     ap.add_argument("--targets", type=int, default=8, help="--real-rows: rows checked for invariance")
     ap.add_argument("--signed-out", type=Path, default=None,
                     help="--real-rows: write each rule's features here in the drain's signed layout")
