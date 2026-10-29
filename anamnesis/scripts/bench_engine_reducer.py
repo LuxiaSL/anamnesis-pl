@@ -78,7 +78,12 @@ def route_plan() -> tuple[tuple[tuple[int, int], ...], int]:
     return tuple(plan), committed + 2
 
 
-def synthetic_row(torch, prompt: int, completion: int, sampled: list[int], device, seed: int):
+def synthetic_row(torch, prompt: int, completion: int, sampled: list[int], device, seed: int,
+                  width: int | None = None, gate_bf16: bool = False):
+    """One signed row; ``width`` is the engine's ``mean_rows`` width (default: this row's
+    ``prompt + completion``), shared by every row of one engine whatever its prompt length.
+    ``gate_bf16`` rounds the gates to bf16, as a bf16 engine's activations are, so their
+    top-k ties at the k-th value as often as such gates do."""
     g = torch.Generator(device="cpu").manual_seed(seed)
 
     def rand(*shape):
@@ -89,7 +94,7 @@ def synthetic_row(torch, prompt: int, completion: int, sampled: list[int], devic
 
     steps = completion - 1
     n_s = len(sampled)
-    width = prompt + completion
+    width = prompt + completion if width is None else int(width)
     plan, final = route_plan()
     route_width = max(final, max(max(a, m) for a, m in plan))
     route = torch.zeros(steps, LAYERS, 2, route_width, device=device)
@@ -113,11 +118,13 @@ def synthetic_row(torch, prompt: int, completion: int, sampled: list[int], devic
         depth=randn(steps, LAYERS, HIDDEN),
         q=randn(steps, n_s, HEADS, HEAD_DIM), k=randn(steps, n_s, KV_HEADS, HEAD_DIM),
         v=randn(steps, n_s, KV_HEADS, HEAD_DIM), gate=randn(steps, n_s, GATE),
-        head_entropy=rand(steps, LAYERS, HEADS) * math.log(width),
-        mean_entropy=rand(steps, LAYERS) * math.log(width),
+        head_entropy=rand(steps, LAYERS, HEADS) * math.log(prompt + completion),
+        mean_entropy=rand(steps, LAYERS) * math.log(prompt + completion),
         head_scalars=rand(steps, n_s, 3, HEADS),
         mean_rows=rows, logit_stats=logit_stats, route=route, route_final=route_final,
         committed=[randn(steps, HIDDEN) for _ in range(n_blocks)])
+    if gate_bf16:
+        surfaces["gate"] = surfaces["gate"].to(torch.bfloat16).float()
     token_ids = [int(t) for t in torch.randint(3, 40000, (prompt + completion,), generator=g)]
     row = SignedRow(positions=steps, kept=steps, start=prompt, lever_slot=0, steered=False,
                     route_sources=plan, final_sources=final, surfaces=surfaces)
@@ -126,6 +133,8 @@ def synthetic_row(torch, prompt: int, completion: int, sampled: list[int], devic
 
 PORTED = ("activation_norm_", "delta_norm_", "delta_cosine_", "spectral_smoothness_",
           "res_traj_", "pca_",
+          # the attention family (the eigen-derived spectral features are their own group)
+          "attn_entropy_", "head_agreement_", "cache_", "attn_flow_",
           # the key/value/query/gate, per-head, output and routing families
           "kv_", "value_", "qk_", "q_crosslayer", "gate_", "ph_", "epoch_",
           "logit_entropy", "top1_prob", "top5_mass", "mean_chosen_rank", "std_chosen_rank",
@@ -137,14 +146,26 @@ EFF_DIM = ("_eff_dim",)
 """Names containing these are the effective dimensions: SVD per row, Frobenius norms
 batched. Reported as their own group."""
 
-BATCHED_GROUP_FUNCTIONS = ("block_output_features", "kvqg_features", "outputs_features",
-                           "routing_features", "validate_batch")
+BATCHED_GROUP_FUNCTIONS = ("attention_features", "block_output_features", "kvqg_features",
+                           "outputs_features", "routing_features", "validate_batch",
+                           "finish_rows")
 """The batched reducer's per-group functions, timed where the tree has them."""
+
+
+EIGEN = ("spectral_fiedler_", "spectral_hfer_", "spectral_spectral_entropy_")
+"""The features read from the spectral Laplacian's eigenvalues: their own group."""
+
+GATE_TOPK = "_topk_overlap_mean"
+"""The gate top-k Jaccard: its own group (the batched lane breaks ties by the lowest index)."""
 
 
 def _group(name: str) -> str:
     if "_eff_dim" in name and not name.startswith("gate_"):
         return "eff_dim(norms-vs-svd)"
+    if name.startswith(EIGEN):
+        return "eigen(spectral)"
+    if name.endswith(GATE_TOPK):
+        return "gate_topk(ties)"
     for prefix in PORTED:
         if name.startswith(prefix):
             return prefix
@@ -152,45 +173,55 @@ def _group(name: str) -> str:
 
 
 def profile_batched(torch, hybrid, er, made, size: int, engine: dict) -> dict:
-    """One hybrid reduce of ``size`` rows under the profiler: kernel launches and host time
-    inside the batched block-output call against the whole reduce, and the top host ops of
-    the block-output call."""
+    """One hybrid reduce of ``size`` rows under the profiler: kernel launches, host time and
+    host-device copies and synchronisations inside each batched group's call and in the whole
+    reduce, and the top host ops and device kernels of the whole reduce."""
     from torch.profiler import ProfilerActivity, profile, record_function
 
-    inner = er.block_output_features
+    groups = [g for g in BATCHED_GROUP_FUNCTIONS if hasattr(er, g)]
+    inner = {g: getattr(er, g) for g in groups}
 
-    def marked(*a, **kw):
-        with record_function("block_outputs"):
-            return inner(*a, **kw)
+    def marked(g):
+        def call(*a, **kw):
+            with record_function("grp_" + g):
+                return inner[g](*a, **kw)
+        return call
 
-    er.block_output_features = marked
+    for g in groups:
+        setattr(er, g, marked(g))
     rows, ids = [r for r, _ in made[:size]], [x for _, x in made[:size]]
     try:
         with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-            hybrid.reduce(rows, token_ids=ids, engine=engine)
+            with record_function("grp_reduce"):
+                hybrid.reduce(rows, token_ids=ids, engine=engine)
             torch.cuda.synchronize()
     finally:
-        er.block_output_features = inner
+        for g in groups:
+            setattr(er, g, inner[g])
     events = list(prof.events())
-    spans = [(e.time_range.start, e.time_range.end) for e in events if e.name == "block_outputs"]
+    spans = {g: [(e.time_range.start, e.time_range.end) for e in events if e.name == "grp_" + g]
+             for g in groups + ["reduce"]}
 
-    def inside(e) -> bool:
-        return any(a <= e.time_range.start and e.time_range.end <= b for a, b in spans)
+    def inside(e, g) -> bool:
+        return any(a <= e.time_range.start and e.time_range.end <= b for a, b in spans[g])
 
-    launches = [e for e in events if e.name == "cudaLaunchKernel"]
-    block_ops: dict[str, list[float]] = {}
-    for e in events:
-        if e.name.startswith("aten::") and inside(e):
-            acc = block_ops.setdefault(e.name, [0.0, 0])
-            acc[0] += e.self_cpu_time_total
-            acc[1] += 1
+    launch = [e for e in events if e.name in ("cudaLaunchKernel", "cuLaunchKernel", "cuLaunchKernelEx")]
+    copies = [e for e in events if e.name.startswith("cudaMemcpy")]
+    syncs = [e for e in events if e.name in ("cudaStreamSynchronize", "cudaDeviceSynchronize",
+                                             "aten::_local_scalar_dense")]
+    per_group = {}
+    for g in groups + ["reduce"]:
+        per_group[g] = dict(host_ms=round(sum(b - a for a, b in spans[g]) / 1e3, 2),
+                            launches=sum(1 for e in launch if inside(e, g)),
+                            memcpy_calls=sum(1 for e in copies if inside(e, g)),
+                            syncs=sum(1 for e in syncs if inside(e, g)))
+    keyed = prof.key_averages()
     return dict(
-        batch=size,
-        launches_total=len(launches),
-        launches_block_outputs=sum(1 for e in launches if inside(e)),
-        host_ms_block_outputs=round(sum(b - a for a, b in spans) / 1e3, 2),
-        top_block_output_ops=[(k, round(v[0] / 1e3, 2), int(v[1])) for k, v in
-                              sorted(block_ops.items(), key=lambda kv: -kv[1][0])[:12]])
+        batch=size, groups=per_group,
+        top_cpu=[(e.key, round(e.self_cpu_time_total / 1e3, 2), e.count) for e in
+                 sorted(keyed, key=lambda e: -e.self_cpu_time_total)[:15]],
+        top_cuda=[(e.key[:90], round(e.self_device_time_total / 1e3, 2), e.count) for e in
+                  sorted(keyed, key=lambda e: -e.self_device_time_total)[:15]])
 
 
 def batched_bench(args, torch, reducer, device, report) -> None:
@@ -208,7 +239,7 @@ def batched_bench(args, torch, reducer, device, report) -> None:
     report["cpus_available"] = len(os.sched_getaffinity(0))
     try:
         from anamnesis.extraction.fast import batched_families
-        report["topk_workers"] = batched_families.TOPK_WORKERS
+        report["topk_workers"] = getattr(batched_families, "TOPK_WORKERS", None)
     except ImportError:
         pass
     phase: dict[str, float] = {}
@@ -225,8 +256,8 @@ def batched_bench(args, torch, reducer, device, report) -> None:
 
     ExternalStatsSpan.attention_stats = timed("attention_stats", ExternalStatsSpan.attention_stats)
     ExternalStatsSpan.finish = timed("finish", ExternalStatsSpan.finish)
-    bs.HybridStatsSpan.finish = timed("hybrid_finish", bs.HybridStatsSpan.finish)
-    er.block_output_features = timed("block_outputs", er.block_output_features)
+    if hasattr(bs, "HybridStatsSpan"):   # trees that reduce attention per row
+        bs.HybridStatsSpan.finish = timed("hybrid_finish", bs.HybridStatsSpan.finish)
     # Per family group: every function the hybrid finish (or the batched reducer around it)
     # spends time in, whichever of them the tree has. Timers synchronise, so each group's
     # time is its own host and device time.
@@ -256,7 +287,7 @@ def batched_bench(args, torch, reducer, device, report) -> None:
         from anamnesis.extraction.fast import batched_families as bf
     except ImportError:
         bf = None
-    if bf is not None:
+    if bf is not None and hasattr(bf, "gate_topk_overlap"):   # trees with the host top-k
         topk_inner = bf.gate_topk_overlap
 
         def topk_timed(host):
@@ -267,6 +298,8 @@ def batched_bench(args, torch, reducer, device, report) -> None:
             return value
 
         bf.gate_topk_overlap = topk_timed
+    else:
+        bf = None
     engine = {"producer": "bench-synthetic", "width": 128}
     sizes = [int(b) for b in args.batch_sizes.split(",")]
 
@@ -280,7 +313,11 @@ def batched_bench(args, torch, reducer, device, report) -> None:
 
     for prompt, completion in _cells(args.cells):
         sampled = list(reducer.lane(completion - 1).config.sampled_layers)
-        made = [synthetic_row(torch, prompt, completion, sampled, device, seed=i)
+        # Mixed prompt lengths (--prompt-spread): every row of the engine shares one
+        # mean_rows width, prompt + completion.
+        made = [synthetic_row(torch, prompt - (i * 37) % max(1, args.prompt_spread), completion,
+                              sampled, device, seed=i, width=prompt + completion,
+                              gate_bf16=args.gate_bf16)
                 for i in range(max(sizes + [args.rows]))]
         for i in range(args.warmup):   # compile Triton, warm the allocator
             run(reducer, [made[i][0]], [made[i][1]])
@@ -297,7 +334,7 @@ def batched_bench(args, torch, reducer, device, report) -> None:
             per_row_groups.append({k: v for k, v in ph.items() if k.startswith("g_")})
             out, _, ph = run(hybrid, [made[i][0]], [made[i][1]])
             alone.append(out[0])
-            hfin.append(ph["hybrid_finish"])
+            hfin.append(ph.get("hybrid_finish", ph.get("g_finish_rows", 0.0)))
         med = statistics.median
         labels = sorted({k for g in per_row_groups for k in g})
         cell: dict = dict(prompt=prompt, completion=completion, steps=completion - 1,
@@ -326,6 +363,12 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                 acc = groups.setdefault(g, [0.0, 0.0])
                 acc[0] = max(acc[0], float(d.max(initial=0)))
                 acc[1] = max(acc[1], float((d[big] / np.abs(b[big])).max(initial=0)))
+        topk_sel = np.array([x == "gate_topk(ties)" for x in label])
+        topk_moved = [int((h.features[topk_sel].view(np.uint32) != p.features[topk_sel].view(np.uint32)).sum())
+                      for h, p in zip(alone, per_row)]
+        topk_far = [int((np.abs(h.features[topk_sel].astype(np.float64)
+                             - p.features[topk_sel].astype(np.float64)) > 1e-6).sum())
+                    for h, p in zip(alone, per_row)]
         exact_rest = exact.get("other", True)
         cell["agreement"] = dict(non_ported_bytes_identical=bool(exact_rest),
                                  bytes_identical_by_group=dict(sorted(exact.items())),
@@ -335,7 +378,11 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                                                           for h, p in zip(alone, per_row)),
                                  max_abs_rel={k: [float(f"{v[0]:.3g}"), float(f"{v[1]:.3g}")]
                                               for k, v in groups.items()},
+                                 gate_topk=dict(coordinates=int(topk_sel.sum()) * len(alone),
+                                                bytes_differ=sum(topk_moved),
+                                                differ_over_1e_6=sum(topk_far)),
                                  hybrid_lane_id=alone[0].lane_id,
+                                 hybrid_receipt_batched=alone[0].meta["receipt"].get("batched"),
                                  per_row_lane_id=per_row[0].lane_id)
 
         for size in sizes:
@@ -345,11 +392,13 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                 out, dt, ph = run(hybrid, rows, ids)
                 reps.append((dt, ph))
             dt, ph = sorted(reps, key=lambda r: r[0])[len(reps) // 2]
+            attention = ph.get("attention_stats", 0.0) + ph.get("g_attention_features", 0.0)
             cell["batched"][str(size)] = dict(
                 ms_per_row=round(1e3 * dt / size, 2),
-                ms_block_outputs_per_row=round(1e3 * ph["block_outputs"] / size, 2),
-                ms_attention_stats_per_row=round(1e3 * ph["attention_stats"] / size, 2),
-                ms_rest_of_finish_per_row=round(1e3 * ph["hybrid_finish"] / size, 2),
+                ms_block_outputs_per_row=round(1e3 * ph.get("g_block_output_features", 0.0) / size, 2),
+                ms_attention_stats_per_row=round(1e3 * attention / size, 2),
+                ms_assembly_per_row=round(1e3 * ph.get("hybrid_finish", ph.get("g_finish_rows", 0.0))
+                                          / size, 2),
                 groups_ms_per_row={k[2:]: round(1e3 * v / size, 3) for k, v in sorted(ph.items())
                                    if k.startswith("g_")})
             moved = 0
@@ -360,7 +409,7 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                                                  coordinates_moved=moved)
         if args.profile:
             cell["batched_profile"] = profile_batched(torch, hybrid, er, made, max(sizes), engine)
-            if bf is not None:
+            if bf is not None and hasattr(bf, "gate_topk_overlap"):
                 # The device side alone: the host top-k replaced by a constant.
                 size = max(sizes)
                 bf.gate_topk_overlap = lambda host: 0.0
@@ -373,6 +422,8 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                     ms_kvqg_per_row=round(1e3 * ph.get("g_kvqg_features", 0.0) / size, 3))
         report["cells"][f"p{prompt}c{completion}"] = cell
         print(json.dumps(cell), flush=True)
+    report["args"] = dict(prompt_spread=args.prompt_spread, gate_bf16=args.gate_bf16,
+                          rows=args.rows, reps=args.reps, batch_sizes=args.batch_sizes)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -387,6 +438,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="bench the hybrid (batched block-output family) against the per-row reduction")
     ap.add_argument("--batch-sizes", default="1,8,32,128")
     ap.add_argument("--reps", type=int, default=3, help="--batched: timed repeats per batch size")
+    ap.add_argument("--gate-bf16", action="store_true",
+                    help="--batched: round the synthetic gates to bf16 (ties at the top-k as a bf16 engine has)")
+    ap.add_argument("--prompt-spread", type=int, default=1,
+                    help="--batched: row i's prompt is P - (37 i mod spread), its mean_rows width "
+                         "P + c for every row (1: every prompt is P)")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args(argv)
 
