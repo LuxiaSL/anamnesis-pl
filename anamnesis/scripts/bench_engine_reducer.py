@@ -28,6 +28,19 @@ step count, every other family per row) against the per-row reduction:
   agreement       hybrid vs per-row on ``--rows`` rows: per name group, max abs and rel
                   difference; and whether every non-ported coordinate is byte-identical.
 
+With ``--real-rows <signed dir>`` (rows a drain signed with ``--audit_every 1``, so every
+row's raw surfaces sit in ``<batch>/raw/<sign_id>.pt``) and ``--records <spool records
+jsonl>`` (their token ids), the rows are reduced in the drain's own batches, on the device,
+under each bucket rule in ``--rules`` (an anamnesis tree with ``BUCKET_RULES``):
+  timing          ms/row per drain batch and overall (``--reps`` timed passes after one warm
+                  pass), and the groups each batch split into;
+  invariance      ``--targets`` rows of spread lengths reduced alone vs inside their drain
+                  batch and inside random batches of 8 and 32 rows of every length:
+                  coordinates that differ (0 is the lane's definition);
+  digests         each row's sha256, for a restart comparison between two jobs;
+  signed          with ``--signed-out``, each rule's (and ``--per-row``'s) features written in
+                  the drain's signed layout, so ``engine_mode_floor.py`` compares any two.
+
 Environment: PYTHONPATH with an anamnesis tree that has ``engine_reducer`` (main 7e4a410 or
 later) and ANAMNESIS_MODELS pointing at pleroma's registry extension (the tsumugi preset).
 """
@@ -426,6 +439,163 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                           rows=args.rows, reps=args.reps, batch_sizes=args.batch_sizes)
 
 
+def load_real_rows(torch, signed: Path, records: list[Path], device) -> list[dict[str, Any]]:
+    """The drain's batches in order, each ``dict(name, engine, rows, ids, sign_ids)``: every
+    row rebuilt from its raw surfaces (moved to ``device``) and its record's token ids."""
+    ids_by_request: dict[str, list[int]] = {}
+    for path in records:
+        for line in path.read_text().splitlines():
+            if line.strip():
+                r = json.loads(line)
+                ids_by_request[r["request_id"]] = list(r["prompt_ids"]) + list(r["generated_ids"])
+    batches = []
+    for batch in sorted(p for p in signed.iterdir() if (p / "rows.jsonl").exists()):
+        engine = json.loads((batch / "engine.json").read_text())
+        rows, ids, sign_ids = [], [], []
+        for line in (batch / "rows.jsonl").read_text().splitlines():
+            sid = json.loads(line)["sign_id"]
+            try:
+                raw = torch.load(batch / "raw" / f"{sid}.pt", map_location="cpu", weights_only=True)
+            except Exception:  # noqa: BLE001 - older torch: the dataclass dict needs the full loader
+                raw = torch.load(batch / "raw" / f"{sid}.pt", map_location="cpu", weights_only=False)
+            surfaces = {k: ([t.to(device) for t in v] if isinstance(v, list) else v.to(device))
+                        for k, v in raw["surfaces"].items()}
+            rows.append(SignedRow(
+                positions=int(raw["positions"]), kept=int(raw["kept"]), start=int(raw["start"]),
+                lever_slot=int(raw["lever_slot"]), steered=bool(raw["steered"]),
+                route_sources=tuple(tuple(int(x) for x in pair) for pair in raw["route_sources"]),
+                final_sources=int(raw["final_sources"]), weights=str(raw.get("weights", "")),
+                surfaces=surfaces))
+            ids.append(ids_by_request[sid])
+            sign_ids.append(sid)
+        batches.append(dict(name=batch.name, engine=engine, rows=rows, ids=ids, sign_ids=sign_ids))
+    return batches
+
+
+def write_signed(out: Path, batch: dict[str, Any], reduced) -> None:
+    """``reduced`` in the drain's signed layout: rows.jsonl, features-<digest>.npy, names.json."""
+    import numpy as np
+
+    out.mkdir(parents=True, exist_ok=True)
+    names: dict[str, list[str]] = {}
+    groups: dict[str, list[int]] = {}
+    for i, r in enumerate(reduced):
+        names[r.names_digest] = list(r.meta["feature_names"])
+        groups.setdefault(r.names_digest, []).append(i)
+    index: dict[int, tuple[str, int]] = {}
+    for digest, members in groups.items():
+        f = f"features-{digest[:16]}.npy"
+        np.save(out / f, np.stack([reduced[i].features for i in members]))
+        for k, i in enumerate(members):
+            index[i] = (f, k)
+    (out / "names.json").write_text(json.dumps(names))
+    with (out / "rows.jsonl").open("w") as fh:
+        for i, (sid, r) in enumerate(zip(batch["sign_ids"], reduced, strict=True)):
+            f, k = index[i]
+            fh.write(json.dumps(dict(sign_id=sid, steps=r.meta["steps"], lane_id=r.lane_id,
+                                     names_digest=r.names_digest, file=f, index=k)) + "\n")
+
+
+def real_rows_bench(args, torch, report) -> None:
+    """Real signed rows under each bucket rule (``--real-rows``)."""
+    import hashlib
+    import random
+
+    from anamnesis.extraction.fast import engine_reducer as er
+
+    device = torch.device("cuda")
+    batches = load_real_rows(torch, args.real_rows, args.records, device)
+    torch.cuda.synchronize()
+    steps = [r.positions for b in batches for r in b["rows"]]
+    report["real_rows"] = dict(signed=str(args.real_rows), batches=[len(b["rows"]) for b in batches],
+                               rows=len(steps), distinct_steps=len(set(steps)),
+                               steps_min=min(steps), steps_max=max(steps),
+                               steps_median=statistics.median(steps))
+    rules = [r for r in args.rules.split(",") if r]
+    report["rules"] = {}
+
+    def run(reducer, batch):
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        out = reducer.reduce(batch["rows"], token_ids=batch["ids"], engine=batch["engine"])
+        torch.cuda.synchronize()
+        return out, time.perf_counter() - t0
+
+    reducers = {rule: er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir, device="cuda",
+                                       batched=True, buckets=rule) for rule in rules}
+    if args.per_row:
+        reducers["per-row"] = er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir,
+                                               device="cuda", batched=False)
+    flat = [(bi, i) for bi, b in enumerate(batches) for i in range(len(b["rows"]))]
+    order = sorted(flat, key=lambda k: batches[k[0]]["rows"][k[1]].positions)
+    picks = [order[round(q * (len(order) - 1) / max(1, args.targets - 1))]
+             for q in range(args.targets)]
+    for rule, reducer in reducers.items():
+        entry: dict[str, Any] = dict(reducer_identity=reducer.reducer_identity)
+        outs = [run(reducer, b)[0] for b in batches]  # warm pass: compiles every width it meets
+        times = [[] for _ in batches]
+        for _ in range(args.reps):
+            for bi, b in enumerate(batches):
+                out, dt = run(reducer, b)
+                times[bi].append(dt)
+                for x, y in zip(out, outs[bi], strict=True):
+                    if x.features.tobytes() != y.features.tobytes():
+                        entry["repeat_moved"] = entry.get("repeat_moved", 0) + 1
+        total = sum(statistics.median(t) for t in times)
+        entry["ms_per_row"] = round(1e3 * total / len(steps), 3)
+        entry["batches"] = []
+        for bi, b in enumerate(batches):
+            widths: dict[int, int] = {}
+            if rule != "per-row":
+                for r in b["rows"]:
+                    w = bs_width(r.positions, rule)
+                    widths[w] = widths.get(w, 0) + 1
+            entry["batches"].append(dict(rows=len(b["rows"]),
+                                         ms_per_row=round(1e3 * statistics.median(times[bi]) / len(b["rows"]), 3),
+                                         groups=len(widths) if widths else None,
+                                         group_sizes=dict(sorted(widths.items())) or None))
+        entry["lane_ids"] = sorted({r.lane_id for o in outs for r in o})
+        entry["digests"] = {sid: hashlib.sha256(r.features.tobytes()).hexdigest()
+                            for b, o in zip(batches, outs, strict=True)
+                            for sid, r in zip(b["sign_ids"], o, strict=True)}
+        if rule != "per-row":
+            rng = random.Random(1234)
+            inv = dict(targets=[], moved_rows=0, moved_coordinates=0, checks=0)
+            for bi, i in picks:
+                target = batches[bi]
+                alone, _ = run(reducer, dict(target, rows=[target["rows"][i]], ids=[target["ids"][i]]))
+                ref = alone[0].features
+                checks = [("drain-batch", outs[bi][i].features)]
+                for size in (8, 32):
+                    mates = rng.sample([k for k in flat if k != (bi, i)], size - 1)
+                    place = rng.randrange(size)
+                    members = mates[:place] + [(bi, i)] + mates[place:]
+                    got, _ = run(reducer, dict(
+                        engine=target["engine"],
+                        rows=[batches[a]["rows"][c] for a, c in members],
+                        ids=[batches[a]["ids"][c] for a, c in members]))
+                    checks.append((f"random-{size}", got[place].features))
+                for label, feats in checks:
+                    moved = int((feats != ref).sum()) if feats.shape == ref.shape else -1
+                    inv["checks"] += 1
+                    inv["moved_rows"] += int(moved != 0)
+                    inv["moved_coordinates"] += max(moved, 0)
+                inv["targets"].append(dict(steps=target["rows"][i].positions,
+                                           sign_id=target["sign_ids"][i]))
+            entry["invariance"] = inv
+        if args.signed_out is not None:
+            for b, o in zip(batches, outs, strict=True):
+                write_signed(args.signed_out / rule / b["name"], b, o)
+        report["rules"][rule] = entry
+        print(json.dumps({rule: {k: v for k, v in entry.items() if k not in ("digests",)}}), flush=True)
+
+
+def bs_width(steps: int, rule: str) -> int:
+    from anamnesis.extraction.fast.batched_stats import bucket_width
+
+    return bucket_width(steps, rule)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--calib-dir", required=True, type=Path)
@@ -443,6 +613,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prompt-spread", type=int, default=1,
                     help="--batched: row i's prompt is P - (37 i mod spread), its mean_rows width "
                          "P + c for every row (1: every prompt is P)")
+    ap.add_argument("--real-rows", type=Path, default=None,
+                    help="a signed dir whose batches hold every row's raw surfaces (raw/<sign_id>.pt)")
+    ap.add_argument("--records", type=Path, nargs="*", default=[],
+                    help="--real-rows: the spool record files (token ids by request id)")
+    ap.add_argument("--rules", default="exact-steps,pow2,pow4,tail256",
+                    help="--real-rows: bucket rules to reduce under")
+    ap.add_argument("--per-row", action="store_true", help="--real-rows: also the per-row reduction")
+    ap.add_argument("--targets", type=int, default=8, help="--real-rows: rows checked for invariance")
+    ap.add_argument("--signed-out", type=Path, default=None,
+                    help="--real-rows: write each rule's features here in the drain's signed layout")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args(argv)
 
@@ -455,10 +635,19 @@ def main(argv: list[str] | None = None) -> int:
     from anamnesis.extraction.fast.external_stats import ExternalStatsSpan
 
     device = torch.device("cuda")
+    if args.real_rows is not None:
+        report: dict[str, Any] = dict(preset=args.preset, calib_dir=str(args.calib_dir),
+                                      torch=torch.__version__,
+                                      gpu=torch.cuda.get_device_name(device))
+        real_rows_bench(args, torch, report)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(report, indent=1))
+        print(f"wrote {args.out}")
+        return 0
     reducer = er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir, device="cuda")
     engine = {"producer": "bench-synthetic", "width": 128}
-    report: dict[str, Any] = dict(preset=args.preset, calib_dir=str(args.calib_dir),
-                                  reducer_identity=reducer.reducer_identity, cells={})
+    report = dict(preset=args.preset, calib_dir=str(args.calib_dir),
+                  reducer_identity=reducer.reducer_identity, cells={})
 
     if args.batched:
         batched_bench(args, torch, reducer, device, report)

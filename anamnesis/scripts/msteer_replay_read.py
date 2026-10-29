@@ -17,7 +17,8 @@ Design rules:
 * Floor. Each feature is divided by the unworn siblings' pooled within-context SD
   (residuals from each context's unworn mean, pooled over contexts).
 
-Read A (distance). For a steered child at context c, d = || z - mean(unworn at c) ||.
+Read A (distance). For a steered child at context c, d = || z - mean(unworn at c, its
+seed-matched twin left out) ||.
 The floor at c is the median over unworn siblings of their leave-one-out distance
 to the mean of the other unworn siblings. Ratio = d / floor_c. Per arm: the median
 ratio over children, with a 95% context-bootstrap interval. The unworn arm's own
@@ -161,6 +162,10 @@ def read_a(Z: np.ndarray, meta: list[dict], groups: dict[str, np.ndarray], arms:
     grade = np.array([np.nan if m.get("grade") is None else float(m["grade"]) for m in meta])
 
     child_ratio: list[np.ndarray] = []   # per steered child: ratios per group
+    child_full: list[float] = []         # ratio to the full centroid (twin included), for the record
+    child_twin: list[bool] = []
+    child_ident: list[bool] = []
+    slot = np.array([m["slot"] for m in meta])
     child_dist: list[float] = []
     child_ctx, child_arm, child_lenok, child_grade = [], [], [], []
     loo_ratio: list[np.ndarray] = []
@@ -182,12 +187,22 @@ def read_a(Z: np.ndarray, meta: list[dict], groups: dict[str, np.ndarray], arms:
         floor_all.append(float(floor[0]))
         loo_ratio.append(loo_d / floor)
         loo_ctx += [int(c)] * len(u)
-        cen = tot / len(u)
         lo, hi = ntok[u].min(), ntok[u].max()
+        u_slot = {int(slot[i]): k for k, i in enumerate(u)}
         for s in np.flatnonzero(at & (arm != UNWORN)):
+            # The seed-matched unworn twin is left out of the centroid, so the steered child meets the same
+            # n-1 construction as the floor (a twin shares the seed, and often a prefix, with the child).
+            # With no twin in the read, the lowest-slot sibling is left out instead.
+            k = u_slot.get(int(slot[s]))
+            has_twin = k is not None
+            k = 0 if k is None else k
+            cen = (tot - U[k]) / (len(u) - 1)
             sq = ((Z[s] - cen) ** 2) @ M
             child_ratio.append(np.sqrt(sq) / floor)
             child_dist.append(float(np.sqrt(sq[0])))
+            child_full.append(float(np.sqrt(((Z[s] - tot / len(u)) ** 2).sum())) / floor[0])
+            child_twin.append(has_twin)
+            child_ident.append(bool(has_twin and np.array_equal(Z[s], U[k])))
             child_ctx.append(int(c))
             child_arm.append(arm[s])
             child_lenok.append(bool(lo <= ntok[s] <= hi))
@@ -195,6 +210,7 @@ def read_a(Z: np.ndarray, meta: list[dict], groups: dict[str, np.ndarray], arms:
     R = np.stack(child_ratio)
     cctx, carm = np.array(child_ctx), np.array(child_arm)
     lenok, cgrade = np.array(child_lenok), np.array(child_grade)
+    cfull, ctwin, cident = np.array(child_full), np.array(child_twin), np.array(child_ident)
     LOO = np.concatenate(loo_ratio)
     lctx = np.array(loo_ctx)
 
@@ -223,6 +239,10 @@ def read_a(Z: np.ndarray, meta: list[dict], groups: dict[str, np.ndarray], arms:
         sel = carm == a
         entry = summary(R[sel, 0], cctx[sel], seed=10 + k)
         entry["median_zL2"] = r4(np.median(np.array(child_dist)[sel]))
+        entry["n_with_twin"] = int((sel & ctwin).sum())
+        entry["share_identical_to_twin"] = r4(cident[sel].mean())
+        entry["non_identical"] = summary(R[sel & ~cident, 0], cctx[sel & ~cident], seed=130 + k)
+        entry["full_centroid_twin_included"] = summary(cfull[sel], cctx[sel], seed=160 + k)
         entry["len_matched"] = summary(R[sel & lenok, 0], cctx[sel & lenok], seed=40 + k)
         hi_g = sel & (cgrade >= grade_cut)
         lo_g = sel & (cgrade < grade_cut)
@@ -242,6 +262,7 @@ def read_a(Z: np.ndarray, meta: list[dict], groups: dict[str, np.ndarray], arms:
         rec["arms"] = {a: r4(np.nanmedian(R[carm == a, gi])) for a in arms if a != UNWORN}
         bucket[label] = rec
     out["_per_child"] = dict(ratio_all=R[:, 0], ctx=cctx, arm=carm, len_ok=lenok, grade=cgrade,
+                             ratio_full_centroid=cfull, has_twin=ctwin, identical_to_twin=cident,
                              group_names=np.array(gnames), ratio_groups=R)
     return out
 
@@ -338,9 +359,10 @@ def read_b(Z: np.ndarray, meta: list[dict], text: np.ndarray, arms: list[str], n
             continue
         folds = list(GroupKFold(n_splits=5).split(pairs_a, groups=pctx_a))
         lm = np.abs(np.log(ntok[pairs_a[:, 0]] / ntok[pairs_a[:, 1]])) <= np.log(len_ratio)
-        _G[arm] = dict(pairs=pairs_a, pctx=pctx_a, folds=folds, lm=lm, Cs={})
+        ident = np.all(Z[pairs_a[:, 0]] == Z[pairs_a[:, 1]], axis=1)
+        _G[arm] = dict(pairs=pairs_a, pctx=pctx_a, folds=folds, lm=lm, ident=ident, Cs={})
         out[arm] = dict(n_pairs=int(len(pairs_a)), n_contexts=int(len(np.unique(pctx_a))),
-                        n_len_matched=int(lm.sum()), rankers={})
+                        n_len_matched=int(lm.sum()), n_identical=int(ident.sum()), rankers={})
         live_arms.append(arm)
 
     t0 = time.time()
@@ -352,6 +374,10 @@ def read_b(Z: np.ndarray, meta: list[dict], text: np.ndarray, arms: list[str], n
             pctx_a, lm = g["pctx"], g["lm"]
             e = dict(acc=r4(correct.mean()), ci95=ctx_bootstrap(correct, pctx_a, np.mean, seed=len(name)),
                      C_per_fold=chosen)
+            ni = ~g["ident"]
+            if ni.sum() >= 20:
+                e["non_identical"] = dict(n=int(ni.sum()), acc=r4(correct[ni].mean()),
+                                          ci95=ctx_bootstrap(correct[ni], pctx_a[ni], np.mean, seed=len(name) + 3))
             if lm.sum() >= 20:
                 e["len_matched"] = dict(n=int(lm.sum()), acc=r4(correct[lm].mean()),
                                         ci95=ctx_bootstrap(correct[lm], pctx_a[lm], np.mean, seed=len(name) + 7))
@@ -397,6 +423,16 @@ def markdown(rep: dict[str, Any], arms: list[str]) -> str:
         lm = e["len_matched"]
         lines.append(f"| {a} | {e['n']} | {e['median_ratio']} | {e['ci95']} | {e['share_above_floor_p90']} | "
                      f"{lm.get('n')} | {lm.get('median_ratio')} | {lm.get('ci95')} |")
+    lines += ["", "### Read A: twin identity and the twin-included centroid (the biased construction, for the record)", "",
+              "| arm | with twin | share identical to twin | non-identical n | ratio | CI95 | twin-included ratio | CI95 |",
+              "|---|---|---|---|---|---|---|---|"]
+    for a in arms:
+        if a == UNWORN:
+            continue
+        e = A["arms"][a]
+        ni, fc = e["non_identical"], e["full_centroid_twin_included"]
+        lines.append(f"| {a} | {e['n_with_twin']} | {e['share_identical_to_twin']} | {ni.get('n')} | {ni.get('median_ratio')} | "
+                     f"{ni.get('ci95')} | {fc.get('median_ratio')} | {fc.get('ci95')} |")
     lines += ["", f"### Read A by panel grade (cut {rep['grade_cut']})", "",
               "| arm | n (grade >= cut) | ratio | CI95 | n (grade < cut) | ratio | CI95 |", "|---|---|---|---|---|---|---|"]
     for a in arms:
@@ -426,6 +462,17 @@ def markdown(rep: dict[str, Any], arms: list[str]) -> str:
         lines.append(f"| {a} | {B[a]['n_pairs']} | {B[a]['n_contexts']} | {cell('length')} | {cell('mean_logprob')} | "
                      f"{cell('ended_by')} | {cell('text_all')} | {cell('signature')} | {r['signature'].get('p_signflip')} | "
                      f"{cell('sig+text')} | {r['sig+text'].get('p_signflip')} |")
+    lines += ["", "### Read B, non-identical pairs (steered span differs from its twin; models trained on all pairs)", "",
+              "| arm | identical | n | text_all | signature | sig+text |", "|---|---|---|---|---|---|"]
+    for a in arms:
+        if a == UNWORN or a not in B or "rankers" not in B[a]:
+            continue
+        r = B[a]["rankers"]
+        if "non_identical" not in r["signature"]:
+            continue
+        cell = lambda k: f"{r[k]['non_identical']['acc']} {r[k]['non_identical']['ci95']}"
+        lines.append(f"| {a} | {B[a]['n_identical']} | {r['signature']['non_identical']['n']} | {cell('text_all')} | "
+                     f"{cell('signature')} | {cell('sig+text')} |")
     lines += ["", f"### Read B, length-matched pairs (|log length ratio| <= log {rep['len_ratio']}; models trained on all pairs)", "",
               "| arm | n | text_all | signature | sig+text |", "|---|---|---|---|---|"]
     for a in arms:
