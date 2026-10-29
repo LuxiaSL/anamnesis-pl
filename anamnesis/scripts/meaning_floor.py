@@ -29,7 +29,17 @@ itself on the same truncated row, and the two vectors must be identical.
 ``analyse`` (local, numpy only): per feature and per s, Spearman correlation across
 rows between windows (A-B onset pair, C-D late pair, A-D far pair) and between window A
 and the full span; floors at 0.5 and 0.7; degeneracy flags; position effects; the TSV
-and markdown summary.
+and markdown summary. ``--sig-dir`` may be given more than once to pool draws.
+
+Prompt classes. When the rows carry more than one prompt class, rows of different
+classes can differ for class reasons alone, which raises across-row variance and with it
+the pooled reliability. Three controls separate that from reliability about the pass:
+  class_balanced    subset with every class drawn down to the smallest class (seeded)
+  ABpartClass       r_AB after regressing each feature's ranks on class indicators: the
+                    reliability left inside classes
+  class=<c>         r_AB within each class alone (per-class curves in the report)
+A feature whose pooled floor is finite but whose class-partialled floor is ``never``
+reads the prompt class, not the pass.
 
 Definitions (justified in the summary):
   reliability r(s)   Spearman rho over rows of f(A_s) vs f(B_s); computed only when
@@ -268,6 +278,33 @@ def _partial_spearman(a: np.ndarray, b: np.ndarray, z: np.ndarray) -> np.ndarray
         return np.where(den > 0, (ea * eb).sum(0) / den, np.nan)
 
 
+def _partial_spearman_classes(a: np.ndarray, b: np.ndarray, cls: np.ndarray) -> np.ndarray:
+    """Spearman of a, b after regressing each feature's ranks on class indicators (within-class reliability)."""
+    levels = sorted(set(cls.tolist()))
+    if len(levels) < 2:
+        return np.full(a.shape[1], np.nan)
+    ra, rb = _ranks(a), _ranks(b)
+    Z = np.column_stack([np.ones(len(cls))] + [(cls == c).astype(np.float64) for c in levels[1:]])
+    def resid(r):
+        beta, *_ = np.linalg.lstsq(Z, r, rcond=None)
+        return r - Z @ beta
+    ea, eb = resid(ra), resid(rb)
+    den = np.sqrt((ea ** 2).sum(0) * (eb ** 2).sum(0))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(den > 0, (ea * eb).sum(0) / den, np.nan)
+
+
+def _class_balanced(cls: np.ndarray, seed: int = 0) -> np.ndarray:
+    """Mask keeping every class drawn down to the smallest class's count (seeded)."""
+    rng = np.random.default_rng(seed)
+    levels, counts = np.unique(cls, return_counts=True)
+    keep = np.zeros(len(cls), bool)
+    for c in levels:
+        idx = np.flatnonzero(cls == c)
+        keep[rng.choice(idx, counts.min(), replace=False)] = True
+    return keep
+
+
 def _modal_share(x: np.ndarray) -> np.ndarray:
     out = np.empty(x.shape[1])
     for j in range(x.shape[1]):
@@ -310,10 +347,10 @@ def operator_class(n: str) -> str:
     return "level"
 
 
-def _load_shards(sig_dir: Path) -> tuple[dict, dict, list[dict]]:
-    files = sorted(sig_dir.glob("windows-*.npz"))
+def _load_shards(sig_dirs: list[Path]) -> tuple[dict, dict, list[dict]]:
+    files = [f for d in sig_dirs for f in sorted(d.glob("windows-*.npz"))]
     if not files:
-        raise SystemExit(f"no windows-*.npz in {sig_dir}")
+        raise SystemExit(f"no windows-*.npz in {', '.join(map(str, sig_dirs))}")
     names: dict[str, list[str]] = {}
     feats: dict[str, list[np.ndarray]] = defaultdict(list)
     meta_cols: dict[str, list] = defaultdict(list)
@@ -328,7 +365,7 @@ def _load_shards(sig_dir: Path) -> tuple[dict, dict, list[dict]]:
                 feats[k[5:]].append(z[k])
             else:
                 meta_cols[k].append(z[k])
-    run_meta = [json.loads(p.read_text()) for p in sorted(sig_dir.glob("run_meta-*.json"))]
+    run_meta = [json.loads(p.read_text()) for d in sig_dirs for p in sorted(d.glob("run_meta-*.json"))]
     return names, {k: np.concatenate(v) for k, v in feats.items()}, \
         [{k: np.concatenate(v) for k, v in meta_cols.items()}, run_meta]
 
@@ -363,6 +400,13 @@ def analyse(args) -> int:
     distinct = meta["distinct_frac"]
     subsets = {"all": np.ones(n_rows, bool), "one_per_prompt": first,
                "nonrepetitive": distinct >= np.quantile(distinct, 0.25)}
+    pclass = np.array([str(x) for x in meta["prompt_class"]])
+    classes = sorted(set(pclass.tolist()))
+    multiclass = len(classes) > 1
+    if multiclass:
+        subsets["class_balanced"] = _class_balanced(pclass)
+        for c in classes:
+            subsets[f"class={c}"] = pclass == c
 
     fidx = {n: i for i, n in enumerate(full_names)}
     full = feats["full"].astype(np.float64)
@@ -370,7 +414,8 @@ def analyse(args) -> int:
     P = meta["P"].astype(np.float64)
 
     # per s: column map into full-name order
-    rel = {sub: {p: np.full((len(s_list), len(full_names)), np.nan) for p in ("AB", "CD", "AD", "Afull", "ABpartP")}
+    rel = {sub: {p: np.full((len(s_list), len(full_names)), np.nan)
+                 for p in ("AB", "CD", "AD", "Afull", "ABpartP", "ABpartClass")}
            for sub in subsets}
     degen = np.zeros((len(s_list), len(full_names)), bool)
     emitted = np.zeros((len(s_list), len(full_names)), bool)
@@ -404,6 +449,9 @@ def analyse(args) -> int:
                 r = _partial_spearman(a, b, P[mask])
                 r[dg] = np.nan
                 rel[sub]["ABpartP"][si, cols] = r
+                r = _partial_spearman_classes(a, b, pclass[mask])
+                r[dg] = np.nan
+                rel[sub]["ABpartClass"][si, cols] = r
         print(f"[analyse] s={s}: {len(loc)} names, degenerate {int(dg.sum())}", flush=True)
 
     # per-feature table
@@ -416,6 +464,9 @@ def analyse(args) -> int:
         late = {s: rel["all"]["CD"][si, j] for si, s in enumerate(s_list)}
         opp = {s: rel["one_per_prompt"]["AB"][si, j] for si, s in enumerate(s_list)}
         partP = {s: rel["all"]["ABpartP"][si, j] for si, s in enumerate(s_list)}
+        partC = {s: rel["all"]["ABpartClass"][si, j] for si, s in enumerate(s_list)}
+        bal = ({s: rel["class_balanced"]["AB"][si, j] for si, s in enumerate(s_list)}
+               if multiclass else {})
         near_const = bool(full_degen[j]) or bool(degen[-1, j])
         rows_out.append(dict(
             feature_name=n, family=sup.get("family", tag.family), source=tag.source.value,
@@ -426,6 +477,10 @@ def analyse(args) -> int:
             late_floor_r50=_floor(late, s_list, 0.5),
             one_per_prompt_floor_r50=_floor(opp, s_list, 0.5),
             partialP_floor_r50=_floor(partP, s_list, 0.5),
+            partialClass_floor_r50=_floor(partC, s_list, 0.5),
+            balanced_floor_r50=_floor(bal, s_list, 0.5),
+            **{f"class_floor_r50[{c}]": _floor({s: rel[f"class={c}"]["AB"][si, j] for si, s in enumerate(s_list)},
+                                               s_list, 0.5) for c in (classes if multiclass else [])},
             near_constant=int(near_const),
             **{f"rel_s{s}": curve[s] for s in s_list},
             **{f"conv_s{s}": conv[s] for s in s_list},
@@ -559,10 +614,28 @@ def write_report(path: Path, rows: list[dict], summary: dict, s_list: list[int],
         return lo, eq, hi
     L += ["## Definition and subset comparisons (floor r50 vs alternative)", "",
           "| alternative | earlier | same | later |", "|---|---:|---:|---:|"]
-    for alt in ("conv_floor_r50", "late_floor_r50", "one_per_prompt_floor_r50", "partialP_floor_r50"):
+    for alt in ("conv_floor_r50", "late_floor_r50", "one_per_prompt_floor_r50", "partialP_floor_r50",
+                "partialClass_floor_r50", "balanced_floor_r50"):
         lo, eq, hi = cmp("meaning_floor_r50", alt)
         L.append(f"| {alt} | {lo} | {eq} | {hi} |")
     L.append("")
+    class_subs = sorted(k for k in rel if k.startswith("class="))
+    if class_subs:
+        L += ["## Prompt classes", "",
+              "Pooled r_AB rises with between-class variance alone. `partialClass` is r_AB after regressing ranks "
+              "on class indicators (reliability inside classes); `class=<c>` is r_AB within one class. A feature "
+              "with a finite pooled floor and a `never` class-partialled floor reads the class, not the pass.", "",
+              "Median r_AB(s) over non-degenerate features:", "",
+              "| rows | " + " | ".join(f"s={s}" for s in s_list) + " |", "|---|" + "---:|" * len(s_list)]
+        for label, arr in ([("pooled", rel["all"]["AB"]), ("class-partialled", rel["all"]["ABpartClass"]),
+                            ("class_balanced", rel["class_balanced"]["AB"])]
+                           + [(k, rel[k]["AB"]) for k in class_subs]):
+            cells = ["-" if np.all(np.isnan(arr[si])) else f"{np.nanmedian(arr[si]):.2f}" for si in range(len(s_list))]
+            L.append(f"| {label} | " + " | ".join(cells) + " |")
+        reads_class = [r for r in rows if r["meaning_floor_r50"] not in ("never", "undefined")
+                       and r["partialClass_floor_r50"] == "never"]
+        L += ["", f"Features with a finite pooled floor r50 and a `never` class-partialled floor (class readers): "
+              f"{len(reads_class)}. By family: {_fmt_counts(dict(Counter(r['family'] for r in reads_class).most_common()))}.", ""]
     # Column C candidates
     cand = [r for r in rows if r["dynamic"] == "static" and r["operator"] in ("level", "cross_layer")
             and r["meaning_floor_r50"] not in ("never", "undefined") and int(r["meaning_floor_r50"]) <= 4]
@@ -586,18 +659,25 @@ def selftest(args) -> int:
 
     Feature j = row trait * a_j + noise / sqrt(s): true split-half reliability is
     a_j^2 / (a_j^2 + 1/s), so its 0.5 floor is the smallest tested s >= 1 / a_j^2. One
-    feature is a literal 0 below s = 4, one is constant everywhere, one is pure noise."""
+    feature is a literal 0 below s = 4, one is constant everywhere, one is pure noise.
+    Rows fall in 4 prompt classes; the last feature is a class offset plus noise and no row
+    trait, so its pooled floor is finite and its class-partialled floor is ``never``, while
+    the strongest trait feature keeps a finite class-partialled floor."""
     rng = np.random.default_rng(0)
     n, s_list, ngen = 400, S_LIST, NGEN
-    amps = np.array([2.0, 1.0, 0.5, 0.25, 0.125, 0.0, 1.0, 0.0])
+    amps = np.array([2.0, 1.0, 0.5, 0.25, 0.125, 0.0, 1.0, 0.0, 0.0])
     names = [f"syn_a{a:g}_mean_L{j}" for j, a in enumerate(amps)]
+    names[8] = "syn_class_mean_L8"
     trait = rng.standard_normal(n)
+    pclass = np.array([f"c{i % 4}" for i in range(n)])
+    offset = np.array([-3.0, -1.0, 1.0, 3.0])[np.arange(n) % 4]
     out: dict[str, np.ndarray] = {}
     def draw(s):
         x = trait[:, None] * amps[None] + rng.standard_normal((n, len(amps))) / math.sqrt(s)
         if s < 4:
             x[:, 6] = 0.0
         x[:, 7] = 1.0
+        x[:, 8] += offset
         return x.astype(np.float32)
     for s in s_list:
         out[f"names_s{s}"] = np.array(names)
@@ -606,14 +686,14 @@ def selftest(args) -> int:
     out["names_full"] = np.array(names)
     out["feat_full"] = draw(ngen - 1)
     out.update(gid=np.arange(n), prompt_id=np.array([f"p{i // 2}" for i in range(n)]),
-               prompt_class=np.array(["x"] * n), P=rng.integers(20, 60, n),
+               prompt_class=pclass, P=rng.integers(20, 60, n),
                distinct_frac=rng.uniform(0.3, 0.9, n))
     args.out_dir.mkdir(parents=True, exist_ok=True)
     np.savez(args.out_dir / "windows-00of01.npz", **out)
     sup = args.out_dir / "support.tsv"
     sup.write_text("feature_name\tfamily\tmin_steps_computed\n" +
                    "".join(f"{nm}\tsynthetic\t1\n" for nm in names))
-    ns = argparse.Namespace(sig_dir=args.out_dir, support_tsv=sup, out_dir=args.out_dir, tag="selftest")
+    ns = argparse.Namespace(sig_dir=[args.out_dir], support_tsv=sup, out_dir=args.out_dir, tag="selftest")
     analyse(ns)
     got = {}
     with (args.out_dir / "selftest.tsv").open() as fh:
@@ -622,7 +702,17 @@ def selftest(args) -> int:
             r = dict(zip(hdr, line.rstrip("\n").split("\t")))
             got[r["feature_name"]] = r
     ok = True
+    cls_nm, trait_nm = names[8], names[0]
+    for nm, field, want_finite in ((cls_nm, "meaning_floor_r50", True), (cls_nm, "partialClass_floor_r50", False),
+                                   (trait_nm, "partialClass_floor_r50", True)):
+        f = got[nm][field]
+        good = (f not in ("never", "undefined")) if want_finite else (f == "never")
+        ok &= good
+        print(f"[selftest] {nm}: {field} {f} expected {'finite' if want_finite else 'never'} "
+              f"{'ok' if good else 'MISMATCH'}")
     for j, nm in enumerate(names):
+        if j == 8:
+            continue
         a = amps[j]
         if j == 7:
             exp = "undefined"
@@ -663,7 +753,8 @@ def main(argv: list[str] | None = None) -> int:
     sg.add_argument("--strict-parity", action="store_true")
     an = sub.add_parser("analyse")
     home = Path.home() / "projects/anamnesis_exps"
-    an.add_argument("--sig-dir", type=Path, required=True)
+    an.add_argument("--sig-dir", type=Path, required=True, action="append",
+                    help="a directory of windows-*.npz shards; repeat to pool draws")
     an.add_argument("--support-tsv", type=Path,
                     default=home / "outputs/analysis/feature_support_tsumugi_2026-10-28.tsv")
     an.add_argument("--out-dir", type=Path, default=home / "outputs/analysis")
