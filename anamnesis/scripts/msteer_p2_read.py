@@ -66,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--signed", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--payloads", type=Path, default=None,
+                    help="fixdose payloads.json: joins verified_damage to each payload's gap")
     ap.add_argument("--feature-map", type=Path, default=None, help="staged feature_map.py (else import)")
     args = ap.parse_args(argv)
     classify = None
@@ -117,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     deltas: dict[str, list[tuple[int, np.ndarray]]] = defaultdict(list)
     gaps: dict[str, list[float]] = defaultdict(list)
     by_payload: dict[str, list[np.ndarray]] = defaultdict(list)
+    payload_gaps: dict[str, list[float]] = defaultdict(list)
     missing_twin = 0
     for rid in ids:
         if not rid.endswith(".worn"):
@@ -129,6 +132,7 @@ def main(argv: list[str] | None = None) -> int:
         d = Z[row_of[rid]] - Z[row_of[twin]]
         deltas[arm].append((ci, d))
         by_payload[str(rows[rid]["meta"].get("payload") or arm)].append(d)
+        payload_gaps[str(rows[rid]["meta"].get("payload") or arm)].append(float(np.sqrt(np.nansum(d ** 2))))
         gaps[arm].append(float(np.sqrt(np.nansum(d ** 2))))
 
     # Sibling spread: two unworn-arm slots at one context (a natural resample of the same node).
@@ -193,7 +197,16 @@ def main(argv: list[str] | None = None) -> int:
     generic_cos = {k: cosine(mean_delta[k], generic) for k in keys} if generic is not None else {}
     resid_cos = {f"{a}|{b}": cosine(resid[a], resid[b]) for i, a in enumerate(keys) for b in keys[i + 1:]} if resid else {}
 
-    report = dict(signed=str(args.signed), rows=len(ids), features_live=int(live.sum()),
+    # Per payload: the median gap next to its verified damage; gap per unit damage compares levers at equal harm.
+    pinfo = json.loads(args.payloads.read_text())["payloads"] if args.payloads else {}
+    per_payload = {}
+    for k, v in sorted(payload_gaps.items()):
+        med = float(np.median(v))
+        dmg = pinfo.get(k, {}).get("verified_damage")
+        per_payload[k] = dict(n=len(v), median_gap=round(med, 3), target=pinfo.get(k, {}).get("damage_target"),
+                              verified_damage=dmg, gap_per_damage=round(med / dmg, 2) if dmg else None)
+
+    report = dict(per_payload=per_payload, signed=str(args.signed), rows=len(ids), features_live=int(live.sum()),
                   missing_twin=missing_twin, engine_floor_z_l2=ENGINE_FLOOR_Z_L2,
                   sibling_spread=pct(sib) if sib else None, arms=arms, arm_cosines=cos,
                   payload_cosines=payload_cos, generic_cosine=generic_cos, cosines_generic_removed=resid_cos)
@@ -208,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     for k, v in payload_cos.items():
         if k.startswith("R") and k.split("|")[1].startswith("R") and k.split("_")[1][:2] == k.split("_")[-1][:2]:
             print("payload cos", k, v)
+    for k, v in per_payload.items():
+        print("payload", k, json.dumps(v))
     for k, v in generic_cos.items():
         print("generic cos", k, v)
     for k, v in resid_cos.items():
