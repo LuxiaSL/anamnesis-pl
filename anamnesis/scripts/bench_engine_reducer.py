@@ -204,6 +204,13 @@ def batched_bench(args, torch, reducer, device, report) -> None:
     hybrid = er.EngineReducer(preset=args.preset, calib_dir=args.calib_dir, device="cuda",
                               batched=True)
     report["hybrid_reducer_identity"] = hybrid.reducer_identity
+    import os
+    report["cpus_available"] = len(os.sched_getaffinity(0))
+    try:
+        from anamnesis.extraction.fast import batched_families
+        report["topk_workers"] = batched_families.TOPK_WORKERS
+    except ImportError:
+        pass
     phase: dict[str, float] = {}
 
     def timed(name, fn):
@@ -242,6 +249,24 @@ def batched_bench(args, torch, reducer, device, report) -> None:
     for owner, attr, label in targets:
         if hasattr(owner, attr):
             setattr(owner, attr, timed(label, getattr(owner, attr)))
+    # The gate's top-k Jaccard runs on host threads: sum each task's wall time.
+    import threading
+    topk_lock = threading.Lock()
+    try:
+        from anamnesis.extraction.fast import batched_families as bf
+    except ImportError:
+        bf = None
+    if bf is not None:
+        topk_inner = bf.gate_topk_overlap
+
+        def topk_timed(host):
+            t0 = time.perf_counter()
+            value = topk_inner(host)
+            with topk_lock:
+                phase["g_topk_tasks_summed"] = phase.get("g_topk_tasks_summed", 0.0) + time.perf_counter() - t0
+            return value
+
+        bf.gate_topk_overlap = topk_timed
     engine = {"producer": "bench-synthetic", "width": 128}
     sizes = [int(b) for b in args.batch_sizes.split(",")]
 
@@ -335,6 +360,17 @@ def batched_bench(args, torch, reducer, device, report) -> None:
                                                  coordinates_moved=moved)
         if args.profile:
             cell["batched_profile"] = profile_batched(torch, hybrid, er, made, max(sizes), engine)
+            if bf is not None:
+                # The device side alone: the host top-k replaced by a constant.
+                size = max(sizes)
+                bf.gate_topk_overlap = lambda host: 0.0
+                try:
+                    _, dt, ph = run(hybrid, [r for r, _ in made[:size]], [x for _, x in made[:size]])
+                finally:
+                    bf.gate_topk_overlap = topk_timed
+                cell["batched_without_topk"] = dict(
+                    batch=size, ms_per_row=round(1e3 * dt / size, 2),
+                    ms_kvqg_per_row=round(1e3 * ph.get("g_kvqg_features", 0.0) / size, 3))
         report["cells"][f"p{prompt}c{completion}"] = cell
         print(json.dumps(cell), flush=True)
 
