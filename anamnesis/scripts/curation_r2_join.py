@@ -4,7 +4,7 @@ Labels (``turn-labels-*.jsonl``, BRIEF-TURNS, text only; or the same rows withou
 score) carry scene_id, turn, writer, speaker and text, but not
 the sign record. Spool records carry token ids and weights, not the scene. A label is joined to the record that
 generated its turn:
-* the record's weights are the writer's (b01x: DPO-10x bb9495ec, sft: d4750e7d);
+* the record's weights are the writer's (base: release 961931f9, b01x: DPO-10x bb9495ec, sft: d4750e7d);
 * its decoded generation, cut at the first blank line, is the turn's text (stripped);
 * its decoded prompt contains the previous two turns' texts and every speaker name of the scene.
 
@@ -36,7 +36,8 @@ from typing import Any
 
 import numpy as np
 
-WRITER_WEIGHTS = {"b01x": "bb9495ec24a08358c9d99627ba32e47a9e08b85f2970193feed994225c073a00",
+WRITER_WEIGHTS = {"base": "961931f90f6f1b55c37f37bf20a1ec08bfb178b0829a64e03f996a92cda29844",
+                  "b01x": "bb9495ec24a08358c9d99627ba32e47a9e08b85f2970193feed994225c073a00",
                   "sft": "d4750e7dbb6852de9c3f9a0d7e9c8e3e6c478b8d95aea7222c1ec03d9fe56583"}
 
 
