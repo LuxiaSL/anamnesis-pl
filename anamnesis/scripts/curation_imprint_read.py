@@ -18,6 +18,8 @@ Each measure is read against the turn's coherence label:
 * the AUC of a logistic regression on [measure, log length] against log length alone, for the part length doesn't
   explain.
 
+With --slips, the same measures are read as seat slip vs not, over the turns of scenes the seat reader read.
+
 All of it overall and per label file (writer set).
 
 Usage: python curation_imprint_read.py --signed <dir> --rows <import-rows.jsonl> --out <json>
@@ -76,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rows", required=True, type=Path)
     ap.add_argument("--hi", type=int, default=4)
     ap.add_argument("--lo", type=int, default=2)
+    ap.add_argument("--slips", type=Path, default=None,
+                    help="seat-slips.jsonl ({scene_id, seat_slip_turns}): also read slip vs non-slip turns")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args(argv)
     from scipy.stats import spearmanr
@@ -149,6 +153,25 @@ def main(argv: list[str] | None = None) -> int:
                               cv_auc_with_length=cv_auc(np.stack([x[sel], L[sel]], axis=1), y, groups[sel]))
         out["sets"][setname] = res
         print(f"[imprint] {setname}: {json.dumps(res)}", flush=True)
+    if args.slips is not None:
+        slips = {}
+        for line in args.slips.read_text().splitlines():
+            if line.strip():
+                r = json.loads(line)
+                slips[r["scene_id"]] = {int(t) for t in r.get("seat_slip_turns") or []}
+        rs = [r for r in rows_out if r["cand_id"].split(":")[0] in slips]
+        y = np.array([int(int(r["cand_id"].split(":")[1]) in slips[r["cand_id"].split(":")[0]]) for r in rs])
+        L = np.array([r["loglen"] for r in rs])
+        groups = np.array([r["cand_id"].split(":")[0] for r in rs])
+        sres: dict[str, Any] = dict(turns=len(rs), slips=int(y.sum()), loglen_auc=auc(L, y),
+                                    loglen_cv_auc=cv_auc(L[:, None], y, groups))
+        for mname in measures:
+            x = np.array([r.get(mname, np.nan) for r in rs], dtype=float)
+            sres[mname] = dict(auc_slip=auc(x, y), slip_median=round(float(np.nanmedian(x[y == 1])), 3),
+                               other_median=round(float(np.nanmedian(x[y == 0])), 3),
+                               cv_auc_with_length=cv_auc(np.stack([x, L], axis=1), y, groups))
+        out["seat_slips"] = sres
+        print(f"[imprint] seat slips: {json.dumps(sres)}", flush=True)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, indent=1))
     with args.out.with_suffix(".turns.jsonl").open("w") as fh:
