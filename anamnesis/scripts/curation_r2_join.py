@@ -1,6 +1,7 @@
 """Curation round 2: join posttraining's per-turn labels to the engine-lane signatures of the turns they label.
 
-Labels (``turn-labels-*.jsonl``, BRIEF-TURNS, text only) carry scene_id, turn, writer, speaker and text, but not
+Labels (``turn-labels-*.jsonl``, BRIEF-TURNS, text only; or the same rows without the label fields, for turns to
+score) carry scene_id, turn, writer, speaker and text, but not
 the sign record. Spool records carry token ids and weights, not the scene. A label is joined to the record that
 generated its turn:
 * the record's weights are the writer's (b01x: DPO-10x bb9495ec, sft: d4750e7d);
@@ -160,8 +161,8 @@ def main(argv: list[str] | None = None) -> int:
             dropped["short_span_layout"] += 1
             continue
         cid = f"{sid}:{turn}"
-        rows.append(dict(cand_id=cid, scene_id=sid, turn=turn, writer=lab["writer"], coherent=lab["coherent"],
-                         in_character=lab["in_character"], n_tokens=len(rec["generated_ids"]),
+        rows.append(dict(cand_id=cid, scene_id=sid, turn=turn, writer=lab["writer"], set=lab.get("set"), coherent=lab.get("coherent"),
+                         in_character=lab.get("in_character"), n_tokens=len(rec["generated_ids"]),
                          prompt_length=len(rec["prompt_ids"]), sign_id=rec["request_id"]))
         X.append(hit[0])
         ids.append(cid)
