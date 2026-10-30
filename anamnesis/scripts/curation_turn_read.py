@@ -4,7 +4,8 @@ Rows: ``curation_turn_rows.py`` (posttraining's per-turn labels, base-weights su
 tsumugi replay lane by ``sign_koto_replay_rows.py``. Each row is one turn replayed under its own
 lead-in, as the loom rendered it.
 
-The contrast is held within a scene, so context is matched. A pair is (a turn rated coherent >= --hi, a
+The contrast is held within a scene, so context is matched. Rows that name their writer (round 2, where the
+writer changes with the turn index) pair only within one writer of a scene; --writer keeps one writer's rows. A pair is (a turn rated coherent >= --hi, a
 turn rated <= --lo) from the same scene, at most --pairs-per-scene pairs per scene, drawn at random.
 Each pair's difference d = v(hi) - v(lo) enters with label 1 and -d with label 0, so a no-intercept
 logistic regression is an antisymmetric ranker (as in ``msteer_replay_read.py``). Folds are an outer
@@ -72,18 +73,19 @@ def echo(prev: str | None, text: str) -> float:
 
 def make_pairs(meta: list[dict], hi: int, lo: int, per_scene: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
     rng = np.random.default_rng(seed)
-    by_scene: dict[str, tuple[list[int], list[int]]] = {}
+    by_scene: dict[tuple[str, str], tuple[list[int], list[int]]] = {}
     for i, m in enumerate(meta):
         c = m.get("coherent")
         if c is None:
             continue
-        h, l_ = by_scene.setdefault(m["scene_id"], ([], []))
+        # rows that name their writer pair only with the same writer's turns of the scene
+        h, l_ = by_scene.setdefault((m["scene_id"], str(m.get("writer", ""))), ([], []))
         if c >= hi:
             h.append(i)
         elif c <= lo:
             l_.append(i)
     pairs, scene = [], []
-    for s, (h, l_) in sorted(by_scene.items()):
+    for (s, _writer), (h, l_) in sorted(by_scene.items()):
         if not h or not l_:
             continue
         allp = [(a, b) for a in h for b in l_]
@@ -122,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--embedder", default="sentence-transformers/all-MiniLM-L6-v2")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--writer", default=None, help="keep only this writer's rows (rows that name one)")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args(argv)
     t0 = time.time()
@@ -133,6 +136,9 @@ def main(argv: list[str] | None = None) -> int:
     X, ids, names, mean_lp, lanes = msr.load_bank(args.shards, args.lane)
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate cand_ids across shards")
+    if args.writer is not None:
+        keep_w = [i for i, c in enumerate(ids) if rows[c].get("writer") == args.writer]
+        X, ids, mean_lp = X[keep_w], [ids[i] for i in keep_w], mean_lp[keep_w]
     meta = [rows[c] for c in ids]
     steps = np.array([m["n_tokens"] - 1 for m in meta])
     support = msr.load_support(args.support)
