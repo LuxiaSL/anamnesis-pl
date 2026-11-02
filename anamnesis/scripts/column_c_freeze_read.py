@@ -324,6 +324,21 @@ def main(argv: list[str] | None = None) -> int:
     print("C+text", json.dumps(report["short"]["alast_step.all.resid+text_all"]),
           json.dumps(report["long"]["alast_step.all.resid+text_all"]), flush=True)
 
+    # per arm, short pairs: does the likelihood baseline's strength depend on the sampler?
+    arm_of = lambda q: meta[q[0]]["arm"]  # noqa: E731
+    pos_v1 = "alast_step" if np.isfinite(z["floor_alast_step"]).all() else "alast_pf"
+    X_v1 = z[f"floor_{pos_v1}"][:, fam_idx["all-band-area"]]
+    arm_scores = dict(length=by_test(oof_scores(T_len, row_c, all_tr, short_te, ctx_of, None)[0]),
+                      mean_logprob=by_test(oof_scores(T_lp, row_c, all_tr, short_te, ctx_of, None)[0]),
+                      **{f"C_v1_{pos_v1}_resid": by_test(oof_scores(X_v1, row_c, all_tr, short_te, ctx_of, log_n)[0])})
+    report["short_by_arm"] = {}
+    for arm in sorted({arm_of(q) for q in ST}):
+        sel = np.array([arm_of(q) == arm for q in ST])
+        pairs_arm = [q for q, k in zip(ST, sel) if k]
+        report["short_by_arm"][arm] = {nm: summarise(sc[sel], pairs_arm) for nm, sc in arm_scores.items()}
+        print("short by arm", arm, json.dumps({nm: (v["n"], v["acc"], v["len_matched"]["acc"])
+                                                for nm, v in report["short_by_arm"][arm].items()}), flush=True)
+
     if args.mlp:
         out = run_c("alast_step", "all", True, mlp=(args.mlp_pcs, 64))
         report["mlp"] = dict(pcs=args.mlp_pcs, hidden=64, **out)
