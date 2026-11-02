@@ -296,8 +296,11 @@ def main(argv: list[str] | None = None) -> int:
             out["short"] = summarise(by_test(sc), ST)
         return out
 
-    variants = [(pos, fam, res) for pos in ("alast", "alast_step") for fam in ("all", "depth", "read", "route")
+    positions = [q for q in ("alast", "alast_step", "alast_pf") if f"floor_{q}" in z]
+    variants = [(pos, fam, res) for pos in positions for fam in ("all", "depth", "read", "route")
                 for res in (False, True)]
+    if "alast_pf" in positions:
+        variants += [("alast_pf", "all-band-area", True)]
     variants += [("a0", "all", True), ("plast", "all", False)]
     for pos, fam, res in variants:
         tag = f"{pos}.{fam}.{'resid' if res else 'raw'}"

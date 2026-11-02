@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from column_c_features import (FLOOR_VERSION, Geometry, RouteSite, floor_digest,  # noqa: E402
                                floor_names, floor_vector)
 
-POSITIONS = ("a0", "a1", "a2", "a3", "alast", "alast_step", "plast")
+POSITIONS = ("a0", "a1", "a2", "a3", "alast", "alast_step", "alast_pf", "plast")
 N_ANSWER = 4
 
 
@@ -69,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--koto-boundaries", default="tsumugi_loop")
     ap.add_argument("--limit-nodes", type=int, default=0)
     ap.add_argument("--check-nodes", type=int, default=3)
+    ap.add_argument("--no-step", action="store_true",
+                    help="skip alast_step (O(answer) 1-token forwards per row); its rows are NaN")
     ap.add_argument("--shard", default="0/1", help="k/n: run every n-th node starting at k (nodes in file order)")
     args = ap.parse_args(argv)
 
@@ -110,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     a0_paths, a0_heads, meta_rows = [], [], []
     checks = []
     step_rel: list[float] = []  # per row: |alast_step path - alast chunk path| / |alast_step path|
+    pf_rel: list[float] = []    # per row: |alast_pf path - alast_step path| / |alast_step path|
     t0 = time.time()
 
     for k, node_id in enumerate(node_ids, 1):
@@ -200,15 +203,35 @@ def main(argv: list[str] | None = None) -> int:
             # alast_step: the last answer token as the decode engine computes it. The answer's earlier
             # tokens enter the cache one 1-token step at a time (parity arithmetic, no capture), and the
             # last token is captured in a 1-token step: a fixed shape at every answer length.
+            # alast_pf: the same 1-token capture of the last token, but the answer's earlier tokens enter the
+            # cache in one chunk (a cheap replay; the captured step keeps its fixed shape).
+            if n_ans >= 2:
+                pre_ids = torch.tensor([ids[P - 1 : P + n_ans - 1]], dtype=torch.long, device=dev)
+                _, _, pf_cache = cached_forward(model, pre_ids, past=cache, position_offset=P - 1,
+                                                eager_nocapture=True, capture_hidden=False)
+            else:
+                one = torch.tensor([[ids[P - 1]]], dtype=torch.long, device=dev)
+                _, _, pf_cache = cached_forward(model, one, past=cache, position_offset=P - 1,
+                                                eager_nocapture=True, capture_hidden=False)
+            c_pf = capture(1, [0], start=P + n_ans - 1, past=pf_cache)
+            out_feats["alast_pf"].append(vec(c_pf, 0))
+            del pf_cache
+            if args.no_step:
+                out_feats["alast_step"].append(np.full(len(floor_names(geo)), np.nan, dtype=np.float32))
+                continue_step = False
+            else:
+                continue_step = True
             step_cache = cache
-            for t in range(P - 1, P + n_ans - 1):
+            for t in (range(P - 1, P + n_ans - 1) if continue_step else ()):
                 one = torch.tensor([[ids[t]]], dtype=torch.long, device=dev)
                 _, _, step_cache = cached_forward(model, one, past=step_cache, position_offset=t,
                                                   eager_nocapture=True, capture_hidden=False)
-            c_step = capture(1, [0], start=P + n_ans - 1, past=step_cache)
-            out_feats["alast_step"].append(vec(c_step, 0))
-            step_rel.append(float(np.linalg.norm(c_step["paths"][0] - c_all["paths"][0 if n_ans >= 2 else 1])
-                                  / np.linalg.norm(c_step["paths"][0])))
+            if continue_step:
+                c_step = capture(1, [0], start=P + n_ans - 1, past=step_cache)
+                out_feats["alast_step"].append(vec(c_step, 0))
+                sp = c_step["paths"][0]
+                step_rel.append(float(np.linalg.norm(sp - c_all["paths"][0 if n_ans >= 2 else 1]) / np.linalg.norm(sp)))
+                pf_rel.append(float(np.linalg.norm(c_pf["paths"][0] - sp) / np.linalg.norm(sp)))
             del step_cache
             a0_paths.append(c2["paths"][1].astype(np.float32))
             a0_heads.append(np.concatenate([c2["stats"][:, :4, :, 1],
@@ -266,10 +289,15 @@ def main(argv: list[str] | None = None) -> int:
                                alast="the last answer token (= a0 for a 1-token answer), in the whole-answer chunk",
                                alast_step="the last answer token, captured in a 1-token decode step after "
                                           "1-token steps through the answer (fixed shape at every length)",
+                               alast_pf="the last answer token, captured in a 1-token step after the answer's "
+                                        "earlier tokens enter the cache as one chunk (cheap replay)",
                                plast="P-1 (last prompt token, shared within a fan)"),
                 capture=("per-node eager parity prefill of ctx[:P-1]; then fixed-shape cached chunks: "
                          "ids[P-1:P+1] -> plast, a0; ids[P-1:P+4] -> a1..a3; ids[P-1:] -> alast; "
                          "1-token steps through ids[P-1:-1], then ids[-1] alone -> alast_step"),
+                alast_pf_vs_step_path_rel=dict(
+                    median=float(np.median(pf_rel)), p90=float(np.percentile(pf_rel, 90)),
+                    max=float(np.max(pf_rel))) if pf_rel else None,
                 alast_step_vs_chunk_path_rel=dict(
                     median=float(np.median(step_rel)), p90=float(np.percentile(step_rel, 90)),
                     max=float(np.max(step_rel))) if step_rel else None,
