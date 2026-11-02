@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from column_c_features import (FLOOR_VERSION, Geometry, RouteSite, floor_digest,  # noqa: E402
                                floor_names, floor_vector)
 
-POSITIONS = ("a0", "a1", "a2", "a3", "alast", "plast")
+POSITIONS = ("a0", "a1", "a2", "a3", "alast", "alast_step", "plast")
 N_ANSWER = 4
 
 
@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--koto-boundaries", default="tsumugi_loop")
     ap.add_argument("--limit-nodes", type=int, default=0)
     ap.add_argument("--check-nodes", type=int, default=3)
+    ap.add_argument("--shard", default="0/1", help="k/n: run every n-th node starting at k (nodes in file order)")
     args = ap.parse_args(argv)
 
     import torch
@@ -95,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
     for r in rows:
         by_node[r["node_id"]].append(r)
     node_ids = list(by_node)
+    k_shard, n_shard = (int(v) for v in args.shard.split("/"))
+    if not 0 <= k_shard < n_shard:
+        raise ValueError(f"--shard {args.shard}: need 0 <= k < n")
+    node_ids = node_ids[k_shard::n_shard]
     if args.limit_nodes:
         node_ids = node_ids[: args.limit_nodes]
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -104,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     out_feats = {p: [] for p in POSITIONS}
     a0_paths, a0_heads, meta_rows = [], [], []
     checks = []
+    step_rel: list[float] = []  # per row: |alast_step path - alast chunk path| / |alast_step path|
     t0 = time.time()
 
     for k, node_id in enumerate(node_ids, 1):
@@ -125,9 +131,10 @@ def main(argv: list[str] | None = None) -> int:
             n_ans = len(ids) - P
             if n_ans < 1:
                 raise RuntimeError(f"{s['cand_id']}: no answer tokens")
-            def capture(m, want):
-                """Run ids[P-1 : P-1+m] through the cache; FLOOR inputs at chunk indices `want`."""
-                chunk = torch.tensor([ids[P - 1 : P - 1 + m]], dtype=torch.long, device=dev)
+            def capture(m, want, start=P - 1, past=None):
+                """Run ids[start : start+m] through the cache; FLOOR inputs at chunk indices `want`."""
+                past = cache if past is None else past
+                chunk = torch.tensor([ids[start : start + m]], dtype=torch.long, device=dev)
                 stats = torch.zeros((L, 5, H, m), dtype=torch.float64, device=dev)
                 mean_ent = torch.zeros((L, m), dtype=torch.float64, device=dev)
 
@@ -135,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
                     a = w[0].double()                            # [H, m, W]
                     W = a.shape[-1]
                     a = a / a.sum(-1, keepdim=True).clamp_min(1e-30)
-                    q = torch.arange(P - 1, P - 1 + m, device=a.device)   # absolute query positions
+                    q = torch.arange(start, start + m, device=a.device)   # absolute query positions
                     cols = torch.arange(W, device=a.device)
                     stats[layer, 0] = -(a * torch.where(a > 0, a.log(), torch.zeros_like(a))).sum(-1)
                     mr = a.mean(0)
@@ -145,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
                     stats[layer, 2] = (a * (cols[None, :] >= cutoff[:, None])[None]).sum(-1)
                     stats[layer, 3] = a[..., :P].sum(-1)
 
-                logits, cap, _ = cached_forward(model, chunk, past=cache, position_offset=P - 1,
+                logits, cap, _ = cached_forward(model, chunk, past=past, position_offset=start,
                                                 light=False, capture_hidden=True, attention_sink=sink,
                                                 capture_layers=set())
                 hr = hidden_rows(cap, L)
@@ -190,6 +197,19 @@ def main(argv: list[str] | None = None) -> int:
             for j in range(1, N_ANSWER):
                 out_feats[f"a{j}"].append(vec(c5, j + 1) if c5 is not None and j + 1 < m5 else nan)
             out_feats["alast"].append(vec(c_all, m_all - 1))
+            # alast_step: the last answer token as the decode engine computes it. The answer's earlier
+            # tokens enter the cache one 1-token step at a time (parity arithmetic, no capture), and the
+            # last token is captured in a 1-token step: a fixed shape at every answer length.
+            step_cache = cache
+            for t in range(P - 1, P + n_ans - 1):
+                one = torch.tensor([[ids[t]]], dtype=torch.long, device=dev)
+                _, _, step_cache = cached_forward(model, one, past=step_cache, position_offset=t,
+                                                  eager_nocapture=True, capture_hidden=False)
+            c_step = capture(1, [0], start=P + n_ans - 1, past=step_cache)
+            out_feats["alast_step"].append(vec(c_step, 0))
+            step_rel.append(float(np.linalg.norm(c_step["paths"][0] - c_all["paths"][0 if n_ans >= 2 else 1])
+                                  / np.linalg.norm(c_step["paths"][0])))
+            del step_cache
             a0_paths.append(c2["paths"][1].astype(np.float32))
             a0_heads.append(np.concatenate([c2["stats"][:, :4, :, 1],
                                             np.repeat(c2["mean"][:, None, None, 1], H, axis=2)],
@@ -243,10 +263,16 @@ def main(argv: list[str] | None = None) -> int:
                 rows=str(args.rows), rows_header_version=header.get("version"),
                 checkpoint=args.checkpoint_path, n_rows=len(meta_rows), n_nodes=len(node_ids),
                 positions=dict(a0="P (first answer token)", a1="P+1", a2="P+2", a3="P+3",
-                               alast="the last answer token (= a0 for a 1-token answer)",
+                               alast="the last answer token (= a0 for a 1-token answer), in the whole-answer chunk",
+                               alast_step="the last answer token, captured in a 1-token decode step after "
+                                          "1-token steps through the answer (fixed shape at every length)",
                                plast="P-1 (last prompt token, shared within a fan)"),
                 capture=("per-node eager parity prefill of ctx[:P-1]; then fixed-shape cached chunks: "
-                         "ids[P-1:P+1] -> plast, a0; ids[P-1:P+4] -> a1..a3; ids[P-1:] -> alast"),
+                         "ids[P-1:P+1] -> plast, a0; ids[P-1:P+4] -> a1..a3; ids[P-1:] -> alast; "
+                         "1-token steps through ids[P-1:-1], then ids[-1] alone -> alast_step"),
+                alast_step_vs_chunk_path_rel=dict(
+                    median=float(np.median(step_rel)), p90=float(np.percentile(step_rel, 90)),
+                    max=float(np.max(step_rel))) if step_rel else None,
                 faithfulness_checks=checks, capture_identity=capture_identity(model),
                 wall_seconds=round(time.time() - t0, 1),
                 code={m_: sys.modules[m_].__file__ for m_ in ("kotodama", "pleroma")})
