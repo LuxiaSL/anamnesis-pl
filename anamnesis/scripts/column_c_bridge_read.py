@@ -68,7 +68,8 @@ def main(argv=None) -> int:
     ap.add_argument("--shards", required=True, type=Path)
     ap.add_argument("--labels", required=True, type=Path)
     ap.add_argument("--support", required=True, type=Path)
-    ap.add_argument("--colc", required=True, type=Path, help="column_c_floor.npz")
+    ap.add_argument("--colc", required=True, type=Path, action="append",
+                    help="column_c_floor.npz (repeat for node shards of one extraction)")
     ap.add_argument("--lane", default="659aea48")
     ap.add_argument("--min-tokens", type=int, default=16)
     ap.add_argument("--min-gap", type=float, default=2.0)
@@ -91,7 +92,12 @@ def main(argv=None) -> int:
     row_a = {c: i for i, c in enumerate(ids_a)}
 
     # ── C ──
-    z = np.load(args.colc, allow_pickle=False)
+    parts = [np.load(f, allow_pickle=False) for f in args.colc]
+    if len({str(q["digest"]) for q in parts}) != 1 or len({tuple(q["names"]) for q in parts}) != 1:
+        raise ValueError("Column C shards carry different schemas")
+    shared = ("names", "digest", "version")
+    z = {k: (parts[0][k] if k in shared else np.concatenate([q[k] for q in parts])) for k in parts[0].files}
+    positions = [p_ for p_ in ("a0", "alast", "alast_step") if f"floor_{p_}" in z]
     names_c = [str(n) for n in z["names"]]
     ids_c = [str(c) for c in z["cand_ids"]]
     row_c = {c: i for i, c in enumerate(ids_c)}
@@ -146,6 +152,7 @@ def main(argv=None) -> int:
         "depth": [i for i, n in enumerate(names_c) if n.startswith("depth.")],
         "read": [i for i, n in enumerate(names_c) if n.startswith("read.")],
         "route": [i for i, n in enumerate(names_c) if n.startswith("route.")],
+        "all-band-area": [i for i, n in enumerate(names_c) if not n.startswith(("depth.band", "depth.area."))],
     }
     log_n = np.log(np.maximum(ntok_c, 1.0))
 
@@ -155,7 +162,7 @@ def main(argv=None) -> int:
                                   resid=log_n if resid else None)
         return (lambda c: zc[row_c[c]]), n_live
 
-    report = dict(colc_digest=str(z["digest"]), colc_names=len(names_c), lane=args.lane,
+    report = dict(colc_digest=str(z["digest"]), positions=positions, colc_names=len(names_c), lane=args.lane,
                   min_tokens=args.min_tokens, min_gap=args.min_gap, a_features=n_a,
                   pairs=dict(long_train=len(long_tr), long_test=len(long_te), all_train=len(all_tr),
                              short_train=len(short_tr), short_test=len(short_te),
@@ -218,8 +225,10 @@ def main(argv=None) -> int:
               json.dumps(report["baselines_short"][which]), flush=True)
 
     # ── C variants ──
-    variants = [(pos_, fam, resid) for pos_ in ("a0", "alast") for fam in ("all", "depth", "read", "route")
+    variants = [(pos_, fam, resid) for pos_ in positions for fam in ("all", "depth", "read", "route")
                 for resid in (False, True)]
+    if "alast_step" in positions:
+        variants += [("alast_step", "all-band-area", r_) for r_ in (False, True)]
     variants += [("plast", "all", False), ("a3", "all", True)]
     for position, fam, resid in variants:
         tag = f"{position}.{fam}.{'resid' if resid else 'raw'}"
@@ -237,7 +246,7 @@ def main(argv=None) -> int:
         agree = float(np.mean(np.sign(sA) == np.sign(sC)))
         chance_agree = accA * accC + (1 - accA) * (1 - accC)
         pf = (lambda obs, _c=cC, _v=vec_c: sign_flip(_c, long_tr, long_te, _v, obs, args.permutations)) \
-            if fam == "all" and position in ("a0", "alast") else None
+            if fam == "all" and position in ("a0", "alast", "alast_step") else None
         b = dict(features=n_live, C=cC, C_long=acc_entry(mC, long_te, vec_c, cands, pf),
                  agreement=round(agree, 4), agreement_if_independent=round(chance_agree, 4),
                  score_corr=round(float(np.corrcoef(sA, sC)[0, 1]), 4))
@@ -254,10 +263,10 @@ def main(argv=None) -> int:
         x, y = design(tr_all, vec_c2)
         m2, c2 = fit_ranker(x, y, groups(tr_all))
         pf2 = (lambda obs, _c=c2, _v=vec_c2: sign_flip(_c, tr_all, st, _v, obs, args.permutations)) \
-            if fam == "all" and position in ("a0", "alast") else None
+            if fam == "all" and position in ("a0", "alast", "alast_step") else None
         b_short["trained_all"] = dict(C=c2, all=acc_entry(m2, st, vec_c2, cands, pf2),
                                       len_matched=acc_entry(m2, [p for p in st if chars_ok(p)], vec_c2, cands))
-        if position in ("a0", "alast") and fam == "all":
+        if position in ("a0", "alast", "alast_step") and fam == "all":
             # C beside the text: does C add to text+first?
             tf = text_vec("text+last" if last_tok else "text+first")
             both = lambda c, _v=vec_c2: np.concatenate([_v(c), tf(c)])  # noqa: E731

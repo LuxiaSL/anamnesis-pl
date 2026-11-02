@@ -50,6 +50,12 @@ from typing import Sequence
 import numpy as np
 
 FLOOR_VERSION = "column-c-floor-v0"
+# v1 is a projection of v0: the same reductions, read at the decode-shaped last answer position
+# (``alast_step``), without the engineered depth.band* and depth.area.* families (the freeze read found
+# they add nothing). Extractors still compute v0, the superset; ``to_v1`` selects v1's columns.
+FLOOR_V1_VERSION = "column-c-floor-v1"
+FLOOR_V1_POSITION = "alast_step"
+V1_DROPPED_PREFIXES = ("depth.band", "depth.area.")
 EPS = 1e-12
 N_BANDS = 6
 AREA_CURVES = ("lognorm", "cosfinal", "peak", "arclen")
@@ -119,6 +125,26 @@ def floor_digest(geo: Geometry) -> str:
     blob = json.dumps(dict(version=FLOOR_VERSION, geometry=geo.to_json(), names=floor_names(geo)),
                       sort_keys=True).encode()
     return hashlib.sha256(blob).hexdigest()
+
+
+def floor_v1_names(geo: Geometry) -> list[str]:
+    return [n for n in floor_names(geo) if not n.startswith(V1_DROPPED_PREFIXES)]
+
+
+def floor_v1_digest(geo: Geometry) -> str:
+    """sha256 over v1's version, position, geometry and ordered names: the frozen schema's identity."""
+    blob = json.dumps(dict(version=FLOOR_V1_VERSION, position=FLOOR_V1_POSITION, geometry=geo.to_json(),
+                           names=floor_v1_names(geo)), sort_keys=True).encode()
+    return hashlib.sha256(blob).hexdigest()
+
+
+def to_v1(x: np.ndarray, v0_names: Sequence[str]) -> tuple[np.ndarray, list[str]]:
+    """v1's columns of v0 rows (``[..., len(v0_names)]``), in v1 order; refuses names that are not v0's."""
+    v0 = list(v0_names)
+    if not any(n.startswith("depth.lognorm") for n in v0):
+        raise ValueError("not a v0 FLOOR name list")
+    keep = [i for i, n in enumerate(v0) if not n.startswith(V1_DROPPED_PREFIXES)]
+    return np.asarray(x)[..., keep], [v0[i] for i in keep]
 
 
 # ── the reductions ─────────────────────────────────────────────────────────────
@@ -243,7 +269,11 @@ def _selftest() -> None:
     for n, a, b in zip(names, v, v2):
         if not n.startswith(("depth.lognorm", "depth.dlognorm", "depth.area")):
             assert abs(a - b) < 1e-9, n
-    print("column_c_features selftest ok:", len(names), "names, digest", floor_digest(geo)[:12])
+    x1, n1 = to_v1(np.stack([v, v2]), names)
+    assert n1 == floor_v1_names(geo) and x1.shape == (2, len(n1))
+    assert not any(n.startswith(V1_DROPPED_PREFIXES) for n in n1)
+    print("column_c_features selftest ok:", len(names), "names, digest", floor_digest(geo)[:12],
+          "| v1", len(n1), "names, digest", floor_v1_digest(geo)[:12])
 
 
 if __name__ == "__main__":
