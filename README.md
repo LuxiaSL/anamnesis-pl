@@ -1,5 +1,8 @@
 # Anamnesis Pipeline
 
+> **Frozen.** This repository is no longer developed. It is kept as the record that earlier results cite.
+> The maintained instrument is [LuxiaSL/anamnesis](https://github.com/LuxiaSL/anamnesis).
+
 Extraction, replay, steering, and analysis pipeline for transformer **computational state
 signatures**.
 
